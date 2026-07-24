@@ -1390,9 +1390,7 @@ class StudentController extends Controller
             'message' => 'Student retrieved successfully.',
             'student' => [
                 'information' => $student,
-
                 'guardians' => $student->guardians,
-
                 'courses' => $student->courseEnrollments->map(function ($enrollment) {
                     return [
                         'enrollment_id' => $enrollment->id,
@@ -1404,7 +1402,9 @@ class StudentController extends Controller
                         'course_information' => $enrollment->course,
                     ];
                 }),
-                
+                'enrolled_subjects' => $student->courseEnrollments->flatMap(function ($enrollment) {
+                    return $enrollment->course->subjects ?? [];
+                })->unique('id')->values(),
                 'advisors' => $student->advisors,
                 'attendance' => $student->attendances,
             ],
