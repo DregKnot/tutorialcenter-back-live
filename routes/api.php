@@ -272,6 +272,22 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::delete('/destroy/{id}', [ExamBodyController::class, 'destroy']); // Soft delete exam body
     });
 
+    // Exam Data Management
+    Route::prefix('exam-data')->group(function () {
+
+        // List exam bodies
+        Route::get('/bodies', [ExamYearController::class, 'examBodies']);
+
+        // List subjects with exam year count
+        Route::get('/subjects', [ExamYearController::class, 'subjects']);
+
+        // List exam years
+        Route::get('/years', [ExamYearController::class, 'years']);
+
+        // List questions
+        Route::get('/questions', [ExamYearController::class, 'questions']);
+    });
+
     // Exam Year Management
     Route::prefix('exam-years')->group(function () {
         Route::get('/all', [ExamYearController::class, 'index']); // List all exam years (including inactive)

@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\ExamBody;
 use App\Models\ExamYear;
+use App\Models\PastQuestion;
+use App\Models\Subject;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Validator;
@@ -10,6 +13,7 @@ use App\Services\AdminNotificationService;
 
 class ExamYearController extends Controller
 {
+    // Retrieve a list of exam years with optional filtering
     public function index(Request $request)
     {
         $query = ExamYear::with(['examBody.course', 'subject']);
@@ -35,6 +39,7 @@ class ExamYearController extends Controller
         return response()->json($examYears);
     }
 
+    // Store a new exam year
     public function store(Request $request)
     {
         $validator = Validator::make($request->all(), [
@@ -82,6 +87,7 @@ class ExamYearController extends Controller
         ], 201);
     }
 
+    // Show a specific exam year
     public function show(ExamYear $examYear, $id)
     {
         try {
@@ -96,6 +102,7 @@ class ExamYearController extends Controller
         }
     }
 
+    // Update an existing exam year
     public function update(Request $request, $id)
     {
         $examYear = ExamYear::findOrFail($id);
@@ -144,6 +151,7 @@ class ExamYearController extends Controller
         ]);
     }
 
+    // Delete an exam year
     public function destroy(ExamYear $examYear, Request $request, $id)
     {
         try {
@@ -164,5 +172,78 @@ class ExamYearController extends Controller
                 'message' => 'Unauthorized to delete exam year.',
             ], 403);
         }
+    }
+
+
+
+
+
+
+
+    
+
+    // Retrieve a list of exam bodies with the count of associated exam years
+    public function examBodies()
+    {
+        return response()->json(
+            ExamBody::withCount('examYears')
+                ->orderBy('name')
+                ->get()
+        );
+    }
+
+    // Retrieve a list of subjects with the count of associated exam years, optionally filtered by exam body
+    public function subjects(Request $request)
+    {
+        $query = Subject::query();
+
+        if ($request->filled('exam_body_id')) {
+
+            $query->whereHas('examYears', function ($q) use ($request) {
+                $q->where('exam_body_id', $request->exam_body_id);
+            });
+
+            $query->withCount([
+                'examYears as exam_years_count' => function ($q) use ($request) {
+                    $q->where('exam_body_id', $request->exam_body_id);
+                }
+            ]);
+        } else {
+
+            $query->withCount('examYears');
+        }
+
+        return response()->json(
+            $query->orderBy('name')->get()
+        );
+    }
+
+    // Retrieve a list of exam years with optional filtering by exam body and subject
+    public function years(Request $request)
+    {
+        $query = ExamYear::with('examBody', 'subject');
+
+        if ($request->filled('exam_body_id')) {
+            $query->where('exam_body_id', $request->exam_body_id);
+        }
+
+        if ($request->filled('subject_id')) {
+            $query->where('subject_id', $request->subject_id);
+        }
+
+        return response()->json(
+            $query->orderByDesc('year')->get()
+        );
+    }
+
+    // Retrieve a paginated list of past questions for a specific exam year
+    public function questions(Request $request)
+    {
+        return response()->json(
+            PastQuestion::with('options', 'files', 'group')
+                ->where('exam_year_id', $request->exam_year_id)
+                ->orderBy('question_number')
+                ->paginate(50)
+        );
     }
 }
