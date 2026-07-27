@@ -1404,13 +1404,31 @@ class StudentController extends Controller
                         'course_id' => $enrollment->course_id,
                         'enrollment_status' => $enrollment->status ?? null,
                         'enrolled_at' => $enrollment->created_at,
-                        'subjects' => $enrollment->course->subjects ?? [],
+                        // 'subjects' => $enrollment->course->subjects ?? [],
+                        'subjects' => $enrollment->subjects
+                            ->map(function ($subjectEnrollment) {
+                                return [
+                                    'subject_enrollment_id' => $subjectEnrollment->id,
+                                    'subject_id' => $subjectEnrollment->subject->id,
+                                    'progress' => $subjectEnrollment->progress,
+                                    'subject' => $subjectEnrollment->subject,
+                                ];
+                            })
+                            ->values(),
                         'course_information' => $enrollment->course,
                     ];
                 }),
-                'enrolled_subjects' => $student->courseEnrollments->flatMap(function ($enrollment) {
-                    return $enrollment->course->subjects ?? [];
-                })->unique('id')->values(),
+                // 'enrolled_subjects' => $student->courseEnrollments->flatMap(function ($enrollment) {
+                //     return $enrollment->course->subjects ?? [];
+                // })->unique('id')->values(),
+                'enrolled_subjects' => $student->courseEnrollments
+                    ->flatMap(function ($enrollment) {
+                        return $enrollment->subjects->map(function ($subjectEnrollment) {
+                            return $subjectEnrollment->subject;
+                        });
+                    })
+                    ->unique('id')
+                    ->values(),
                 'advisors' => $student->advisors,
                 'attendance' => $student->attendances,
             ],
