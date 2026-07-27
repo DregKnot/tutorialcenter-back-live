@@ -261,6 +261,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::delete('/destroy/{id}', [StudentController::class, 'destroy']); // Soft delete a student
         Route::get('/all', [StudentController::class, 'index']); // List all students
         Route::get('/{id}', [StudentController::class, 'show']); // Show student details
+        Route::put('/update', [StudentController::class, 'update']); // Update student profile
     });
 
     // Exam Body Management

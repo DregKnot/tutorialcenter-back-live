@@ -1032,7 +1032,6 @@ class StudentController extends Controller
 
             // TEMP: log instead of sending SMS
             logger()->info("OTP for {$tel} is {$code}");
-
         } catch (\Throwable $e) {
             DB::rollBack();
             throw $e; // Let controller decide response
@@ -1371,10 +1370,17 @@ class StudentController extends Controller
     public function show($id)
     {
         $student = Student::withTrashed()
+            // ->with([
+            //     'guardians',
+            //     'courseEnrollments.course',
+            //     'courseEnrollments.course.subjects',
+            //     'advisors',
+            //     'attendances',
+            // ])
             ->with([
                 'guardians',
                 'courseEnrollments.course',
-                'courseEnrollments.course.subjects',
+                'courseEnrollments.subjects.subject',
                 'advisors',
                 'attendances',
             ])
