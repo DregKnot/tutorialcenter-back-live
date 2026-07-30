@@ -135,6 +135,11 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
     });
 });
 
+/*
+|--------------------------------------------------------------------------
+| Student Public Route
+|--------------------------------------------------------------------------
+*/
 Route::prefix('students')->group(function () {
     Route::post('/phone/change/confirm', [StudentController::class, 'confirmPhoneNumberChange']); // Confirm phone number change with OTP verification
 });
@@ -152,6 +157,12 @@ Route::prefix('guardians')->group(function () {
     Route::post('/resend-phone-otp', [GuardianController::class, 'resendPhoneOtp']);
 
     Route::post('/resend-email', [GuardianController::class, 'resendEmailVerification']);
+    Route::post('/login', [GuardianController::class, 'login']);
+});
+
+Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
+    Route::post('/profile/update', [GuardianController::class, 'update']);
+    Route::post('/logout', [GuardianController::class, 'logout']);
 });
 
 /*

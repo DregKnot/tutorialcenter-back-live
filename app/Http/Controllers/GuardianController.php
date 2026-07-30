@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Validator;
 use App\Services\EmailVerificationService;
+use Illuminate\Support\Facades\RateLimiter;
 use App\Notifications\GuardianEmailVerificationNotification;
 
 class GuardianController extends Controller
@@ -475,5 +476,189 @@ class GuardianController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
+    }
+
+    /**
+     * Summary of update
+    **/
+    public function update(Request $request)
+    {
+        DB::beginTransaction();
+
+        try {
+            // 1. Validate input
+            $validator = Validator::make($request->all(), [
+                'firstname' => 'nullable|string|max:50',
+                'middlename' => 'nullable|string|max:50',
+                'surname' => 'nullable|string|max:50',
+                'gender' => 'nullable|string|in:male,female,others',
+                'profile_picture' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+                'date_of_birth' => 'nullable|date|before:today',
+                'location' => 'nullable|string',
+                'address' => 'nullable|string',
+            ]);
+
+            if ($validator->fails()) {
+                DB::rollBack();
+                return response()->json([
+                    'errors' => $validator->errors(),
+                    'message' => 'Validation failed.',
+                ], 422);
+            }
+
+            // 2. Get authenticated student
+            $guardian = $request->user();
+
+            if (!$guardian) {
+                DB::rollBack();
+                return response()->json([
+                    'message' => 'Guardian not found.',
+                ], 404);
+            }
+
+            $data = $validator->validated();
+
+            $fields = ['firstname', 'middlename', 'surname', 'gender', 'profile_picture', 'date_of_birth', 'location', 'address'];
+            $oldValues = $guardian->only($fields);
+
+            // 3. Handle profile picture upload if provided
+            if ($request->hasFile('profile_picture')) {
+                $file = $request->file('profile_picture');
+                $path = $file->store('guardian_profile_pictures', 'public');
+                $data['profile_picture'] = $path;
+            }
+
+            // 4. Update guardian profile
+            $guardian->update([
+                'firstname' => $data['firstname'] ?? $guardian->firstname,
+                'middlename' => $data['middlename'] ?? $guardian->middlename,
+                'surname' => $data['surname'] ?? $guardian->surname,
+                'gender' => $data['gender'] ?? $guardian->gender,
+                'profile_picture' => $data['profile_picture'] ?? $guardian->profile_picture,
+                'date_of_birth' => $data['date_of_birth'] ?? $guardian->date_of_birth,
+                'location' => $data['location'] ?? $guardian->location,
+                'address' => $data['address'] ?? $guardian->address,
+            ]);
+
+            // Collect changes
+            $changes = [];
+            foreach ($fields as $field) {
+                $newValue = $data[$field] ?? $oldValues[$field];
+                if ($newValue !== $oldValues[$field]) {
+                    $changes[$field] = ['from' => $oldValues[$field], 'to' => $newValue];
+                }
+            }
+
+            DB::commit();
+
+            // GuardianNotificationService::notify($guardian, 'update profile', $changes);
+
+            return response()->json([
+                'message' => 'Profile updated successfully.',
+                'guardian' => $guardian->fresh(),
+            ]);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'message' => 'Failed to update profile.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Login
+    **/
+    public function login(Request $request)
+    {
+        // 1️⃣ Validate input
+        $validator = Validator::make($request->all(), [
+            'entry' => 'required|string',
+            'password' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Login Fails',
+                'errors' => $validator->errors(),
+            ], 400);
+        }
+
+        try {
+            // Create unique throttle key
+            $throttleKey = Str::lower($request->input('entry')) . '|' . $request->ip();
+
+            // Check if user is rate limited
+            if (RateLimiter::tooManyAttempts($throttleKey, 5)) {
+
+                $seconds = RateLimiter::availableIn($throttleKey);
+
+                return response()->json([
+                    'message' => "Too many login attempts. Please try again in {$seconds} seconds."
+                ], 429);
+            }
+            //  Fetch student
+            $guardian = Guardian::where('email', $request->entry)->orWhere('tel', $request->entry)->first();
+
+            if (!$guardian) {
+                return response()->json([
+                    'message' => 'Login Fails',
+                    'errors' => 'Student not found, please register ' . $request->entry,
+                ], 403);
+            }
+
+            // Check password
+            if (!Hash::check($request->password, $guardian->password)) {
+                RateLimiter::hit($throttleKey, 60); // lock attempt for 60 seconds
+                return response()->json([
+                    'message' => 'Login Fails',
+                    'errors' => 'Invalid Login Credentials',
+                ], 403);
+            }
+
+            // Restrict login if email not verified
+            if (is_null($guardian->email_verified_at) && is_null($guardian->tel_verified_at)) {
+                return response()->json([
+                    'message' => 'Please verify your email address before logging in.',
+                    'verification_required' => 'email',
+                ], 403);
+            }
+
+            // 8. Clear rate limiter after successful login
+            RateLimiter::clear($throttleKey);
+
+            //Clearing the token
+            $guardian->tokens()->delete();
+
+            // Create Sanctum token
+            $token = $guardian->createToken('student-token')->plainTextToken;
+
+            // StudentNotificationService::notify($guardian, 'login');
+
+            return response()->json([
+                'message' => 'Login successful.',
+                'token' => $token,
+                'guardian' => $guardian,
+            ], 200);
+        } catch (\Exception $error) {
+            return response()->json([
+                'message' => 'Login Fails',
+                'errors' => $error->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * logout.
+    **/
+    public function logout(Request $request)
+    {
+        $request->user()->tokens()->delete();
+        // StudentNotificationService::notify($request->user(), 'logout');
+
+        return response()->json([
+            'message' => 'Logged out successfully.',
+        ]);
     }
 }
