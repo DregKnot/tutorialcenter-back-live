@@ -150,7 +150,9 @@ Route::prefix('students')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('guardians')->group(function () {
-    Route::post('/register', [GuardianController::class, 'store']);
+    // Route::post('/register', [GuardianController::class, 'store']);
+    Route::post('/register', [GuardianController::class, 'registerWithBiodata']);
+
     Route::post('/verify-email', [GuardianController::class, 'verifyEmail']);
 
     Route::post('/verify-phone', [GuardianController::class, 'verifyPhoneOtp']);
