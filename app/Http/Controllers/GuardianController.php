@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Validator;
 use App\Services\EmailVerificationService;
 use Illuminate\Support\Facades\RateLimiter;
 use App\Notifications\GuardianEmailVerificationNotification;
+use App\Services\BulkSMSService;
 
 class GuardianController extends Controller
 {
@@ -77,7 +78,6 @@ class GuardianController extends Controller
                 'message' => 'Registration successful. Verification required.',
                 'guardian' => $guardian,
             ], 201);
-
         } catch (\Throwable $e) {
             // 5. Something failed → rollback
             DB::rollBack();
@@ -196,7 +196,7 @@ class GuardianController extends Controller
      **/
     protected function sendPhoneOtp(string $tel): void
     {
-        
+
         DB::beginTransaction();
 
         try {
@@ -236,7 +236,6 @@ class GuardianController extends Controller
 
             // TEMP: log instead of sending SMS
             logger()->info("OTP for {$tel} is {$code}");
-
         } catch (\Throwable $e) {
             DB::rollBack();
             throw $e; // Let controller decide response
@@ -341,7 +340,6 @@ class GuardianController extends Controller
             return response()->json([
                 'message' => 'OTP sent successfully.',
             ]);
-
         } catch (\Throwable $e) {
             DB::rollBack();
 
@@ -389,9 +387,9 @@ class GuardianController extends Controller
 
         try {
             // 3. Find the student by email or tel
-            if($request->email) {
+            if ($request->email) {
                 $guardian = Guardian::where('email', $request->email)->first();
-            } elseif($request->tel) {
+            } elseif ($request->tel) {
                 $guardian = Guardian::where('tel', $request->tel)->first();
             } else {
                 return response()->json([
@@ -416,7 +414,7 @@ class GuardianController extends Controller
             }
 
             $data = $validator->validated();
-            
+
             /**
              * 6. Enforce uniqueness on update
              */
@@ -467,7 +465,6 @@ class GuardianController extends Controller
                 'message' => 'Biodata updated successfully.',
                 'guardian' => $guardian->fresh(),
             ]);
-
         } catch (\Throwable $e) {
             DB::rollBack();
 
@@ -480,7 +477,7 @@ class GuardianController extends Controller
 
     /**
      * Summary of update
-    **/
+     **/
     public function update(Request $request)
     {
         DB::beginTransaction();
@@ -569,7 +566,7 @@ class GuardianController extends Controller
 
     /**
      * Login
-    **/
+     **/
     public function login(Request $request)
     {
         // 1️⃣ Validate input
@@ -651,7 +648,7 @@ class GuardianController extends Controller
 
     /**
      * logout.
-    **/
+     **/
     public function logout(Request $request)
     {
         $request->user()->tokens()->delete();
@@ -659,6 +656,179 @@ class GuardianController extends Controller
 
         return response()->json([
             'message' => 'Logged out successfully.',
+        ]);
+    }
+
+    /**
+     * Summary of registerWithBiodata
+     */
+    public function registerWithBiodata(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+
+            /*
+        |--------------------------------------------------------------------------
+        | Authentication
+        |--------------------------------------------------------------------------
+        */
+
+            'email' => 'nullable|email|unique:guardians,email|required_without:tel',
+
+            'tel' => [
+                'nullable',
+                'string',
+                'unique:guardians,tel',
+                'required_without:email',
+                'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+            ],
+
+            'password' => [
+                'required',
+                'string',
+                'min:8',
+                'same:confirmPassword',
+            ],
+
+            'confirmPassword' => 'required|string|min:8|same:password',
+
+            /*
+        |--------------------------------------------------------------------------
+        | Biodata
+        |--------------------------------------------------------------------------
+        */
+
+            'firstname' => 'required|string|max:50',
+            'surname' => 'required|string|max:50',
+            'gender' => 'required|string|in:male,female,others',
+
+            'profile_picture' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+
+            'date_of_birth' => 'required|date|before:today',
+
+            'location' => 'required|string',
+
+            'address' => 'nullable|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Registration failed.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        DB::beginTransaction();
+
+        try {
+
+            $data = $validator->validated();
+
+            /*
+        |--------------------------------------------------------------------------
+        | Create Guardian
+        |--------------------------------------------------------------------------
+        */
+
+            $guardian = Guardian::create([
+                'email' => $data['email'] ?? null,
+                'tel' => $data['tel'] ?? null,
+                'password' => Hash::make($data['password']),
+            ]);
+
+            /*
+        |--------------------------------------------------------------------------
+        | Send Verification
+        |--------------------------------------------------------------------------
+        */
+
+            if ($guardian->email) {
+                app(EmailVerificationService::class)->send($guardian);
+            }
+
+            if ($guardian->tel) {
+                $this->sendGuardianPhoneOtp($guardian->tel);
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Upload Profile Picture
+        |--------------------------------------------------------------------------
+        */
+
+            if ($request->hasFile('profile_picture')) {
+
+                $path = $request
+                    ->file('profile_picture')
+                    ->store('guardian_profile_pictures', 'public');
+
+                $data['profile_picture'] = $path;
+            }
+
+            /*
+        |--------------------------------------------------------------------------
+        | Save Biodata
+        |--------------------------------------------------------------------------
+        */
+
+            $guardian->update([
+
+                'firstname' => $data['firstname'],
+
+                'surname' => $data['surname'],
+
+                'gender' => $data['gender'],
+
+                'profile_picture' => $data['profile_picture'] ?? null,
+
+                'date_of_birth' => $data['date_of_birth'],
+
+                'location' => $data['location'],
+
+                'address' => $data['address'] ?? null,
+
+            ]);
+
+            DB::commit();
+
+            return response()->json([
+                'message' => 'Registration successful. Please verify your email or phone.',
+                'guardian' => $guardian->fresh(),
+            ], 201);
+        } catch (\Throwable $e) {
+
+            DB::rollBack();
+
+            return response()->json([
+                'message' => 'Registration failed.',
+                'error' => config('app.debug')
+                    ? $e->getMessage()
+                    : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Summary of sendGuardianPhoneOtp
+     */
+    protected function sendGuardianPhoneOtp(string $tel): void
+    {
+        DB::table('phone_otps')
+            ->where('tel', $tel)
+            ->delete();
+
+        $code = random_int(100000, 999999);
+
+        app(BulkSMSService::class)->sendSMS(
+            $tel,
+            "Your Tutorial Center Guardian verification code is {$code}. It expires in 10 minutes."
+        );
+
+        DB::table('phone_otps')->insert([
+            'tel' => $tel,
+            'code' => Hash::make($code),
+            'expires_at' => now()->addMinutes(10),
+            'created_at' => now(),
+            'updated_at' => now(),
         ]);
     }
 }
