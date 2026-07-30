@@ -162,6 +162,11 @@ Route::prefix('guardians')->group(function () {
     Route::post('/login', [GuardianController::class, 'login']);
 });
 
+/*
+|--------------------------------------------------------------------------
+| Guardian Protected Routes
+|--------------------------------------------------------------------------
+*/
 Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
     Route::post('/profile/update', [GuardianController::class, 'update']);
     Route::post('/logout', [GuardianController::class, 'logout']);
