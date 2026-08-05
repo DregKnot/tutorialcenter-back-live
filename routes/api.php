@@ -12,6 +12,7 @@ use App\Http\Controllers\StudentController;
 use App\Http\Controllers\ExamBodyController;
 use App\Http\Controllers\ExamYearController;
 use App\Http\Controllers\GuardianController;
+use App\Http\Controllers\GuardianDashboardController;
 use App\Http\Controllers\FeedbackController;
 use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\StudentExamController;
@@ -168,7 +169,11 @@ Route::prefix('guardians')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
+    Route::get('/profile', [GuardianController::class, 'profile']);
     Route::post('/profile/update', [GuardianController::class, 'update']);
+    Route::get('/dashboard/wards', [GuardianDashboardController::class, 'getWardsDashboard']);
+    Route::get('/dashboard/wards/{student_id}/performance', [GuardianDashboardController::class, 'getWardPerformance']);
+    Route::get('/dashboard/wards/{student_id}/attendance', [GuardianDashboardController::class, 'getWardAttendance']);
     Route::post('/logout', [GuardianController::class, 'logout']);
 });
 

@@ -831,4 +831,14 @@ class GuardianController extends Controller
             'updated_at' => now(),
         ]);
     }
+
+    /**
+     * Return the authenticated guardian's profile.
+     */
+    public function profile(Request $request)
+    {
+        return response()->json([
+            'guardian' => $request->user(),
+        ]);
+    }
 }

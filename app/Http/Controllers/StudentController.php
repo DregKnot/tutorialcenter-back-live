@@ -409,6 +409,7 @@ class StudentController extends Controller
             'location' => 'required|string',
             'address' => 'nullable|string',
             'department' => 'required|string',
+            'guardian_id' => 'nullable|exists:guardians,id',
         ]);
 
         if ($validator->fails()) {
@@ -474,6 +475,10 @@ class StudentController extends Controller
                 'address' => $data['address'] ?? null,
                 'department' => $data['department'],
             ]);
+
+            if (isset($data['guardian_id'])) {
+                $student->guardians()->attach($data['guardian_id']);
+            }
 
             DB::commit();
 
