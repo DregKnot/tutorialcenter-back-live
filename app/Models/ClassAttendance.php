@@ -22,7 +22,7 @@ class ClassAttendance extends Model
 
     protected $casts = [
         'joined_at' => 'datetime',
-        'attendance_duration' => 'time',
+        'attendance_duration' => 'datetime',
         'left_at' => 'datetime'
     ];
 
