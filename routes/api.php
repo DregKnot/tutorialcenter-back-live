@@ -37,9 +37,9 @@ Route::get('/courses', [CourseController::class, 'index']); // Public: List all 
 Route::get('/subjects', [SubjectController::class, 'index']); // Public: List all active subjects
 
 // Cognitive tests
-// Route::get('/cognitive-tests', [CognitiveTestController::class, 'index']);
-// Route::post('/cognitive-tests/start', [CognitiveTestController::class, 'store']);
-// Route::post('/cognitive-tests/{cognitiveTest}/complete', [CognitiveTestController::class, 'complete']);
+Route::get('/cognitive-tests', [CognitiveTestController::class, 'index']);
+Route::post('/cognitive-tests/start', [CognitiveTestController::class, 'store']);
+Route::post('/cognitive-tests/{cognitiveTest}/complete', [CognitiveTestController::class, 'complete']);
 Route::post('/course/enrollment', [CourseController::class, 'courseEnroll']); // Public: Enroll in a course
 Route::post('/subject/enrollment', [SubjectController::class, 'subjectEnroll']); // Public: Enroll in a subject
 Route::get('/courses/{courseId}/subjects', [SubjectController::class, 'subjectsByCourse']); // Public: List subjects by course
@@ -180,9 +180,6 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
     Route::get('/dashboard/wards', [GuardianDashboardController::class, 'getWardsDashboard']);
     Route::get('/dashboard/wards/{student_id}/performance', [GuardianDashboardController::class, 'getWardPerformance']);
     Route::get('/dashboard/wards/{student_id}/attendance', [GuardianDashboardController::class, 'getWardAttendance']);
-    Route::get('/dashboard/wards/{student_id}/performance-overview', [GuardianDashboardController::class, 'getWardPerformanceOverview']);
-    Route::get('/dashboard/wards/{student_id}/subscription', [GuardianDashboardController::class, 'getWardSubscription']);
-    Route::get('/dashboard/wards/{student_id}/weekly-report', [GuardianDashboardController::class, 'getWardWeeklyReport']);
     Route::post('/logout', [GuardianController::class, 'logout']);
 });
 
