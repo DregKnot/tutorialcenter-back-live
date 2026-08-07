@@ -54,7 +54,7 @@ class BulkSMSService
                 'cost' => $data['data']['cost'] ?? null,
             ]);
 
-            return $data;
+            return $data ?? [];
         }
 
         // Handle error

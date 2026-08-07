@@ -12,6 +12,7 @@ use App\Http\Controllers\StudentController;
 use App\Http\Controllers\ExamBodyController;
 use App\Http\Controllers\ExamYearController;
 use App\Http\Controllers\GuardianController;
+use App\Http\Controllers\GuardianDashboardController;
 use App\Http\Controllers\FeedbackController;
 use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\StudentExamController;
@@ -23,6 +24,7 @@ use App\Http\Controllers\PastQuestionGroupController;
 use App\Http\Controllers\PastQuestionOptionController;
 use App\Http\Controllers\StudentExamQuestionController;
 use App\Http\Controllers\AdminDashboardAnalyticsController;
+use App\Http\Controllers\CognitiveTestController;
 
 
 /*
@@ -33,6 +35,11 @@ use App\Http\Controllers\AdminDashboardAnalyticsController;
 
 Route::get('/courses', [CourseController::class, 'index']); // Public: List all active courses
 Route::get('/subjects', [SubjectController::class, 'index']); // Public: List all active subjects
+
+// Cognitive tests
+// Route::get('/cognitive-tests', [CognitiveTestController::class, 'index']);
+// Route::post('/cognitive-tests/start', [CognitiveTestController::class, 'store']);
+// Route::post('/cognitive-tests/{cognitiveTest}/complete', [CognitiveTestController::class, 'complete']);
 Route::post('/course/enrollment', [CourseController::class, 'courseEnroll']); // Public: Enroll in a course
 Route::post('/subject/enrollment', [SubjectController::class, 'subjectEnroll']); // Public: Enroll in a subject
 Route::get('/courses/{courseId}/subjects', [SubjectController::class, 'subjectsByCourse']); // Public: List subjects by course
@@ -168,7 +175,14 @@ Route::prefix('guardians')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
+    Route::get('/profile', [GuardianController::class, 'profile']);
     Route::post('/profile/update', [GuardianController::class, 'update']);
+    Route::get('/dashboard/wards', [GuardianDashboardController::class, 'getWardsDashboard']);
+    Route::get('/dashboard/wards/{student_id}/performance', [GuardianDashboardController::class, 'getWardPerformance']);
+    Route::get('/dashboard/wards/{student_id}/attendance', [GuardianDashboardController::class, 'getWardAttendance']);
+    Route::get('/dashboard/wards/{student_id}/performance-overview', [GuardianDashboardController::class, 'getWardPerformanceOverview']);
+    Route::get('/dashboard/wards/{student_id}/subscription', [GuardianDashboardController::class, 'getWardSubscription']);
+    Route::get('/dashboard/wards/{student_id}/weekly-report', [GuardianDashboardController::class, 'getWardWeeklyReport']);
     Route::post('/logout', [GuardianController::class, 'logout']);
 });
 

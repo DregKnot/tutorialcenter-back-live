@@ -409,6 +409,7 @@ class StudentController extends Controller
             'location' => 'required|string',
             'address' => 'nullable|string',
             'department' => 'required|string',
+            'guardian_id' => 'nullable|exists:guardians,id',
         ]);
 
         if ($validator->fails()) {
@@ -474,6 +475,26 @@ class StudentController extends Controller
                 'address' => $data['address'] ?? null,
                 'department' => $data['department'],
             ]);
+
+            $guardianIds = [];
+
+            \Log::info('Student Registration Request Data:', ['data' => $data]);
+
+            if (!empty($data['guardian_id'])) {
+                $guardianIds[] = (int) $data['guardian_id'];
+            }
+
+            if ($request->user() instanceof \App\Models\Guardian) {
+                $guardianIds[] = $request->user()->id;
+            }
+
+            $guardianIds = array_unique($guardianIds);
+
+            \Log::info('Guardian IDs to sync:', ['ids' => $guardianIds]);
+
+            foreach ($guardianIds as $guardianId) {
+                $student->guardians()->syncWithoutDetaching([$guardianId => ['relationship' => 'parent']]);
+            }
 
             DB::commit();
 
