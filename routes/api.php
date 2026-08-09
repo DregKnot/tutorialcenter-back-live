@@ -120,6 +120,8 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
         Route::get('/{attempt}/review', [StudentExamResultController::class, 'review']); // Review attempt with answers and explanations
     });
 
+    // Recorded Classes
+    Route::get('/recorded-classes', [ClassesController::class, 'getRecordedClasses']);
 
     // Feedback Routes
     Route::prefix('feedback')->group(function () {
