@@ -196,6 +196,10 @@ Route::prefix('staffs')->group(function () {
     // Login (restricted until verified)
     Route::post('/login', [StaffController::class, 'login']);
 
+    // Password reset
+    Route::post('/forgot-password', [StaffController::class, 'forgotPassword']);
+    Route::post('/reset-password', [StaffController::class, 'resetPassword']);
+
     // Email verification
     Route::post('/verify-email', [StaffController::class, 'verifyEmail']);
     Route::post('/resend-email-verification', [StaffController::class, 'resendEmailVerification']);
