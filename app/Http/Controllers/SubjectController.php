@@ -52,34 +52,67 @@ class SubjectController extends Controller
         DB::beginTransaction();
 
         try {
+            // /*
+            // |--------------------------------------------------------------------------
+            // | 1. Prevent Duplicate Subject (same name + overlapping departments)
+            // |--------------------------------------------------------------------------
+            // */
+
+            // $existing = Subject::where('name', $request->name)
+            //     ->get()
+            //     ->first(function ($subject) use ($request) {
+            //         return !empty(array_intersect(
+            //             $subject->departments ?? [],
+            //             $request->departments
+            //         ));
+            //     });
+
+            // if ($existing) {
+            //     DB::rollBack();
+
+            //     return response()->json([
+            //         'message' => 'Subject already exists for selected departments',
+            //     ], 409);
+            // }
+
             /*
-        |--------------------------------------------------------------------------
-        | 1. Prevent Duplicate Subject (same name + overlapping departments)
-        |--------------------------------------------------------------------------
-        */
+            |--------------------------------------------------------------------------
+            | 1. Prevent Duplicate Subject
+            |--------------------------------------------------------------------------
+            | A subject can exist in different courses.
+            |
+            | Example:
+            | Mathematics + WAEC     → allowed
+            | Mathematics + GCE      → allowed
+            | Mathematics + NECO     → allowed
+            |
+            | But:
+            | Mathematics + WAEC     → cannot be created twice
+            |--------------------------------------------------------------------------
+            */
 
-            $existing = Subject::where('name', $request->name)
-                ->get()
-                ->first(function ($subject) use ($request) {
-                    return !empty(array_intersect(
-                        $subject->departments ?? [],
-                        $request->departments
-                    ));
-                });
+            if ($request->filled('courses')) {
 
-            if ($existing) {
-                DB::rollBack();
+                $existing = Subject::where('name', $request->name)
+                    ->whereHas('courses', function ($query) use ($request) {
+                        $query->whereIn('courses.id', $request->courses);
+                    })
+                    ->first();
 
-                return response()->json([
-                    'message' => 'Subject already exists for selected departments',
-                ], 409);
+                if ($existing) {
+                    DB::rollBack();
+
+                    return response()->json([
+                        'message' => 'This subject already exists in one or more of the selected courses.',
+                    ], 409);
+                }
             }
 
             /*
-        |--------------------------------------------------------------------------
-        | 2. Upload Banner
-        |--------------------------------------------------------------------------
-        */
+            |--------------------------------------------------------------------------
+            | 2. Upload Banner
+            |--------------------------------------------------------------------------
+            */
 
             $bannerPath = $request->file('banner')->store('subject_banners', 'public');
 
