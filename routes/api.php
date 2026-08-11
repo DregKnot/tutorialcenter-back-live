@@ -24,6 +24,7 @@ use App\Http\Controllers\PastQuestionGroupController;
 use App\Http\Controllers\PastQuestionOptionController;
 use App\Http\Controllers\StudentExamQuestionController;
 use App\Http\Controllers\AdminDashboardAnalyticsController;
+use App\Http\Controllers\AdvisorDashboardController;
 use App\Http\Controllers\CognitiveTestController;
 
 
@@ -406,6 +407,16 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
 Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:advisor'])->group(function () {
     Route::prefix('classes')->group(function () {
         Route::get('/schedule', [ClassesController::class, 'advisorClassesSchedule']); // Get advisor schedule with attendance status     
+    });
+
+    // Advisor Dashboard
+    Route::prefix('dashboard')->group(function () {
+        Route::get('/stats', [AdvisorDashboardController::class, 'stats']); // Get average points and attempts
+    });
+
+    // Guardians Management
+    Route::prefix('guardians')->group(function () {
+        Route::get('/all', [AdvisorDashboardController::class, 'guardians']); // List all guardians and their wards
     });
 
     // Student Management

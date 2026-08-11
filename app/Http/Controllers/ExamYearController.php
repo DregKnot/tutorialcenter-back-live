@@ -180,7 +180,7 @@ class ExamYearController extends Controller
 
 
 
-    
+
 
     // Retrieve a list of exam bodies with the count of associated exam years
     public function examBodies()
