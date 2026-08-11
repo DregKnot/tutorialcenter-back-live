@@ -41,6 +41,7 @@ class StudentExamResultController extends Controller
             'data' => $request
                 ->user()
                 ->examAttempts()
+                ->with('examYear.subject')
                 ->latest()
                 ->paginate()
         ]);

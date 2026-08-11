@@ -746,7 +746,16 @@ class GuardianController extends Controller
             }
 
             if ($guardian->tel) {
-                $this->sendGuardianPhoneOtp($guardian->tel);
+                try {
+                    $this->sendGuardianPhoneOtp($guardian->tel);
+                } catch (\Throwable $smsError) {
+                    \Log::warning('Failed to send guardian phone OTP during registration', [
+                        'guardian_id' => $guardian->id,
+                        'tel' => $guardian->tel,
+                        'error' => $smsError->getMessage(),
+                    ]);
+                    // Don't block registration — phone can be verified later
+                }
             }
 
             /*
@@ -829,6 +838,16 @@ class GuardianController extends Controller
             'expires_at' => now()->addMinutes(10),
             'created_at' => now(),
             'updated_at' => now(),
+        ]);
+    }
+
+     /**
+     * Return the authenticated guardian's profile.
+     */
+    public function profile(Request $request)
+    {
+        return response()->json([
+            'guardian' => $request->user(),
         ]);
     }
 }
