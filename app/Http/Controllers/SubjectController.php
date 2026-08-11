@@ -156,6 +156,145 @@ class SubjectController extends Controller
         }
     }
 
+    // /**
+    //  * Update subject (Admin)
+    //  */
+    // public function update(Request $request, $id)
+    // {
+    //     $subject = Subject::find($id);
+
+    //     if (!$subject) {
+    //         return response()->json([
+    //             'message' => 'Subject not found.',
+    //         ], 404);
+    //     }
+
+    //     $validator = Validator::make($request->all(), [
+    //         'name' => 'nullable|string|max:255',
+    //         'description' => 'nullable|string',
+    //         'banner' => 'nullable|image|mimes:jpg,jpeg,png|max:2048',
+
+    //         'departments' => 'nullable|array|min:1',
+    //         'departments.*' => 'string|max:100',
+
+    //         'courses' => 'nullable|array',
+    //         'courses.*' => 'exists:courses,id',
+
+    //         'status' => 'nullable|in:active,inactive',
+    //     ]);
+
+    //     if ($validator->fails()) {
+    //         return response()->json([
+    //             'message' => 'Validation failed',
+    //             'errors' => $validator->errors(),
+    //         ], 422);
+    //     }
+
+    //     DB::beginTransaction();
+
+    //     try {
+
+    //         /*
+    //     |--------------------------------------------------------------------------
+    //     | 1. Prevent Duplicate Subject (same name + overlapping departments)
+    //     |--------------------------------------------------------------------------
+    //     */
+
+    //         $newName = $request->filled('name')
+    //             ? $request->name
+    //             : $subject->name;
+
+    //         $newDepartments = $request->filled('departments')
+    //             ? $request->departments
+    //             : ($subject->departments ?? []);
+
+    //         $existing = Subject::where('id', '!=', $subject->id)
+    //             ->where('name', $newName)
+    //             ->get()
+    //             ->first(function ($item) use ($newDepartments) {
+    //                 return !empty(array_intersect(
+    //                     $item->departments ?? [],
+    //                     $newDepartments
+    //                 ));
+    //             });
+
+    //         if ($existing) {
+    //             DB::rollBack();
+
+    //             return response()->json([
+    //                 'message' => 'Subject already exists for selected departments',
+    //             ], 409);
+    //         }
+
+    //         /*
+    //     |--------------------------------------------------------------------------
+    //     | 2. Prepare Update Data
+    //     |--------------------------------------------------------------------------
+    //     */
+
+    //         $data = [];
+
+    //         if ($request->filled('name')) {
+    //             $data['name'] = $request->name;
+    //         }
+
+    //         if ($request->filled('description')) {
+    //             $data['description'] = $request->description;
+    //         }
+
+    //         if ($request->filled('departments')) {
+    //             $data['departments'] = array_values($request->departments);
+    //         }
+
+    //         if ($request->filled('status')) {
+    //             $data['status'] = $request->status;
+    //         }
+
+    //         /*
+    //     |--------------------------------------------------------------------------
+    //     | 3. Upload New Banner
+    //     |--------------------------------------------------------------------------
+    //     */
+
+    //         if ($request->hasFile('banner')) {
+    //             $data['banner'] = $request->file('banner')
+    //                 ->store('subject_banners', 'public');
+    //         }
+
+    //         /*
+    //     |--------------------------------------------------------------------------
+    //     | 4. Update Subject
+    //     |--------------------------------------------------------------------------
+    //     */
+
+    //         $subject->update($data);
+
+    //         /*
+    //     |--------------------------------------------------------------------------
+    //     | 5. Sync Courses
+    //     |--------------------------------------------------------------------------
+    //     */
+
+    //         if ($request->has('courses')) {
+    //             $subject->courses()->sync($request->courses ?? []);
+    //         }
+
+    //         DB::commit();
+
+    //         return response()->json([
+    //             'message' => 'Subject updated successfully.',
+    //             'subject' => $subject->fresh()->load('courses'),
+    //         ]);
+    //     } catch (\Throwable $e) {
+    //         DB::rollBack();
+
+    //         return response()->json([
+    //             'message' => 'Failed to update subject.',
+    //             'error' => config('app.debug') ? $e->getMessage() : null,
+    //         ], 500);
+    //     }
+    // }
+
     /**
      * Update subject (Admin)
      */
@@ -196,54 +335,91 @@ class SubjectController extends Controller
 
             /*
         |--------------------------------------------------------------------------
-        | 1. Prevent Duplicate Subject (same name + overlapping departments)
+        | 1. Determine New Values
         |--------------------------------------------------------------------------
         */
 
             $newName = $request->filled('name')
-                ? $request->name
+                ? trim($request->name)
                 : $subject->name;
 
-            $newDepartments = $request->filled('departments')
-                ? $request->departments
-                : ($subject->departments ?? []);
+            /*
+        |--------------------------------------------------------------------------
+        | 2. Determine Courses
+        |--------------------------------------------------------------------------
+        |
+        | If courses are supplied, validate against those courses.
+        | If courses are not supplied, keep the existing courses.
+        |
+        */
 
-            $existing = Subject::where('id', '!=', $subject->id)
-                ->where('name', $newName)
-                ->get()
-                ->first(function ($item) use ($newDepartments) {
-                    return !empty(array_intersect(
-                        $item->departments ?? [],
-                        $newDepartments
-                    ));
-                });
+            $newCourses = $request->has('courses')
+                ? $request->input('courses', [])
+                : $subject->courses()->pluck('courses.id')->toArray();
 
-            if ($existing) {
-                DB::rollBack();
+            /*
+        |--------------------------------------------------------------------------
+        | 3. Prevent Duplicate Subject
+        |--------------------------------------------------------------------------
+        |
+        | A subject is considered duplicate when:
+        |
+        |   Same subject name
+        |   +
+        |   Same course
+        |
+        | Departments are NOT used for duplicate detection.
+        |
+        */
 
-                return response()->json([
-                    'message' => 'Subject already exists for selected departments',
-                ], 409);
+            if (!empty($newCourses)) {
+
+                $existing = Subject::where('id', '!=', $subject->id)
+                    ->where('name', $newName)
+                    ->whereHas('courses', function ($query) use ($newCourses) {
+                        $query->whereIn('courses.id', $newCourses);
+                    })
+                    ->with('courses')
+                    ->first();
+
+                if ($existing) {
+
+                    $duplicateCourses = $existing->courses
+                        ->whereIn('id', $newCourses)
+                        ->pluck('title')
+                        ->values()
+                        ->toArray();
+
+                    DB::rollBack();
+
+                    return response()->json([
+                        'message' => 'Subject already exists in one or more of the selected courses.',
+                        'duplicate_subject_id' => $existing->id,
+                        'duplicate_courses' => $duplicateCourses,
+                    ], 409);
+                }
             }
 
             /*
         |--------------------------------------------------------------------------
-        | 2. Prepare Update Data
+        | 4. Prepare Update Data
         |--------------------------------------------------------------------------
         */
 
             $data = [];
 
             if ($request->filled('name')) {
-                $data['name'] = $request->name;
+                $data['name'] = $newName;
             }
 
             if ($request->filled('description')) {
                 $data['description'] = $request->description;
             }
 
-            if ($request->filled('departments')) {
-                $data['departments'] = array_values($request->departments);
+            if ($request->has('departments')) {
+                $data['departments'] = array_values(
+                    $request->input('departments', [])
+                );
             }
 
             if ($request->filled('status')) {
@@ -252,7 +428,7 @@ class SubjectController extends Controller
 
             /*
         |--------------------------------------------------------------------------
-        | 3. Upload New Banner
+        | 5. Upload New Banner
         |--------------------------------------------------------------------------
         */
 
@@ -263,34 +439,56 @@ class SubjectController extends Controller
 
             /*
         |--------------------------------------------------------------------------
-        | 4. Update Subject
+        | 6. Update Subject
         |--------------------------------------------------------------------------
         */
 
-            $subject->update($data);
+            if (!empty($data)) {
+                $subject->update($data);
+            }
 
             /*
         |--------------------------------------------------------------------------
-        | 5. Sync Courses
+        | 7. Sync Courses
         |--------------------------------------------------------------------------
+        |
+        | has('courses') means:
+        |
+        | courses not supplied → leave existing courses unchanged
+        |
+        | courses supplied → replace existing courses with supplied courses
+        |
         */
 
             if ($request->has('courses')) {
-                $subject->courses()->sync($request->courses ?? []);
+                $subject->courses()->sync(
+                    $request->input('courses', [])
+                );
             }
 
             DB::commit();
 
+            /*
+        |--------------------------------------------------------------------------
+        | 8. Return Updated Subject
+        |--------------------------------------------------------------------------
+        */
+
             return response()->json([
                 'message' => 'Subject updated successfully.',
-                'subject' => $subject->fresh()->load('courses'),
-            ]);
+                'subject' => $subject
+                    ->fresh()
+                    ->load('courses'),
+            ], 200);
         } catch (\Throwable $e) {
+
             DB::rollBack();
 
             return response()->json([
                 'message' => 'Failed to update subject.',
-                'error' => config('app.debug') ? $e->getMessage() : null,
+                'error' => config('app.debug')
+                    ? $e->getMessage()
+                    : null,
             ], 500);
         }
     }
