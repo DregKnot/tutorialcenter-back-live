@@ -11,6 +11,7 @@ return new class extends Migration
         Schema::create('cognitive_tests', function (Blueprint $table) {
             $table->id();
             $table->string('student_name');
+            $table->string('contact')->nullable();
             $table->string('school');
             $table->timestamp('test_started_at')->useCurrent();
             $table->timestamp('test_ended_at')->nullable();

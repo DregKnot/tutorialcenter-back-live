@@ -10,6 +10,7 @@ class CognitiveTest extends Model
 
     protected $fillable = [
         'student_name',
+        'contact',
         'school',
         'test_started_at',
         'test_ended_at',

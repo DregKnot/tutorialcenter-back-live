@@ -18,6 +18,7 @@ class CognitiveTestController extends Controller
     {
         $validated = $request->validate([
             'student_name' => ['required', 'string', 'max:255'],
+            'contact' => ['nullable', 'string', 'max:255', 'unique:cognitive_tests,contact'],
             'school' => ['required', 'string', 'max:255'],
         ]);
 
