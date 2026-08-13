@@ -174,12 +174,20 @@ class PaymentController extends Controller
                     abort(422, 'The supplied gateway reference does not match this payment.');
                 }
 
+                if (in_array($lockedPayment->status, ['cancelled', 'refunded'], true)) {
+                    abort(422, "A {$lockedPayment->status} payment cannot be used for registration recovery.");
+                }
+
                 $enrollment = CoursesEnrollment::query()
                     ->lockForUpdate()
                     ->findOrFail($lockedPayment->course_enrollment_id);
 
                 if ((int) $lockedPayment->student_id !== (int) $enrollment->student_id) {
                     abort(422, 'The payment does not belong to the enrollment student.');
+                }
+
+                if (abs((float) $lockedPayment->amount - (float) $enrollment->cost) > 0.01) {
+                    abort(422, 'The payment amount does not match the enrollment cost.');
                 }
 
                 $alreadyCompleted = $lockedPayment->status === 'successful'

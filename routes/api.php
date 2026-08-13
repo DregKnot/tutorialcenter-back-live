@@ -292,7 +292,8 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
 
     // Student Management
     Route::prefix('students')->group(function () {
-        Route::post('/complimentary-registration', [StudentController::class, 'createComplimentaryRegistration']);
+        Route::post('/complimentary-registration', [StudentController::class, 'createComplimentaryRegistration'])
+            ->middleware('staff.role:admin');
         Route::post('/restore/{id}', [StudentController::class, 'restore']); // Restore a soft-deleted student
         Route::delete('/destroy/{id}', [StudentController::class, 'destroy']); // Soft delete a student
         Route::get('/all', [StudentController::class, 'index']); // List all students
@@ -365,7 +366,8 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     Route::prefix('payments')->group(function () {
         Route::get('/all', [PaymentController::class, 'index']); // List all payments with filters
         Route::get('/registration-recovery/search', [PaymentController::class, 'searchRegistrationRecovery']);
-        Route::get('/{payment}/registration-recovery', [PaymentController::class, 'completeRegistrationRecovery']);
+        Route::post('/{payment}/registration-recovery', [PaymentController::class, 'completeRegistrationRecovery'])
+            ->middleware('staff.role:admin');
     });
 
     // Notification Routes

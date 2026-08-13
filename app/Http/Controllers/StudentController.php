@@ -1589,21 +1589,28 @@ class StudentController extends Controller
 
             if ($result['student']->tel) {
                 try {
-                    DB::table('phone_otps')
-                        ->where('tel', $result['student']->tel)
-                        ->delete();
-
                     $code = random_int(100000, 999999);
+                    $message = "Your verification code is {$code}. It expires in 10 minutes.";
 
-                    DB::table('phone_otps')->insert([
-                        'tel' => $result['student']->tel,
-                        'code' => Hash::make((string) $code),
-                        'expires_at' => Carbon::now()->addMinutes(10),
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                    ]);
+                    app(BulkSMSService::class)->sendSMS(
+                        $result['student']->tel,
+                        $message
+                    );
 
-                    logger()->info("OTP for {$result['student']->tel} is {$code}");
+                    DB::transaction(function () use ($result, $code) {
+                        DB::table('phone_otps')
+                            ->where('tel', $result['student']->tel)
+                            ->delete();
+
+                        DB::table('phone_otps')->insert([
+                            'tel' => $result['student']->tel,
+                            'code' => Hash::make((string) $code),
+                            'expires_at' => Carbon::now()->addMinutes(10),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ]);
+                    });
+
                     $verification['phone_otp_sent'] = true;
                 } catch (\Throwable $e) {
                     report($e);
