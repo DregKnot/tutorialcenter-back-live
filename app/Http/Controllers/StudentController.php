@@ -3,7 +3,11 @@
 namespace App\Http\Controllers;
 
 use Carbon\Carbon;
+use App\Models\Course;
+use App\Models\CoursesEnrollment;
+use App\Models\Payment;
 use App\Models\Student;
+use App\Models\SubjectsEnrollment;
 use Illuminate\Support\Str;
 use Illuminate\Http\Request;
 use App\Services\BulkSMSService;
@@ -1454,5 +1458,184 @@ class StudentController extends Controller
                 'attendance' => $student->attendances,
             ],
         ], 200);
+    }
+
+    // Admin: Register a new student and grant complimentary course access
+    public function createComplimentaryRegistration(Request $request)
+    {
+        $validated = $request->validate([
+            'firstname' => 'required|string|max:50',
+            'surname' => 'required|string|max:50',
+            'email' => 'nullable|email|unique:students,email|required_without:tel',
+            'tel' => [
+                'nullable',
+                'string',
+                'unique:students,tel',
+                'required_without:email',
+                'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+            ],
+            'password' => 'required|string|min:8|same:confirmPassword',
+            'confirmPassword' => 'required|string|min:8|same:password',
+            'gender' => 'required|in:male,female,others',
+            'date_of_birth' => 'required|date|before:today',
+            'location' => 'required|string|max:255',
+            'address' => 'nullable|string|max:1000',
+            'department' => 'required|string|max:255',
+            'course_id' => 'required|integer|exists:courses,id',
+            'subject_ids' => 'required|array|min:1',
+            'subject_ids.*' => 'required|integer|distinct|exists:subjects,id',
+            'billing_cycle' => 'required|in:monthly,quarterly,semi_annual,annual',
+            'reason' => 'required|string|min:5|max:1000',
+        ]);
+
+        try {
+            $result = DB::transaction(function () use ($request, $validated) {
+                $course = Course::whereKey($validated['course_id'])
+                    ->where('status', 'active')
+                    ->lockForUpdate()
+                    ->first();
+
+                if (!$course) {
+                    abort(422, 'The selected course is not active.');
+                }
+
+                $subjectIds = $course->subjects()
+                    ->whereIn('subjects.id', $validated['subject_ids'])
+                    ->pluck('subjects.id');
+
+                if ($subjectIds->count() !== count($validated['subject_ids'])) {
+                    abort(422, 'One or more selected subjects do not belong to this course.');
+                }
+
+                $student = Student::create([
+                    'firstname' => $validated['firstname'],
+                    'surname' => $validated['surname'],
+                    'email' => $validated['email'] ?? null,
+                    'tel' => $validated['tel'] ?? null,
+                    'password' => Hash::make($validated['password']),
+                    'gender' => $validated['gender'],
+                    'date_of_birth' => $validated['date_of_birth'],
+                    'location' => $validated['location'],
+                    'address' => $validated['address'] ?? null,
+                    'department' => $validated['department'],
+                    'email_verified_at' => null,
+                    'tel_verified_at' => null,
+                ]);
+
+                $months = match ($validated['billing_cycle']) {
+                    'monthly' => 1,
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                };
+
+                $enrollment = CoursesEnrollment::create([
+                    'student_id' => $student->id,
+                    'course_id' => $course->id,
+                    'start_date' => now(),
+                    'end_date' => now()->addMonths($months),
+                    'billing_cycle' => $validated['billing_cycle'],
+                    'cost' => 0,
+                    'status' => 'active',
+                ]);
+
+                $payment = Payment::create([
+                    'student_id' => $student->id,
+                    'course_enrollment_id' => $enrollment->id,
+                    'amount' => 0,
+                    'currency' => 'NGN',
+                    'payment_method' => 'manual',
+                    'gateway_reference' => 'FREE-' . Str::uuid(),
+                    'status' => 'successful',
+                    'billing_cycle' => $validated['billing_cycle'],
+                    'paid_at' => now(),
+                    'meta' => [
+                        'type' => 'complimentary',
+                        'reason' => $validated['reason'],
+                        'created_by_staff_id' => $request->user()->id,
+                    ],
+                ]);
+
+                foreach ($subjectIds as $subjectId) {
+                    SubjectsEnrollment::create([
+                        'course_enrollment_id' => $enrollment->id,
+                        'subject_id' => $subjectId,
+                        'student_id' => $student->id,
+                    ]);
+                }
+
+                return [
+                    'student' => $student,
+                    'enrollment' => $enrollment->fresh(['course', 'subjects.subject']),
+                    'payment' => $payment,
+                ];
+            });
+
+            $verification = [
+                'email_sent' => false,
+                'phone_otp_sent' => false,
+                'errors' => [],
+            ];
+
+            if ($result['student']->email) {
+                try {
+                    app(EmailVerificationService::class)->send($result['student']);
+                    $verification['email_sent'] = true;
+                } catch (\Throwable $e) {
+                    report($e);
+                    $verification['errors']['email'] = 'Verification email could not be sent.';
+                }
+            }
+
+            if ($result['student']->tel) {
+                try {
+                    $code = random_int(100000, 999999);
+                    $message = "Your verification code is {$code}. It expires in 10 minutes.";
+
+                    app(BulkSMSService::class)->sendSMS(
+                        $result['student']->tel,
+                        $message
+                    );
+
+                    DB::transaction(function () use ($result, $code) {
+                        DB::table('phone_otps')
+                            ->where('tel', $result['student']->tel)
+                            ->delete();
+
+                        DB::table('phone_otps')->insert([
+                            'tel' => $result['student']->tel,
+                            'code' => Hash::make((string) $code),
+                            'expires_at' => Carbon::now()->addMinutes(10),
+                            'created_at' => now(),
+                            'updated_at' => now(),
+                        ]);
+                    });
+
+                    $verification['phone_otp_sent'] = true;
+                } catch (\Throwable $e) {
+                    report($e);
+                    $verification['errors']['phone'] = 'Phone verification OTP could not be generated.';
+                }
+            }
+
+            return response()->json([
+                'message' => 'Student registered with complimentary enrollment. Verification is required before login.',
+                'student' => $result['student']->fresh(),
+                'enrollment' => $result['enrollment'],
+                'payment' => $result['payment'],
+                'verification' => $verification,
+            ], 201);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            return response()->json([
+                'message' => $e->getMessage(),
+            ], $e->getStatusCode());
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'Complimentary registration failed.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
     }
 }
