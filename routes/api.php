@@ -24,10 +24,7 @@ use App\Http\Controllers\PastQuestionGroupController;
 use App\Http\Controllers\PastQuestionOptionController;
 use App\Http\Controllers\StudentExamQuestionController;
 use App\Http\Controllers\AdminDashboardAnalyticsController;
-<<<<<<< HEAD
-=======
 use App\Http\Controllers\AdvisorDashboardController;
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
 use App\Http\Controllers\CognitiveTestController;
 
 

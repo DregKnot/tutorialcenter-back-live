@@ -841,11 +841,7 @@ class GuardianController extends Controller
         ]);
     }
 
-<<<<<<< HEAD
     /**
-=======
-     /**
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
      * Return the authenticated guardian's profile.
      */
     public function profile(Request $request)

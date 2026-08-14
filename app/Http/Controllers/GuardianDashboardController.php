@@ -20,10 +20,7 @@ class GuardianDashboardController extends Controller
                 'students.firstname',
                 'students.surname',
                 'students.email',
-<<<<<<< HEAD
-=======
                 'students.department',
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
                 'students.updated_at',
             ])
             ->with([
@@ -46,10 +43,7 @@ class GuardianDashboardController extends Controller
                         })
                         ->with('course:id,title');
                 },
-<<<<<<< HEAD
-=======
                 'subjectEnrollments.subject:id,name'
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
             ])
             ->get();
 
@@ -58,21 +52,15 @@ class GuardianDashboardController extends Controller
                 'id' => $student->id,
                 'name' => trim($student->firstname . ' ' . $student->surname),
                 'email' => $student->email,
-<<<<<<< HEAD
-=======
                 'department' => $student->department,
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
                 'active_courses' => $student->courseEnrollments
                     ->pluck('course')
                     ->filter()
                     ->values(),
-<<<<<<< HEAD
-=======
                 'subjects' => $student->subjectEnrollments
                     ->pluck('subject')
                     ->filter()
                     ->values(),
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
                 'last_active' => $student->updated_at,
             ];
         });
@@ -161,8 +149,6 @@ class GuardianDashboardController extends Controller
             'attendance' => $attendances,
         ]);
     }
-<<<<<<< HEAD
-=======
 
     /**
      * Return today's exam-practice performance overview for one of the guardian's wards.
@@ -311,5 +297,4 @@ class GuardianDashboardController extends Controller
             'summary' => $reportSummary,
         ]);
     }
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
 }
