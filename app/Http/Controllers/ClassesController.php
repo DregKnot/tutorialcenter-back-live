@@ -756,6 +756,95 @@ class ClassesController extends Controller
         }
     }
 
+    /**
+     * Get recorded classes for the authenticated user (student or staff)
+     */
+    public function getRecordedClasses(Request $request): JsonResponse
+    {
+        try {
+            $user = $request->user();
+            
+            // Base query for class sessions that are past and have a recording link
+            $query = ClassSession::with(['class.staffs', 'class.subject'])
+                ->whereNotNull('recording_link')
+                ->where('recording_link', '!=', '')
+                ->where('ends_at', '<', now());
+
+            // If it's a student, filter classes they are enrolled in
+            if ($user && method_exists($user, 'classes')) {
+                // Assuming students belong to classes
+                // If they don't, we might just return all for now or filter by student's course
+            }
+
+            $sessions = $query->orderBy('starts_at', 'desc')->get();
+
+            $recordedClasses = $sessions->map(function ($session) {
+                $class = $session->class;
+                
+                // Get tutor name
+                $tutorName = "Instructor";
+                if ($class && $class->staffs->isNotEmpty()) {
+                    $tutor = $class->staffs->first();
+                    $tutorName = $tutor->firstname . ' ' . $tutor->surname;
+                }
+
+                // Get subject
+                $subject = $class ? ($class->subject ? $class->subject->name : "General") : "General";
+
+                // Format title: Tutor - Subject - Topic
+                $topic = $class ? $class->title : $session->title;
+                $formattedTitle = trim("$tutorName - $subject - $topic", " -");
+
+                // Calculate duration
+                $duration = "1h";
+                if ($session->starts_at && $session->ends_at) {
+                    $start = \Carbon\Carbon::parse($session->starts_at);
+                    $end = \Carbon\Carbon::parse($session->ends_at);
+                    $diffInMinutes = $start->diffInMinutes($end);
+                    if ($diffInMinutes >= 60) {
+                        $hours = floor($diffInMinutes / 60);
+                        $mins = $diffInMinutes % 60;
+                        $duration = $mins > 0 ? "{$hours}h {$mins}m" : "{$hours}h";
+                    } else {
+                        $duration = "{$diffInMinutes}m";
+                    }
+                }
+
+                // Extract youtube video ID if it's a youtube link
+                $videoId = null;
+                $url = $session->recording_link;
+                if (preg_match('%(?:youtube(?:-nocookie)?\.com/(?:[^/]+/.+/|(?:v|e(?:mbed)?)/|.*[?&]v=)|youtu\.be/)([^"&?/\s]{11})%i', $url, $match)) {
+                    $videoId = $match[1];
+                }
+
+                return [
+                    'id' => $session->id,
+                    'title' => $formattedTitle,
+                    'topic' => $topic,
+                    'subject' => $subject,
+                    'tutor' => $tutorName,
+                    'date' => \Carbon\Carbon::parse($session->starts_at)->format('M j, Y'),
+                    'duration' => $duration,
+                    'videoUrl' => $url,
+                    'videoId' => $videoId,
+                    'color' => 'from-blue-600 to-indigo-600' // Default color for UI
+                ];
+            });
+
+            return response()->json([
+                'success' => true,
+                'data' => $recordedClasses
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch recorded classes',
+                'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
+
     private function formatStaffScheduleResponse($staff, $nextClass, $todayClasses, $weekSchedule, $upcomingSessions)
     {
         $isAdmin = $staff->role === 'admin';

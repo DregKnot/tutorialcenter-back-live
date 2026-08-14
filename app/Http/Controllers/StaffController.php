@@ -117,7 +117,7 @@ class StaffController extends Controller
     /**
      * Forget Password - Send OTP to email or phone
      **/
-    public function forgetPassword(Request $request)
+    public function forgotPassword(Request $request)
     {
         try {
             $request->validate([
@@ -180,15 +180,15 @@ class StaffController extends Controller
     /**
      * Change Password using OTP
      **/
-    public function changePassword(Request $request)
+    public function resetPassword(Request $request)
     {
         try {
             $request->validate([
-                'email' => 'nullable|email|exists:students,email|required_without:tel',
+                'email' => 'nullable|email|exists:staffs,email|required_without:tel',
                 'tel' => [
                     'nullable',
                     'string',
-                    'exists:students,tel',
+                    'exists:staffs,tel',
                     'required_without:email',
                     'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
                 ],
@@ -284,7 +284,7 @@ class StaffController extends Controller
 
             DB::commit();
             $staff->notify(new StaffActivityNotification(
-                $staff->id,
+                'change password',
                 "{$staff->role} {$staff->firstname} {$staff->surname} changed their password."
             ));
 
