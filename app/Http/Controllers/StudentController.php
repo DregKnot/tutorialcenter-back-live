@@ -480,10 +480,6 @@ class StudentController extends Controller
                 'department' => $data['department'],
             ]);
 
-<<<<<<< HEAD
-            if (isset($data['guardian_id'])) {
-                $student->guardians()->attach($data['guardian_id']);
-=======
             $guardianIds = [];
 
             \Log::info('Student Registration Request Data:', ['data' => $data]);
@@ -502,7 +498,6 @@ class StudentController extends Controller
 
             foreach ($guardianIds as $guardianId) {
                 $student->guardians()->syncWithoutDetaching([$guardianId => ['relationship' => 'parent']]);
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
             }
 
             DB::commit();
