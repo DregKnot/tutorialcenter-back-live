@@ -2,15 +2,20 @@
 
 namespace App\Services;
 
-use App\Models\Student;
 use App\Models\ExamAttempt;
-use App\Models\PastQuestion;
 use App\Models\ExamAttemptAnswer;
+use App\Models\PastQuestion;
 use App\Models\PastQuestionOption;
+use App\Models\Student;
+use App\Models\StudentSubjectTrial;
 use Illuminate\Support\Facades\DB;
 
 class ExamService
 {
+    public function __construct(
+        protected SubjectTrialService $subjectTrialService,
+        protected ExamActivityService $examActivityService
+    ) {}
 
     public function startExam(Student $student, $examYearId)
     {
@@ -19,7 +24,7 @@ class ExamService
             $examYearId
         ) {
 
-            if (!$student->canAccessExam($examYearId)) {
+            if (! $student->canAccessExam($examYearId)) {
                 abort(403, 'Not eligible');
             }
 
@@ -50,6 +55,8 @@ class ExamService
                 ->first();
 
             if ($existingAttempt) {
+                $this->subjectTrialService->recordStarted($existingAttempt);
+
                 return $existingAttempt;
             }
 
@@ -58,13 +65,17 @@ class ExamService
                 $examYearId
             )->count();
 
-            return ExamAttempt::create([
+            $attempt = ExamAttempt::create([
                 'student_id' => $student->id,
                 'exam_year_id' => $examYearId,
                 'total_questions' => $questionsCount,
                 'started_at' => now(),
-                'status' => ExamAttempt::IN_PROGRESS
+                'status' => ExamAttempt::IN_PROGRESS,
             ]);
+
+            $this->subjectTrialService->recordStarted($attempt);
+
+            return $attempt;
         });
     }
 
@@ -117,11 +128,11 @@ class ExamService
             ->get();
 
         $correct = $answers
-            ->filter(fn($answer) => $answer->is_correct)
+            ->filter(fn ($answer) => $answer->is_correct)
             ->count();
 
         $wrong = $answers
-            ->filter(fn($answer) => !$answer->is_correct)
+            ->filter(fn ($answer) => ! $answer->is_correct)
             ->count();
 
         $total = $attempt->total_questions;
@@ -142,6 +153,16 @@ class ExamService
             'status' => ExamAttempt::COMPLETED,
         ]);
 
+        $this->subjectTrialService->recordEnded(
+            $attempt,
+            StudentSubjectTrial::COMPLETED
+        );
+
+        $this->examActivityService->endOpenSessionsForAttempt(
+            $attempt,
+            'submitted'
+        );
+
         return $attempt;
     }
 
@@ -151,7 +172,7 @@ class ExamService
         return $attempt->answers()
             ->with([
                 'question.options',
-                'option'
+                'option',
             ])
             ->get()
             ->map(function ($answer) {
@@ -165,41 +186,30 @@ class ExamService
 
                 return [
 
-                    'question_id' =>
-                    $answer->question->id,
+                    'question_id' => $answer->question->id,
 
-                    'question_number' =>
-                    $answer->question->question_number,
+                    'question_number' => $answer->question->question_number,
 
-                    'question' =>
-                    $answer->question->question,
+                    'question' => $answer->question->question,
 
-                    'explanation' =>
-                    $answer->question->explanation,
+                    'explanation' => $answer->question->explanation,
 
-                    'is_correct' =>
-                    $answer->is_correct,
+                    'is_correct' => $answer->is_correct,
 
                     'student_answer' => [
-                        'id' =>
-                        $answer->option?->id,
+                        'id' => $answer->option?->id,
 
-                        'label' =>
-                        $answer->option?->label,
+                        'label' => $answer->option?->label,
 
-                        'text' =>
-                        $answer->option?->option_text,
+                        'text' => $answer->option?->option_text,
                     ],
 
                     'correct_answer' => [
-                        'id' =>
-                        $correctOption?->id,
+                        'id' => $correctOption?->id,
 
-                        'label' =>
-                        $correctOption?->label,
+                        'label' => $correctOption?->label,
 
-                        'text' =>
-                        $correctOption?->option_text,
+                        'text' => $correctOption?->option_text,
                     ],
 
                     'options' => $answer->question
@@ -215,8 +225,7 @@ class ExamService
 
                                 'is_correct' => $option->is_correct,
 
-                                'selected' =>
-                                $option->id ===
+                                'selected' => $option->id ===
                                     $answer->past_question_option_id,
                             ];
                         }),

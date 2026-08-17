@@ -2,17 +2,19 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\ExamAttempt;
 use App\Services\ExamService;
+use App\Services\OnboardingAchievementService;
 use App\Services\StudentNotificationService;
+use Illuminate\Http\Request;
 
 class StudentExamResultController extends Controller
 {
     protected $examService;
 
     public function __construct(
-        ExamService $examService
+        ExamService $examService,
+        protected OnboardingAchievementService $onboardingAchievementService
     ) {
         $this->examService = $examService;
     }
@@ -25,11 +27,18 @@ class StudentExamResultController extends Controller
                 $attempt
             );
 
+        if ($attempt->status === ExamAttempt::COMPLETED) {
+            $this->onboardingAchievementService->firstPracticeCompleted(
+                $attempt->student,
+                $attempt
+            );
+        }
+
         StudentNotificationService::notify($attempt->student, 'Exam Submitted', ["You have submitted the exam: {$attempt->examYear->examBody->name} - {$attempt->examYear->subject->name}. Your score is: {$attempt->score}"]);
 
         return response()->json([
             'success' => true,
-            'result' => $attempt
+            'result' => $attempt,
         ]);
     }
 
@@ -43,7 +52,7 @@ class StudentExamResultController extends Controller
                 ->examAttempts()
                 ->with('examYear.subject')
                 ->latest()
-                ->paginate()
+                ->paginate(),
         ]);
     }
 
@@ -69,8 +78,7 @@ class StudentExamResultController extends Controller
                 'correct_answers' => $attempt->correct_answers,
                 'wrong_answers' => $attempt->wrong_answers,
             ],
-            'questions' =>
-            $service->reviewAttempt($attempt),
+            'questions' => $service->reviewAttempt($attempt),
         ]);
     }
 }

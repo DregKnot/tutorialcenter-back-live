@@ -49,4 +49,19 @@ class Subject extends Model
     {
         return $this->hasMany(ExamYear::class);
     }
+
+    public function awardedAchievements()
+    {
+        return $this->hasMany(StudentAchievement::class);
+    }
+
+    public function achievementProgress()
+    {
+        return $this->hasMany(StudentAchievementProgress::class);
+    }
+
+    public function studentTrials()
+    {
+        return $this->hasMany(StudentSubjectTrial::class);
+    }
 }

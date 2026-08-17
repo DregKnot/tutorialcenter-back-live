@@ -8,21 +8,23 @@ use App\Models\CoursesEnrollment;
 use App\Models\Payment;
 use App\Models\Student;
 use App\Models\SubjectsEnrollment;
-use Illuminate\Support\Str;
-use Illuminate\Http\Request;
-use App\Services\BulkSMSService;
 use App\Models\EmailVerification;
+use App\Models\Guardian;
+use App\Notifications\ContactChangeOtpNotification;
+use App\Notifications\StudentEmailVerification;
+use App\Notifications\StudentPasswordReset;
+use App\Services\BulkSMSService;
+use App\Services\EmailVerificationService;
+use App\Services\OnboardingAchievementService;
+use App\Services\StudentNotificationService;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\Validator;
-use App\Services\EmailVerificationService;
-use Illuminate\Support\Facades\RateLimiter;
-use App\Services\StudentNotificationService;
 use Illuminate\Support\Facades\Notification;
-use App\Notifications\StudentEmailVerification;
-use App\Notifications\ContactChangeOtpNotification;
-
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class StudentController extends Controller
 {
@@ -70,6 +72,7 @@ class StudentController extends Controller
             // Check password
             if (!Hash::check($request->password, $student->password)) {
                 RateLimiter::hit($throttleKey, 60); // lock attempt for 60 seconds
+
                 return response()->json([
                     'message' => 'Login Fails',
                     'errors' => 'Invalid Login Credentials',
@@ -237,6 +240,7 @@ class StudentController extends Controller
 
                 if (!$record) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'Invalid or expired OTP.',
                     ], 400);
@@ -248,6 +252,7 @@ class StudentController extends Controller
 
                 if (!$otpRecord) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'OTP not found.',
                     ], 400);
@@ -255,6 +260,7 @@ class StudentController extends Controller
 
                 if (Carbon::parse($otpRecord->expires_at)->isPast()) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'OTP expired.',
                     ], 400);
@@ -262,6 +268,7 @@ class StudentController extends Controller
 
                 if (!Hash::check($request->otp, $otpRecord->code)) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'Invalid OTP.',
                     ], 400);
@@ -315,6 +322,7 @@ class StudentController extends Controller
 
             if ($validator->fails()) {
                 DB::rollBack();
+
                 return response()->json([
                     'errors' => $validator->errors(),
                     'message' => 'Validation failed.',
@@ -326,6 +334,7 @@ class StudentController extends Controller
 
             if (!$student) {
                 DB::rollBack();
+
                 return response()->json([
                     'message' => 'Student not found.',
                 ], 404);
@@ -354,6 +363,9 @@ class StudentController extends Controller
                 'location' => $data['location'] ?? $student->location,
                 'address' => $data['address'] ?? $student->address,
             ]);
+
+            app(OnboardingAchievementService::class)
+                ->awardProfileIfComplete($student->fresh());
 
             // Collect changes
             $changes = [];
@@ -483,22 +495,28 @@ class StudentController extends Controller
             $guardianIds = [];
 
             \Log::info('Student Registration Request Data:', ['data' => $data]);
-
+            
             if (!empty($data['guardian_id'])) {
                 $guardianIds[] = (int) $data['guardian_id'];
             }
-
-            if ($request->user() instanceof \App\Models\Guardian) {
+            
+            if ($request->user() instanceof Guardian) {
                 $guardianIds[] = $request->user()->id;
             }
-
+            
             $guardianIds = array_unique($guardianIds);
-
+            
             \Log::info('Guardian IDs to sync:', ['ids' => $guardianIds]);
-
+            
             foreach ($guardianIds as $guardianId) {
-                $student->guardians()->syncWithoutDetaching([$guardianId => ['relationship' => 'parent']]);
+                $student->guardians()->syncWithoutDetaching([
+                    $guardianId => ['relationship' => 'parent'],
+                ]);
             }
+
+            $onboardingAchievements = app(OnboardingAchievementService::class);
+            $onboardingAchievements->accountCreated($student);
+            $onboardingAchievements->awardProfileIfComplete($student->fresh());
 
             DB::commit();
 
@@ -1225,7 +1243,7 @@ class StudentController extends Controller
         ]);
 
         // Send password reset notification (you'll need to create this notification)
-        $student->notify(new \App\Notifications\StudentPasswordReset($token));
+        $student->notify(new StudentPasswordReset($token));
     }
 
     /**
@@ -1287,6 +1305,7 @@ class StudentController extends Controller
 
                 if (!$changeRequest) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'No pending phone change request found.',
                     ], 400);
@@ -1383,6 +1402,7 @@ class StudentController extends Controller
     public function index()
     {
         $students = Student::withTrashed()->get();
+
         return response()->json([
             'message' => 'Students retrieved successfully.',
             'students' => $students,

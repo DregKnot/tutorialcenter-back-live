@@ -2,18 +2,22 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\ExamAttempt;
 use App\Models\PastQuestion;
 use App\Models\PastQuestionOption;
 use App\Services\ExamService;
+use App\Services\OnboardingAchievementService;
+use App\Services\PracticeMilestoneService;
+use Illuminate\Http\Request;
 
 class StudentExamQuestionController extends Controller
 {
     protected $examService;
 
     public function __construct(
-        ExamService $examService
+        ExamService $examService,
+        protected OnboardingAchievementService $onboardingAchievementService,
+        protected PracticeMilestoneService $practiceMilestoneService
     ) {
         $this->examService = $examService;
     }
@@ -25,13 +29,13 @@ class StudentExamQuestionController extends Controller
             ->examYear
             ->pastQuestions()
             ->with([
-                'options:id,past_question_id,label,option_text', 'group'
+                'options:id,past_question_id,label,option_text', 'group',
             ])
             ->get();
 
         return response()->json([
             'success' => true,
-            'questions' => $questions
+            'questions' => $questions,
         ]);
     }
 
@@ -41,7 +45,7 @@ class StudentExamQuestionController extends Controller
     ) {
         $request->validate([
             'question_id' => 'required|exists:past_questions,id',
-            'option_id' => 'required|exists:past_question_options,id'
+            'option_id' => 'required|exists:past_question_options,id',
         ]);
 
         $question = PastQuestion::findOrFail(
@@ -59,9 +63,16 @@ class StudentExamQuestionController extends Controller
                 $option
             );
 
+        $this->onboardingAchievementService->firstAnswerSubmitted(
+            $request->user(),
+            $attempt
+        );
+
+        $this->practiceMilestoneService->recordLegacyAnswer($answer);
+
         return response()->json([
             'success' => true,
-            'data' => $answer
+            'data' => $answer,
         ]);
     }
 }

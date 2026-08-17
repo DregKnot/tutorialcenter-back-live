@@ -3,16 +3,18 @@
 namespace App\Http\Controllers;
 
 use App\Models\ExamYear;
-use Illuminate\Http\Request;
 use App\Services\ExamService;
+use App\Services\OnboardingAchievementService;
 use App\Services\StudentNotificationService;
+use Illuminate\Http\Request;
 
 class StudentExamController extends Controller
 {
     protected $examService;
 
     public function __construct(
-        ExamService $examService
+        ExamService $examService,
+        protected OnboardingAchievementService $onboardingAchievementService
     ) {
         $this->examService = $examService;
     }
@@ -23,7 +25,7 @@ class StudentExamController extends Controller
 
         $exams = ExamYear::with([
             'examBody',
-            'subject'
+            'subject',
         ])
             ->get()
             ->filter(function ($exam) use ($student) {
@@ -36,7 +38,7 @@ class StudentExamController extends Controller
 
         return response()->json([
             'success' => true,
-            'data' => $exams
+            'data' => $exams,
         ]);
     }
 
@@ -52,12 +54,16 @@ class StudentExamController extends Controller
                 $examYear->id
             );
 
-        StudentNotificationService::notify($student, 'Started Exam', ["You have started the exam: {$examYear->examBody->name} - {$examYear->subject->name}"]);
+        $this->onboardingAchievementService->firstPracticeStarted(
+            $student,
+            $attempt
+        );
 
+        StudentNotificationService::notify($student, 'Started Exam', ["You have started the exam: {$examYear->examBody->name} - {$examYear->subject->name}"]);
 
         return response()->json([
             'success' => true,
-            'attempt' => $attempt
+            'attempt' => $attempt,
         ]);
     }
 }
