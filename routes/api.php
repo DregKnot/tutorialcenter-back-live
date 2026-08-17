@@ -24,11 +24,9 @@ use App\Http\Controllers\PastQuestionGroupController;
 use App\Http\Controllers\PastQuestionOptionController;
 use App\Http\Controllers\StudentExamQuestionController;
 use App\Http\Controllers\AdminDashboardAnalyticsController;
-<<<<<<< HEAD
-=======
 use App\Http\Controllers\AdvisorDashboardController;
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
 use App\Http\Controllers\CognitiveTestController;
+use App\Http\Controllers\BlogController;
 
 
 /*
@@ -48,7 +46,14 @@ Route::post('/course/enrollment', [CourseController::class, 'courseEnroll']); //
 Route::post('/subject/enrollment', [SubjectController::class, 'subjectEnroll']); // Public: Enroll in a subject
 Route::get('/courses/{courseId}/subjects', [SubjectController::class, 'subjectsByCourse']); // Public: List subjects by course
 Route::get('/courses/{courseId}/subjects/{department}', [SubjectController::class, 'subjectsByCourseAndDepartment']); // Public: List subjects by course and department
-Route::post('payments', [PaymentController::class, 'store']); // Public: Process payment
+Route::post('payments', [PaymentController::class, 'store']);
+
+// Blog Public Routes
+Route::get('/blogs', [BlogController::class, 'index']);
+Route::get('/blogs/categories', [BlogController::class, 'categories']);
+Route::get('/blogs/{slug}', [BlogController::class, 'show']);
+Route::post('/blogs/{id}/comments', [BlogController::class, 'storeComment']);
+ // Public: Process payment
 
 /*
 |--------------------------------------------------------------------------
@@ -136,7 +141,9 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
         // Route::patch('/{feedback}',[FeedbackController::class, 'update']); // Update my feedback (PATCH alternative)
     });
 
-    // Support Routes
+
+
+        // Support Routes
     Route::prefix('support')->group(function () {
         Route::get('/', [SupportController::class, 'index']); // List my support tickets
         Route::post('/', [SupportController::class, 'store']); // Create a new support ticket
@@ -246,13 +253,23 @@ Route::prefix('staffs')->group(function () {
             Route::patch('/{supportTicket}/reopen', [SupportController::class, 'reopen']); // Reopen a specific support ticket
             // Route::delete('/{supportTicket}',[SupportController::class, 'destroy']); // Delete a specific support ticket (if needed)
         });
+
+        // Blog Management (COO & Admin)
+        Route::prefix('blogs')->group(function () {
+            Route::get('/', [BlogController::class, 'index']);
+            Route::post('/', [BlogController::class, 'store']);
+            Route::get('/{id}', [BlogController::class, 'show']);
+            Route::post('/{id}', [BlogController::class, 'update']);
+            Route::delete('/{id}', [BlogController::class, 'destroy']);
+        });
+        Route::get('/blog-categories', [BlogController::class, 'categories']);
     });
 });
 
 /*
  * Admin Only Protected Routes (enforced in controller)
  */
-Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator'])->group(function () {
+Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo,preview'])->group(function () {
 
     Route::prefix('dashboard')->group(function () {
         Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard

@@ -18,12 +18,24 @@ class CognitiveTestController extends Controller
     {
         $validated = $request->validate([
             'student_name' => ['required', 'string', 'max:255'],
-<<<<<<< HEAD
-=======
-            'contact' => ['nullable', 'string', 'max:255', 'unique:cognitive_tests,contact'],
->>>>>>> 9c879873ce75ee779f616888dc10df030d19121f
+            'contact' => ['nullable', 'string', 'max:255'],
             'school' => ['required', 'string', 'max:255'],
         ]);
+
+        // Prevent retakes by the same student from the same school
+        $existing = CognitiveTest::whereRaw('LOWER(student_name) = ?', [strtolower(trim($validated['student_name']))])
+            ->whereRaw('LOWER(school) = ?', [strtolower(trim($validated['school']))])
+            ->whereNotNull('score')
+            ->first();
+
+        if ($existing) {
+            return response()->json([
+                'message' => 'A student with this name from this school has already taken this test.',
+                'errors' => [
+                    'student_name' => ['A student with this name from this school has already completed the test.']
+                ]
+            ], 422);
+        }
 
         $result = CognitiveTest::create($validated);
 

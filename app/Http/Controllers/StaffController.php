@@ -327,7 +327,7 @@ class StaffController extends Controller
             'location' => 'required|string',
             'address' => 'required|string',
 
-            'role' => 'required|in:admin,tutor,advisor,moderator',
+            'role' => 'required|in:admin,tutor,advisor,moderator,coo,preview',
 
             'inducted_by' => 'nullable|exists:staffs,id',
         ]);
@@ -500,7 +500,7 @@ class StaffController extends Controller
                 'location' => 'sometimes|string',
                 'address' => 'sometimes|string',
 
-                'role' => 'sometimes|in:admin,tutor,advisor,moderator',
+                'role' => 'sometimes|in:admin,tutor,advisor,moderator,coo,preview',
             ]);
 
             if ($validator->fails()) {
