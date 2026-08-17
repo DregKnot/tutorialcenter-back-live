@@ -269,7 +269,7 @@ Route::prefix('staffs')->group(function () {
 /*
  * Admin Only Protected Routes (enforced in controller)
  */
-Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo,preview'])->group(function () {
+Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo'])->group(function () {
 
     Route::prefix('dashboard')->group(function () {
         Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard

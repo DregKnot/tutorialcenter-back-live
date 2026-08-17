@@ -28,7 +28,7 @@ class StaffRoleMiddleware
         $userRole = strtolower($staff->role);
 
         // COO & Preview role has full read-only preview access to all admin inspection endpoints
-        if (in_array($userRole, ['coo', 'preview', 'operations'])) {
+        if ($userRole === 'coo') {
             // Allow all GET / HEAD / OPTIONS read requests
             if ($request->isMethod('get') || $request->isMethod('head') || $request->isMethod('options')) {
                 return $next($request);
@@ -41,7 +41,7 @@ class StaffRoleMiddleware
 
             // Disallow COO from mutating admin resources (students, staff, exams, courses, etc.)
             return response()->json([
-                'message' => 'The COO Preview role has read-only access to administrative records and cannot modify data.',
+                'message' => 'The COO role has read-only access to administrative records and cannot modify data.',
             ], 403);
         }
 
