@@ -181,10 +181,8 @@ class BlogController extends Controller
         $validated['slug'] = $baseSlug . '-' . Str::lower(Str::random(5));
 
         // Step 6: Link Author (Foreign key `author_id` -> `staffs.id`)
-        $staffId = auth('staff')->id() ?? $request->input('author_id');
-        if (!$staffId) {
-            $staffId = \App\Models\Staff::first()->id ?? 1;
-        }
+        $staffUser = $request->user('staff') ?? auth('staff')->user() ?? auth()->user();
+        $staffId = $staffUser ? $staffUser->id : ($request->input('author_id') ?? (\App\Models\Staff::first()->id ?? 1));
         $validated['author_id'] = $staffId;
 
         // Step 7: Set published_at timestamp if immediately published
