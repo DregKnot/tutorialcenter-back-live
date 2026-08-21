@@ -271,6 +271,11 @@ Route::prefix('staffs')->group(function () {
  */
 Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo'])->group(function () {
 
+    // Guardians Management
+    Route::prefix('guardians')->group(function () {
+        Route::get('/all', [App\Http\Controllers\AdvisorDashboardController::class, 'guardians']);
+    });
+
     Route::prefix('dashboard')->group(function () {
         Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
         Route::get('/mock-analytics', [AdminDashboardAnalyticsController::class, 'examAnalytics']); // Exam Analytics

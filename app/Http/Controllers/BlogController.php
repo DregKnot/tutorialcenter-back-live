@@ -134,6 +134,7 @@ class BlogController extends Controller
         // Step 1: Validate payload against database schema requirements
         $validator = Validator::make($request->all(), [
             'title' => 'required|string|max:255',
+            'meta_keywords' => 'nullable|string|max:500',
             'blog_category_id' => 'nullable|exists:blog_categories,id',
             'category_name' => 'nullable|string|max:100',
             'content' => 'required|string',
