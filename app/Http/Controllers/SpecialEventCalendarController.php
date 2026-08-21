@@ -136,9 +136,6 @@ class SpecialEventCalendarController extends Controller
                 $required,
                 'string',
                 'max:255',
-                Rule::exists('achievements', 'code')
-                    ->where('category', 'special_event')
-                    ->where('is_active', true),
             ],
             'event_key' => [
                 $required,

@@ -96,12 +96,13 @@ Route::prefix('students')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('students')->middleware('auth:sanctum')->group(function () {
-    Route::get('/achievements', [StudentAchievementController::class, 'index']);
-    Route::get('/achievements/progress', [StudentAchievementController::class, 'progress']);
+    // Achievement endpoints: list the student's awards and current progress.
+    Route::get('/achievements', [StudentAchievementController::class, 'index']); // List active achievements and earned awards
+    Route::get('/achievements/progress', [StudentAchievementController::class, 'progress']); // Get milestone, streak, time, and weekly progress
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
     Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
     Route::post('/logout', [StudentController::class, 'logout']); // Logout Method
-    Route::get('/streak', [StudentController::class, 'learningStreak']);
+    Route::get('/streak', [StudentController::class, 'learningStreak']); // Get ongoing and maximum learning streak
     Route::put('/profile/update', [StudentController::class, 'update']); // Update student profile
     Route::get('/payments', [PaymentController::class, 'myPayments']); // Listing out all payments
     Route::post('/attendance', [AttendanceController::class, 'store']); // Record attendance for a class session
@@ -409,16 +410,17 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     });
 
     Route::prefix('special-event-calendars')->group(function () {
-        Route::get('/', [SpecialEventCalendarController::class, 'index']);
-        Route::get('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'show']);
+        // Special-event calendar management for country-specific achievement windows.
+        Route::get('/', [SpecialEventCalendarController::class, 'index']); // List calendars and filter by country, event, status, or year
+        Route::get('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'show']); // View one calendar entry
         Route::post('/', [SpecialEventCalendarController::class, 'store'])
-            ->middleware('staff.role:admin');
+            ->middleware('staff.role:admin'); // Create a calendar entry; local dates are stored as UTC
         Route::put('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'update'])
-            ->middleware('staff.role:admin');
+            ->middleware('staff.role:admin'); // Replace a calendar entry
         Route::patch('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'update'])
-            ->middleware('staff.role:admin');
+            ->middleware('staff.role:admin'); // Partially update a calendar entry
         Route::delete('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'destroy'])
-            ->middleware('staff.role:admin');
+            ->middleware('staff.role:admin'); // Deactivate a calendar entry without deleting history
     });
 
     // Notification Routes
