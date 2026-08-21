@@ -6,6 +6,7 @@ use App\Models\ExamAttempt;
 use App\Models\PastQuestion;
 use App\Models\PastQuestionOption;
 use App\Services\ExamInteractionService;
+use App\Services\LearningStreakService;
 use App\Services\OnboardingAchievementService;
 use App\Services\PracticeMilestoneService;
 use Illuminate\Http\Request;
@@ -15,7 +16,8 @@ class ExamInteractionController extends Controller
     public function __construct(
         protected ExamInteractionService $interactionService,
         protected OnboardingAchievementService $onboardingAchievementService,
-        protected PracticeMilestoneService $practiceMilestoneService
+        protected PracticeMilestoneService $practiceMilestoneService,
+        protected LearningStreakService $learningStreakService
     ) {}
 
     public function viewed(
@@ -73,6 +75,10 @@ class ExamInteractionController extends Controller
         );
 
         $this->practiceMilestoneService->recordInteraction($interaction);
+        $this->learningStreakService->recordActivity(
+            $request->user(),
+            $interaction->action_submitted_at
+        );
 
         return response()->json([
             'success' => true,

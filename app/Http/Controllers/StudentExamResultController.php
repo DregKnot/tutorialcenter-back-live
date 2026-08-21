@@ -3,9 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\ExamAttempt;
+use App\Services\ExamPerformanceAchievementService;
 use App\Services\ExamService;
 use App\Services\OnboardingAchievementService;
+use App\Services\SpeedAchievementService;
 use App\Services\StudentNotificationService;
+use App\Services\TimeInvestmentAchievementService;
 use Illuminate\Http\Request;
 
 class StudentExamResultController extends Controller
@@ -14,7 +17,10 @@ class StudentExamResultController extends Controller
 
     public function __construct(
         ExamService $examService,
-        protected OnboardingAchievementService $onboardingAchievementService
+        protected OnboardingAchievementService $onboardingAchievementService,
+        protected ExamPerformanceAchievementService $examPerformanceAchievementService,
+        protected TimeInvestmentAchievementService $timeInvestmentAchievementService,
+        protected SpeedAchievementService $speedAchievementService
     ) {
         $this->examService = $examService;
     }
@@ -28,11 +34,16 @@ class StudentExamResultController extends Controller
             );
 
         if ($attempt->status === ExamAttempt::COMPLETED) {
+            $this->examPerformanceAchievementService->award($attempt);
+            $this->speedAchievementService->evaluate($attempt);
+
             $this->onboardingAchievementService->firstPracticeCompleted(
                 $attempt->student,
                 $attempt
             );
         }
+
+        $this->timeInvestmentAchievementService->evaluate($attempt->student);
 
         StudentNotificationService::notify($attempt->student, 'Exam Submitted', ["You have submitted the exam: {$attempt->examYear->examBody->name} - {$attempt->examYear->subject->name}. Your score is: {$attempt->score}"]);
 

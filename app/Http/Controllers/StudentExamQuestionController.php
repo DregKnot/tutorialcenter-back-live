@@ -6,6 +6,7 @@ use App\Models\ExamAttempt;
 use App\Models\PastQuestion;
 use App\Models\PastQuestionOption;
 use App\Services\ExamService;
+use App\Services\LearningStreakService;
 use App\Services\OnboardingAchievementService;
 use App\Services\PracticeMilestoneService;
 use Illuminate\Http\Request;
@@ -17,7 +18,8 @@ class StudentExamQuestionController extends Controller
     public function __construct(
         ExamService $examService,
         protected OnboardingAchievementService $onboardingAchievementService,
-        protected PracticeMilestoneService $practiceMilestoneService
+        protected PracticeMilestoneService $practiceMilestoneService,
+        protected LearningStreakService $learningStreakService
     ) {
         $this->examService = $examService;
     }
@@ -69,6 +71,7 @@ class StudentExamQuestionController extends Controller
         );
 
         $this->practiceMilestoneService->recordLegacyAnswer($answer);
+        $this->learningStreakService->recordActivity($request->user());
 
         return response()->json([
             'success' => true,

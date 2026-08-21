@@ -28,6 +28,37 @@ use Illuminate\Support\Str;
 
 class StudentController extends Controller
 {
+    public function learningStreak(Request $request)
+    {
+        $student = $request->user();
+        $progress = $student->achievementProgress()
+            ->where('progress_key', 'learning_streak')
+            ->whereNull('subject_id')
+            ->first();
+        $metadata = $progress?->metadata ?? [];
+
+        $lastActivityDate = $metadata['last_activity_date'] ?? null;
+        $timezone = $metadata['timezone'] ?? 'Africa/Lagos';
+        $ongoingStreak = $progress?->integer_value ?? 0;
+
+        if ($lastActivityDate && ! now($timezone)->startOfDay()->subDay()->lte(
+            \Carbon\Carbon::parse($lastActivityDate, $timezone)->startOfDay()
+        )) {
+            $ongoingStreak = 0;
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'ongoing_streak' => (int) $ongoingStreak,
+                'max_streak' => (int) ($metadata['maximum_streak'] ?? 0),
+                'last_activity_date' => $lastActivityDate,
+                'streak_started_date' => $metadata['streak_started_date'] ?? null,
+                'timezone' => $metadata['timezone'] ?? 'Africa/Lagos',
+            ],
+        ]);
+    }
+
     /**
      * Login
      **/
@@ -1596,6 +1627,23 @@ class StudentController extends Controller
                 'phone_otp_sent' => false,
                 'errors' => [],
             ];
+
+            $onboardingAchievements = app(OnboardingAchievementService::class);
+            $onboardingAchievements->accountCreated($result['student']);
+            $onboardingAchievements->awardProfileIfComplete(
+                $result['student']->fresh()
+            );
+            $onboardingAchievements->readyToLearn(
+                $result['student'],
+                [
+                    'source' => 'complimentary_registration',
+                    'course_enrollment_id' => $result['enrollment']->id,
+                    'subject_ids' => $result['enrollment']->subjects
+                        ->pluck('subject_id')
+                        ->values()
+                        ->all(),
+                ]
+            );
 
             if ($result['student']->email) {
                 try {

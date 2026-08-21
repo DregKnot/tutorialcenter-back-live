@@ -5,12 +5,14 @@ namespace App\Http\Controllers;
 use App\Models\ExamAttempt;
 use App\Models\PastQuestion;
 use App\Services\ExamActivityService;
+use App\Services\TimeInvestmentAchievementService;
 use Illuminate\Http\Request;
 
 class ExamActivityController extends Controller
 {
     public function __construct(
-        protected ExamActivityService $activityService
+        protected ExamActivityService $activityService,
+        protected TimeInvestmentAchievementService $timeInvestmentAchievementService
     ) {}
 
     public function start(Request $request, ExamAttempt $attempt)
@@ -85,6 +87,10 @@ class ExamActivityController extends Controller
             $attempt,
             $data['session_token'],
             $data['reason'] ?? 'completed'
+        );
+
+        $this->timeInvestmentAchievementService->evaluate(
+            $request->user()
         );
 
         return response()->json([

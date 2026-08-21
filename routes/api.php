@@ -19,7 +19,9 @@ use App\Http\Controllers\PastQuestionController;
 use App\Http\Controllers\PastQuestionGroupController;
 use App\Http\Controllers\PastQuestionOptionController;
 use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\SpecialEventCalendarController;
 use App\Http\Controllers\StaffController;
+use App\Http\Controllers\StudentAchievementController;
 use App\Http\Controllers\StudentController;
 use App\Http\Controllers\StudentExamController;
 use App\Http\Controllers\StudentExamQuestionController;
@@ -94,9 +96,12 @@ Route::prefix('students')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('students')->middleware('auth:sanctum')->group(function () {
+    Route::get('/achievements', [StudentAchievementController::class, 'index']);
+    Route::get('/achievements/progress', [StudentAchievementController::class, 'progress']);
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
     Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
     Route::post('/logout', [StudentController::class, 'logout']); // Logout Method
+    Route::get('/streak', [StudentController::class, 'learningStreak']);
     Route::put('/profile/update', [StudentController::class, 'update']); // Update student profile
     Route::get('/payments', [PaymentController::class, 'myPayments']); // Listing out all payments
     Route::post('/attendance', [AttendanceController::class, 'store']); // Record attendance for a class session
@@ -400,6 +405,19 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::get('/all', [PaymentController::class, 'index']); // List all payments with filters
         Route::get('/registration-recovery/search', [PaymentController::class, 'searchRegistrationRecovery']);
         Route::post('/{payment}/registration-recovery', [PaymentController::class, 'completeRegistrationRecovery'])
+            ->middleware('staff.role:admin');
+    });
+
+    Route::prefix('special-event-calendars')->group(function () {
+        Route::get('/', [SpecialEventCalendarController::class, 'index']);
+        Route::get('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'show']);
+        Route::post('/', [SpecialEventCalendarController::class, 'store'])
+            ->middleware('staff.role:admin');
+        Route::put('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'update'])
+            ->middleware('staff.role:admin');
+        Route::patch('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'update'])
+            ->middleware('staff.role:admin');
+        Route::delete('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'destroy'])
             ->middleware('staff.role:admin');
     });
 
