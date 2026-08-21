@@ -54,7 +54,7 @@ class StudentExamController extends Controller
                 $examYear->id
             );
 
-        $this->onboardingAchievementService->firstPracticeStarted(
+        $award = $this->onboardingAchievementService->firstPracticeStarted(
             $student,
             $attempt
         );
@@ -64,6 +64,26 @@ class StudentExamController extends Controller
         return response()->json([
             'success' => true,
             'attempt' => $attempt,
+            'new_achievement' => $this->formatAchievement($award),
         ]);
+    }
+
+    private function formatAchievement($award): ?array
+    {
+        if (! $award?->wasRecentlyCreated) {
+            return null;
+        }
+
+        $award->loadMissing('achievement');
+
+        return [
+            'id' => $award->id,
+            'code' => $award->achievement?->code,
+            'name' => $award->achievement?->name,
+            'category' => $award->achievement?->category,
+            'type' => $award->achievement?->type,
+            'tier' => $award->tier,
+            'awarded_at' => $award->awarded_at,
+        ];
     }
 }

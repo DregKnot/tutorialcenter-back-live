@@ -33,24 +33,52 @@ class StudentExamResultController extends Controller
                 $attempt
             );
 
-        if ($attempt->status === ExamAttempt::COMPLETED) {
-            $this->examPerformanceAchievementService->award($attempt);
-            $this->speedAchievementService->evaluate($attempt);
+        $newAchievements = [];
 
-            $this->onboardingAchievementService->firstPracticeCompleted(
+        if ($attempt->status === ExamAttempt::COMPLETED) {
+            $performanceAward = $this->examPerformanceAchievementService->award($attempt);
+            $newAchievements = array_merge(
+                $newAchievements,
+                $performanceAward?->wasRecentlyCreated ? [$performanceAward] : [],
+                $this->speedAchievementService->evaluate($attempt)
+            );
+
+            $completionAward = $this->onboardingAchievementService->firstPracticeCompleted(
                 $attempt->student,
                 $attempt
             );
+            $newAchievements[] = $completionAward;
         }
 
-        $this->timeInvestmentAchievementService->evaluate($attempt->student);
+        $timeResult = $this->timeInvestmentAchievementService->evaluate($attempt->student);
+        $newAchievements = array_merge($newAchievements, $timeResult['awards']);
 
         StudentNotificationService::notify($attempt->student, 'Exam Submitted', ["You have submitted the exam: {$attempt->examYear->examBody->name} - {$attempt->examYear->subject->name}. Your score is: {$attempt->score}"]);
 
         return response()->json([
             'success' => true,
             'result' => $attempt,
+            'new_achievements' => $this->formatAchievements($newAchievements),
         ]);
+    }
+
+    private function formatAchievements(array $awards): array
+    {
+        return collect($awards)
+            ->filter(fn ($award) => $award?->wasRecentlyCreated)
+            ->map(function ($award) {
+                $award->loadMissing('achievement');
+
+                return [
+                    'id' => $award->id,
+                    'code' => $award->achievement?->code,
+                    'name' => $award->achievement?->name,
+                    'category' => $award->achievement?->category,
+                    'type' => $award->achievement?->type,
+                    'tier' => $award->tier,
+                    'awarded_at' => $award->awarded_at,
+                ];
+            })->values()->all();
     }
 
     public function history(

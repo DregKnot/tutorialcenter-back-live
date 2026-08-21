@@ -34,12 +34,12 @@ class PracticeMilestoneService
 
     public function recordInteraction(
         ExamQuestionInteraction $interaction
-    ): void {
+    ): array {
         if (
             ! $interaction->wasRecentlyCreated ||
             $interaction->action !== ExamQuestionInteraction::ANSWERED
         ) {
-            return;
+            return [];
         }
 
         $wasAlreadyCounted = ExamQuestionInteraction::where(
@@ -52,27 +52,27 @@ class PracticeMilestoneService
             ->exists();
 
         if ($wasAlreadyCounted) {
-            return;
+            return [];
         }
 
-        $this->increment($interaction->examAttempt);
+        return $this->increment($interaction->examAttempt);
     }
 
     public function recordLegacyAnswer(
         ExamAttemptAnswer $answer
-    ): void {
+    ): array {
         if (! $answer->wasRecentlyCreated) {
-            return;
+            return [];
         }
 
-        $this->increment($answer->attempt);
+        return $this->increment($answer->attempt);
     }
 
-    private function increment(ExamAttempt $attempt): void
+    private function increment(ExamAttempt $attempt): array
     {
         if (! $this->subjectTrialService
             ->isEligibleForMilestoneCounting($attempt)) {
-            return;
+            return [];
         }
 
         try {
@@ -111,6 +111,8 @@ class PracticeMilestoneService
                 }
             );
 
+            $awards = [];
+
             foreach (self::MILESTONES as $threshold => $code) {
                 if ($previousTotal >= $threshold || $currentTotal < $threshold) {
                     continue;
@@ -132,9 +134,17 @@ class PracticeMilestoneService
 
                 $this->onboardingAchievementService
                     ->firstQualifyingAchievementAwarded($award);
+
+                if ($award->wasRecentlyCreated) {
+                    $awards[] = $award;
+                }
             }
+
+            return $awards;
         } catch (Throwable $exception) {
             report($exception);
+
+            return [];
         }
     }
 }

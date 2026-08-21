@@ -546,14 +546,14 @@ class StudentController extends Controller
             }
 
             $onboardingAchievements = app(OnboardingAchievementService::class);
-            $onboardingAchievements->accountCreated($student);
-            $onboardingAchievements->awardProfileIfComplete($student->fresh());
+            $accountAward = $onboardingAchievements->accountCreated($student);
 
             DB::commit();
 
             return response()->json([
                 'message' => 'Registration successful. Please verify your email or phone.',
                 'student' => $student->fresh(),
+                'new_achievement' => $this->formatAchievement($accountAward),
             ], 201);
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -1002,10 +1002,14 @@ class StudentController extends Controller
                 'email_verified_at' => now(),
             ]);
 
+            $profileAward = app(OnboardingAchievementService::class)
+                ->awardProfileIfComplete($user->fresh());
+
             $record->delete();
 
             return response()->json([
                 'message' => 'Email verified successfully.',
+                'new_achievement' => $this->formatAchievement($profileAward),
             ]);
         } catch (\Throwable $e) {
             return response()->json([
@@ -1193,8 +1197,12 @@ class StudentController extends Controller
                 DB::table('phone_otps')->where('tel', $otpRecord->tel)->delete();
             });
 
+            $profileAward = app(OnboardingAchievementService::class)
+                ->awardProfileIfComplete($student->fresh());
+
             return response()->json([
                 'message' => 'Phone number verified successfully.',
+                'new_achievement' => $this->formatAchievement($profileAward),
             ]);
         } catch (\Throwable $e) {
             return response()->json([
@@ -1629,11 +1637,8 @@ class StudentController extends Controller
             ];
 
             $onboardingAchievements = app(OnboardingAchievementService::class);
-            $onboardingAchievements->accountCreated($result['student']);
-            $onboardingAchievements->awardProfileIfComplete(
-                $result['student']->fresh()
-            );
-            $onboardingAchievements->readyToLearn(
+            $accountAward = $onboardingAchievements->accountCreated($result['student']);
+            $readyAward = $onboardingAchievements->readyToLearn(
                 $result['student'],
                 [
                     'source' => 'complimentary_registration',
@@ -1692,6 +1697,10 @@ class StudentController extends Controller
                 'enrollment' => $result['enrollment'],
                 'payment' => $result['payment'],
                 'verification' => $verification,
+                'new_achievements' => array_values(array_filter([
+                    $this->formatAchievement($accountAward),
+                    $this->formatAchievement($readyAward),
+                ])),
             ], 201);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
             return response()->json([
@@ -1705,5 +1714,24 @@ class StudentController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
+    }
+
+    private function formatAchievement($award): ?array
+    {
+        if (! $award?->wasRecentlyCreated) {
+            return null;
+        }
+
+        $award->loadMissing('achievement');
+
+        return [
+            'id' => $award->id,
+            'code' => $award->achievement?->code,
+            'name' => $award->achievement?->name,
+            'category' => $award->achievement?->category,
+            'type' => $award->achievement?->type,
+            'tier' => $award->tier,
+            'awarded_at' => $award->awarded_at,
+        ];
     }
 }

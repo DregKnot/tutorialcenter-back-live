@@ -68,13 +68,14 @@ class ExamInteractionController extends Controller
             $data['metadata'] ?? []
         );
 
-        $this->onboardingAchievementService->firstAnswerSubmitted(
+        $firstAnswerAward = $this->onboardingAchievementService->firstAnswerSubmitted(
             $request->user(),
             $attempt,
             $interaction
         );
 
-        $this->practiceMilestoneService->recordInteraction($interaction);
+        $milestoneAwards = $this->practiceMilestoneService
+            ->recordInteraction($interaction);
         $this->learningStreakService->recordActivity(
             $request->user(),
             $interaction->action_submitted_at
@@ -83,7 +84,30 @@ class ExamInteractionController extends Controller
         return response()->json([
             'success' => true,
             'data' => $interaction,
+            'new_achievements' => $this->formatAchievements(array_merge(
+                $firstAnswerAward?->wasRecentlyCreated ? [$firstAnswerAward] : [],
+                $milestoneAwards
+            )),
         ]);
+    }
+
+    private function formatAchievements(array $awards): array
+    {
+        return collect($awards)
+            ->filter(fn ($award) => $award?->wasRecentlyCreated)
+            ->map(function ($award) {
+                $award->loadMissing('achievement');
+
+                return [
+                    'id' => $award->id,
+                    'code' => $award->achievement?->code,
+                    'name' => $award->achievement?->name,
+                    'category' => $award->achievement?->category,
+                    'type' => $award->achievement?->type,
+                    'tier' => $award->tier,
+                    'awarded_at' => $award->awarded_at,
+                ];
+            })->values()->all();
     }
 
     public function skipped(

@@ -638,7 +638,7 @@ class SubjectController extends Controller
 
             $student = $enrollment->student;
 
-            app(OnboardingAchievementService::class)->readyToLearn(
+            $award = app(OnboardingAchievementService::class)->readyToLearn(
                 $student,
                 [
                     'course_enrollment_id' => $enrollment->course_enrollment_id,
@@ -649,6 +649,7 @@ class SubjectController extends Controller
 
             return response()->json([
                 'message' => 'Subject enrolled successfully.',
+                'new_achievement' => $this->formatAchievement($award),
             ], 201);
         } catch (\Throwable $e) {
             return response()->json([
@@ -656,5 +657,24 @@ class SubjectController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
+    }
+
+    private function formatAchievement($award): ?array
+    {
+        if (! $award?->wasRecentlyCreated) {
+            return null;
+        }
+
+        $award->loadMissing('achievement');
+
+        return [
+            'id' => $award->id,
+            'code' => $award->achievement?->code,
+            'name' => $award->achievement?->name,
+            'category' => $award->achievement?->category,
+            'type' => $award->achievement?->type,
+            'tier' => $award->tier,
+            'awarded_at' => $award->awarded_at,
+        ];
     }
 }
