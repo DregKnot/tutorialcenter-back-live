@@ -9,24 +9,57 @@ use App\Models\Payment;
 use App\Models\Student;
 use App\Models\Staff;
 use App\Models\SubjectsEnrollment;
-use Illuminate\Support\Str;
-use Illuminate\Http\Request;
-use App\Services\BulkSMSService;
 use App\Models\EmailVerification;
+use App\Models\Guardian;
+use App\Notifications\ContactChangeOtpNotification;
+use App\Notifications\StudentEmailVerification;
+use App\Notifications\StudentPasswordReset;
+use App\Services\BulkSMSService;
+use App\Services\EmailVerificationService;
+use App\Services\OnboardingAchievementService;
+use App\Services\StudentNotificationService;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Support\Facades\Validator;
-use App\Services\EmailVerificationService;
-use Illuminate\Support\Facades\RateLimiter;
-use App\Services\StudentNotificationService;
 use Illuminate\Support\Facades\Notification;
-use App\Notifications\StudentEmailVerification;
-use App\Notifications\ContactChangeOtpNotification;
-
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 class StudentController extends Controller
 {
+    public function learningStreak(Request $request)
+    {
+        $student = $request->user();
+        $progress = $student->achievementProgress()
+            ->where('progress_key', 'learning_streak')
+            ->whereNull('subject_id')
+            ->first();
+        $metadata = $progress?->metadata ?? [];
+
+        $lastActivityDate = $metadata['last_activity_date'] ?? null;
+        $timezone = $metadata['timezone'] ?? 'Africa/Lagos';
+        $ongoingStreak = $progress?->integer_value ?? 0;
+
+        if ($lastActivityDate && ! now($timezone)->startOfDay()->subDay()->lte(
+            \Carbon\Carbon::parse($lastActivityDate, $timezone)->startOfDay()
+        )) {
+            $ongoingStreak = 0;
+        }
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'ongoing_streak' => (int) $ongoingStreak,
+                'max_streak' => (int) ($metadata['maximum_streak'] ?? 0),
+                'last_activity_date' => $lastActivityDate,
+                'streak_started_date' => $metadata['streak_started_date'] ?? null,
+                'timezone' => $metadata['timezone'] ?? 'Africa/Lagos',
+            ],
+        ]);
+    }
+
     /**
      * Login
      **/
@@ -71,6 +104,7 @@ class StudentController extends Controller
             // Check password
             if (!Hash::check($request->password, $student->password)) {
                 RateLimiter::hit($throttleKey, 60); // lock attempt for 60 seconds
+
                 return response()->json([
                     'message' => 'Login Fails',
                     'errors' => 'Invalid Login Credentials',
@@ -238,6 +272,7 @@ class StudentController extends Controller
 
                 if (!$record) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'Invalid or expired OTP.',
                     ], 400);
@@ -249,6 +284,7 @@ class StudentController extends Controller
 
                 if (!$otpRecord) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'OTP not found.',
                     ], 400);
@@ -256,6 +292,7 @@ class StudentController extends Controller
 
                 if (Carbon::parse($otpRecord->expires_at)->isPast()) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'OTP expired.',
                     ], 400);
@@ -263,6 +300,7 @@ class StudentController extends Controller
 
                 if (!Hash::check($request->otp, $otpRecord->code)) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'Invalid OTP.',
                     ], 400);
@@ -316,6 +354,7 @@ class StudentController extends Controller
 
             if ($validator->fails()) {
                 DB::rollBack();
+
                 return response()->json([
                     'errors' => $validator->errors(),
                     'message' => 'Validation failed.',
@@ -327,6 +366,7 @@ class StudentController extends Controller
 
             if (!$student) {
                 DB::rollBack();
+
                 return response()->json([
                     'message' => 'Student not found.',
                 ], 404);
@@ -355,6 +395,9 @@ class StudentController extends Controller
                 'location' => $data['location'] ?? $student->location,
                 'address' => $data['address'] ?? $student->address,
             ]);
+
+            app(OnboardingAchievementService::class)
+                ->awardProfileIfComplete($student->fresh());
 
             // Collect changes
             $changes = [];
@@ -484,28 +527,34 @@ class StudentController extends Controller
             $guardianIds = [];
 
             \Log::info('Student Registration Request Data:', ['data' => $data]);
-
+            
             if (!empty($data['guardian_id'])) {
                 $guardianIds[] = (int) $data['guardian_id'];
             }
-
-            if ($request->user() instanceof \App\Models\Guardian) {
+            
+            if ($request->user() instanceof Guardian) {
                 $guardianIds[] = $request->user()->id;
             }
-
+            
             $guardianIds = array_unique($guardianIds);
-
+            
             \Log::info('Guardian IDs to sync:', ['ids' => $guardianIds]);
-
+            
             foreach ($guardianIds as $guardianId) {
-                $student->guardians()->syncWithoutDetaching([$guardianId => ['relationship' => 'parent']]);
+                $student->guardians()->syncWithoutDetaching([
+                    $guardianId => ['relationship' => 'parent'],
+                ]);
             }
+
+            $onboardingAchievements = app(OnboardingAchievementService::class);
+            $accountAward = $onboardingAchievements->accountCreated($student);
 
             DB::commit();
 
             return response()->json([
                 'message' => 'Registration successful. Please verify your email or phone.',
                 'student' => $student->fresh(),
+                'new_achievement' => $this->formatAchievement($accountAward),
             ], 201);
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -954,10 +1003,14 @@ class StudentController extends Controller
                 'email_verified_at' => now(),
             ]);
 
+            $profileAward = app(OnboardingAchievementService::class)
+                ->awardProfileIfComplete($user->fresh());
+
             $record->delete();
 
             return response()->json([
                 'message' => 'Email verified successfully.',
+                'new_achievement' => $this->formatAchievement($profileAward),
             ]);
         } catch (\Throwable $e) {
             return response()->json([
@@ -1145,8 +1198,12 @@ class StudentController extends Controller
                 DB::table('phone_otps')->where('tel', $otpRecord->tel)->delete();
             });
 
+            $profileAward = app(OnboardingAchievementService::class)
+                ->awardProfileIfComplete($student->fresh());
+
             return response()->json([
                 'message' => 'Phone number verified successfully.',
+                'new_achievement' => $this->formatAchievement($profileAward),
             ]);
         } catch (\Throwable $e) {
             return response()->json([
@@ -1226,7 +1283,7 @@ class StudentController extends Controller
         ]);
 
         // Send password reset notification (you'll need to create this notification)
-        $student->notify(new \App\Notifications\StudentPasswordReset($token));
+        $student->notify(new StudentPasswordReset($token));
     }
 
     /**
@@ -1288,6 +1345,7 @@ class StudentController extends Controller
 
                 if (!$changeRequest) {
                     DB::rollBack();
+
                     return response()->json([
                         'message' => 'No pending phone change request found.',
                     ], 400);
@@ -1384,6 +1442,7 @@ class StudentController extends Controller
     public function index()
     {
         $students = Student::withTrashed()->get();
+
         return response()->json([
             'message' => 'Students retrieved successfully.',
             'students' => $students,
@@ -1578,6 +1637,20 @@ class StudentController extends Controller
                 'errors' => [],
             ];
 
+            $onboardingAchievements = app(OnboardingAchievementService::class);
+            $accountAward = $onboardingAchievements->accountCreated($result['student']);
+            $readyAward = $onboardingAchievements->readyToLearn(
+                $result['student'],
+                [
+                    'source' => 'complimentary_registration',
+                    'course_enrollment_id' => $result['enrollment']->id,
+                    'subject_ids' => $result['enrollment']->subjects
+                        ->pluck('subject_id')
+                        ->values()
+                        ->all(),
+                ]
+            );
+
             if ($result['student']->email) {
                 try {
                     app(EmailVerificationService::class)->send($result['student']);
@@ -1625,6 +1698,10 @@ class StudentController extends Controller
                 'enrollment' => $result['enrollment'],
                 'payment' => $result['payment'],
                 'verification' => $verification,
+                'new_achievements' => array_values(array_filter([
+                    $this->formatAchievement($accountAward),
+                    $this->formatAchievement($readyAward),
+                ])),
             ], 201);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
             return response()->json([

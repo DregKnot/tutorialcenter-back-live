@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Subject;
 use App\Models\SubjectsEnrollment;
 use App\Services\AdminNotificationService;
+use App\Services\OnboardingAchievementService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -141,7 +142,8 @@ class SubjectController extends Controller
             }
 
             DB::commit();
-            AdminNotificationService::notify("New Subject Created: {$subject->name}", "A new subject has been created with ID: {$subject->id}. for departments: " . implode(', ', $subject->departments) . "under courses: " . implode(', ', $subject->courses()->pluck('title')->toArray()));
+            AdminNotificationService::notify("New Subject Created: {$subject->name}", "A new subject has been created with ID: {$subject->id}. for departments: ".implode(', ', $subject->departments).'under courses: '.implode(', ', $subject->courses()->pluck('title')->toArray()));
+
             return response()->json([
                 'message' => 'Subject created successfully.',
                 'subject' => $subject->load('courses'),
@@ -302,7 +304,7 @@ class SubjectController extends Controller
     {
         $subject = Subject::find($id);
 
-        if (!$subject) {
+        if (! $subject) {
             return response()->json([
                 'message' => 'Subject not found.',
             ], 404);
@@ -500,7 +502,7 @@ class SubjectController extends Controller
     {
         $subject = Subject::find($id);
 
-        if (!$subject) {
+        if (! $subject) {
             return response()->json([
                 'message' => 'Subject not found.',
             ], 404);
@@ -520,7 +522,7 @@ class SubjectController extends Controller
     {
         $subject = Subject::onlyTrashed()->find($id);
 
-        if (!$subject) {
+        if (! $subject) {
             return response()->json([
                 'message' => 'Subject not found or not deleted.',
             ], 404);
@@ -628,14 +630,26 @@ class SubjectController extends Controller
             }
 
             // Create subject enrollment
-            SubjectsEnrollment::create([
+            $enrollment = SubjectsEnrollment::create([
                 'course_enrollment_id' => $request->course_enrollment_id,
                 'subject_id' => $request->subject_id,
                 'student_id' => $request->student_id,
             ]);
 
+            $student = $enrollment->student;
+
+            $award = app(OnboardingAchievementService::class)->readyToLearn(
+                $student,
+                [
+                    'course_enrollment_id' => $enrollment->course_enrollment_id,
+                    'subject_enrollment_id' => $enrollment->id,
+                    'subject_id' => $enrollment->subject_id,
+                ]
+            );
+
             return response()->json([
                 'message' => 'Subject enrolled successfully.',
+                'new_achievement' => $this->formatAchievement($award),
             ], 201);
         } catch (\Throwable $e) {
             return response()->json([
@@ -643,5 +657,24 @@ class SubjectController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
+    }
+
+    private function formatAchievement($award): ?array
+    {
+        if (! $award?->wasRecentlyCreated) {
+            return null;
+        }
+
+        $award->loadMissing('achievement');
+
+        return [
+            'id' => $award->id,
+            'code' => $award->achievement?->code,
+            'name' => $award->achievement?->name,
+            'category' => $award->achievement?->category,
+            'type' => $award->achievement?->type,
+            'tier' => $award->tier,
+            'awarded_at' => $award->awarded_at,
+        ];
     }
 }

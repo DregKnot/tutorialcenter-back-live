@@ -101,6 +101,36 @@ class Student extends Model
         return $this->hasMany(ExamAttempt::class);
     }
 
+    public function achievements()
+    {
+        return $this->hasMany(StudentAchievement::class);
+    }
+
+    public function achievementProgress()
+    {
+        return $this->hasMany(StudentAchievementProgress::class);
+    }
+
+    public function examQuestionInteractions()
+    {
+        return $this->hasMany(ExamQuestionInteraction::class);
+    }
+
+    public function examActivitySessions()
+    {
+        return $this->hasMany(ExamAttemptActivitySession::class);
+    }
+
+    public function examActivityHeartbeats()
+    {
+        return $this->hasMany(ExamActivityHeartbeat::class);
+    }
+
+    public function subjectTrials()
+    {
+        return $this->hasMany(StudentSubjectTrial::class);
+    }
+
     public function hasActiveCourseSubscription($courseId): bool
     {
         return $this->courseEnrollments()
