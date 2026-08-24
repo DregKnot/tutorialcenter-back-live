@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\CoursesEnrollment;
 use App\Models\Payment;
 use App\Services\AdminNotificationService;
+use App\Services\ExamPreparationAchievementService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -32,9 +33,26 @@ class PaymentController extends Controller
             CoursesEnrollment::where('id', $validated['course_enrollment_id'])
                 ->update(['status' => 'active']);
 
+            $newAchievements = app(ExamPreparationAchievementService::class)
+                ->evaluatePayment($payment);
+
             return response()->json([
                 'message' => 'Payment created successfully.',
                 'payment' => $payment,
+                'new_achievements' => collect($newAchievements)
+                    ->map(function ($award) {
+                        $award->loadMissing('achievement');
+
+                        return [
+                            'id' => $award->id,
+                            'code' => $award->achievement?->code,
+                            'name' => $award->achievement?->name,
+                            'category' => $award->achievement?->category,
+                            'type' => $award->achievement?->type,
+                            'tier' => $award->tier,
+                            'awarded_at' => $award->awarded_at,
+                        ];
+                    })->values()->all(),
             ], 201);
         } catch (\Exception $e) {
             return response()->json([

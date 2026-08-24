@@ -47,6 +47,31 @@ class ExamAttempt extends Model
         return $this->hasMany(ExamAttemptAnswer::class);
     }
 
+    public function questionInteractions()
+    {
+        return $this->hasMany(ExamQuestionInteraction::class);
+    }
+
+    public function activitySessions()
+    {
+        return $this->hasMany(ExamAttemptActivitySession::class);
+    }
+
+    public function activityHeartbeats()
+    {
+        return $this->hasMany(ExamActivityHeartbeat::class);
+    }
+
+    public function awardedAchievements()
+    {
+        return $this->hasMany(StudentAchievement::class);
+    }
+
+    public function subjectTrial()
+    {
+        return $this->hasOne(StudentSubjectTrial::class);
+    }
+
     public function feedbacks()
     {
         return $this->morphMany(
