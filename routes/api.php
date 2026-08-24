@@ -94,6 +94,7 @@ Route::prefix('students')->group(function () {
 */
 Route::prefix('students')->middleware('auth:sanctum')->group(function () {
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
+        Route::get('/leaderboard/students/{id}', [AdminDashboardAnalyticsController::class, 'studentLeaderboardDetail']); // Student Subject & Daily Leaderboard Detail
     Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
     Route::post('/logout', [StudentController::class, 'logout']); // Logout Method
     Route::put('/profile/update', [StudentController::class, 'update']); // Update student profile
@@ -169,7 +170,10 @@ Route::prefix('students')->group(function () {
 | Guardian Registration & Verification
 |--------------------------------------------------------------------------
 */
-Route::prefix('guardians')->group(function () {
+Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
+    Route::get('/advisors/all', [StudentController::class, 'allAdvisors']);
+
+    Route::prefix('guardians')->group(function () {
     // Route::post('/register', [GuardianController::class, 'store']);
     Route::post('/register', [GuardianController::class, 'registerWithBiodata']);
 
@@ -203,6 +207,7 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
 */
 Route::prefix('staffs')->group(function () {
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
+        Route::get('/leaderboard/students/{id}', [AdminDashboardAnalyticsController::class, 'studentLeaderboardDetail']); // Student Subject & Daily Leaderboard Detail
     Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
     // Login (restricted until verified)
     Route::post('/login', [StaffController::class, 'login']);
@@ -272,12 +277,16 @@ Route::prefix('staffs')->group(function () {
 Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo'])->group(function () {
 
     // Guardians Management
+    Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
+    Route::get('/advisors/all', [StudentController::class, 'allAdvisors']);
+
     Route::prefix('guardians')->group(function () {
         Route::get('/all', [App\Http\Controllers\AdvisorDashboardController::class, 'guardians']);
     });
 
     Route::prefix('dashboard')->group(function () {
         Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
+        Route::get('/leaderboard/students/{id}', [AdminDashboardAnalyticsController::class, 'studentLeaderboardDetail']); // Student Subject & Daily Leaderboard Detail
         Route::get('/mock-analytics', [AdminDashboardAnalyticsController::class, 'examAnalytics']); // Exam Analytics
     });
 
@@ -325,6 +334,10 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::get('/all', [StudentController::class, 'index']); // List all students
         Route::get('/{id}', [StudentController::class, 'show']); // Show student details
         Route::put('/update', [StudentController::class, 'update']); // Update student profile
+        Route::post('/{id}/guardians', [StudentController::class, 'assignGuardian']);
+        Route::delete('/{id}/guardians/{guardianId}', [StudentController::class, 'detachGuardian']);
+        Route::post('/{id}/advisors', [StudentController::class, 'assignAdvisor']);
+        Route::delete('/{id}/advisors/{staffId}', [StudentController::class, 'detachAdvisor']);
     });
 
     // Exam Body Management
@@ -449,6 +462,9 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
     });
 
     // Guardians Management
+    Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
+    Route::get('/advisors/all', [StudentController::class, 'allAdvisors']);
+
     Route::prefix('guardians')->group(function () {
         Route::get('/all', [AdvisorDashboardController::class, 'guardians']); // List all guardians and their wards
     });

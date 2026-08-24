@@ -7,6 +7,7 @@ use App\Models\Course;
 use App\Models\CoursesEnrollment;
 use App\Models\Payment;
 use App\Models\Student;
+use App\Models\Staff;
 use App\Models\SubjectsEnrollment;
 use Illuminate\Support\Str;
 use Illuminate\Http\Request;
@@ -1637,5 +1638,182 @@ class StudentController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
+    }
+
+
+    /**
+     * Get all guardians for admin selection
+     */
+    public function allGuardians(Request $request)
+    {
+        $guardians = Guardian::select('id', 'firstname', 'surname', 'email', 'tel', 'profile_picture')
+            ->orderBy('firstname', 'asc')
+            ->get();
+
+        return response()->json([
+            'message' => 'Guardians retrieved successfully.',
+            'guardians' => $guardians,
+        ], 200);
+    }
+
+    /**
+     * Get all advisors for admin selection
+     */
+    public function allAdvisors(Request $request)
+    {
+        $advisors = Staff::where('role', 'advisor')
+            ->select('id', 'staff_id', 'firstname', 'surname', 'email', 'tel', 'role', 'profile_picture')
+            ->orderBy('firstname', 'asc')
+            ->get();
+
+        return response()->json([
+            'message' => 'Advisors retrieved successfully.',
+            'advisors' => $advisors,
+        ], 200);
+    }
+
+    /**
+     * Assign or Link Guardian to a Student
+     */
+    public function assignGuardian(Request $request, $studentId)
+    {
+        $student = Student::withTrashed()->find($studentId);
+        if (!$student) {
+            return response()->json(['message' => 'Student not found.'], 404);
+        }
+
+        $validated = $request->validate([
+            'guardian_id' => 'nullable|integer|exists:guardians,id',
+            'firstname' => 'required_without:guardian_id|nullable|string|max:50',
+            'surname' => 'required_without:guardian_id|nullable|string|max:50',
+            'email' => 'nullable|email|max:100',
+            'tel' => 'nullable|string|max:20',
+            'gender' => 'nullable|in:male,female,others',
+            'date_of_birth' => 'nullable|date|before:today',
+            'location' => 'nullable|string|max:255',
+            'address' => 'nullable|string|max:1000',
+            'relationship' => 'nullable|in:parent,relative,other',
+        ]);
+
+        $relationship = $validated['relationship'] ?? 'parent';
+        $guardianId = $validated['guardian_id'] ?? null;
+
+        // If creating a new guardian with full biodata
+        if (!$guardianId) {
+            $existingGuardian = null;
+            if (!empty($validated['email'])) {
+                $existingGuardian = Guardian::where('email', $validated['email'])->first();
+            }
+            if (!$existingGuardian && !empty($validated['tel'])) {
+                $existingGuardian = Guardian::where('tel', $validated['tel'])->first();
+            }
+
+            if ($existingGuardian) {
+                $guardianId = $existingGuardian->id;
+            } else {
+                $randomPassword = Str::random(12);
+                $newGuardian = Guardian::create([
+                    'firstname' => $validated['firstname'],
+                    'surname' => $validated['surname'],
+                    'email' => $validated['email'] ?? null,
+                    'tel' => $validated['tel'] ?? null,
+                    'gender' => $validated['gender'] ?? null,
+                    'date_of_birth' => $validated['date_of_birth'] ?? null,
+                    'location' => $validated['location'] ?? null,
+                    'address' => $validated['address'] ?? null,
+                    'password' => Hash::make($randomPassword),
+                    'email_verified_at' => !empty($validated['email']) ? now() : null,
+                    'tel_verified_at' => !empty($validated['tel']) ? now() : null,
+                ]);
+                $guardianId = $newGuardian->id;
+            }
+        }
+
+        // Attach via pivot table without duplicates
+        $student->guardians()->syncWithoutDetaching([
+            $guardianId => [
+                'relationship' => $relationship,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        ]);
+
+        return response()->json([
+            'message' => 'Guardian linked successfully with full profile.',
+            'guardians' => $student->guardians()->get(),
+        ], 200);
+    }
+
+    /**
+     * Detach / Unlink Guardian from Student
+     */
+    public function detachGuardian($studentId, $guardianId)
+    {
+        $student = Student::withTrashed()->find($studentId);
+        if (!$student) {
+            return response()->json(['message' => 'Student not found.'], 404);
+        }
+
+        $student->guardians()->detach($guardianId);
+
+        return response()->json([
+            'message' => 'Guardian unlinked successfully.',
+            'guardians' => $student->guardians()->get(),
+        ], 200);
+    }
+
+    /**
+     * Assign or Link Advisor (Staff) to Student
+     */
+    public function assignAdvisor(Request $request, $studentId)
+    {
+        $student = Student::withTrashed()->find($studentId);
+        if (!$student) {
+            return response()->json(['message' => 'Student not found.'], 404);
+        }
+
+        $validated = $request->validate([
+            'staff_id' => 'required|integer|exists:staffs,id',
+            'role' => 'nullable|string|max:50',
+        ]);
+
+        $staff = Staff::find($validated['staff_id']);
+        if (!$staff) {
+            return response()->json(['message' => 'Staff advisor not found.'], 404);
+        }
+
+        $role = $validated['role'] ?? 'advisor';
+
+        $student->advisors()->syncWithoutDetaching([
+            $staff->id => [
+                'role' => $role,
+                'assigned_at' => now(),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]
+        ]);
+
+        return response()->json([
+            'message' => 'Advisor assigned successfully.',
+            'advisors' => $student->advisors()->get(),
+        ], 200);
+    }
+
+    /**
+     * Detach / Unassign Advisor from Student
+     */
+    public function detachAdvisor($studentId, $staffId)
+    {
+        $student = Student::withTrashed()->find($studentId);
+        if (!$student) {
+            return response()->json(['message' => 'Student not found.'], 404);
+        }
+
+        $student->advisors()->detach($staffId);
+
+        return response()->json([
+            'message' => 'Advisor unassigned successfully.',
+            'advisors' => $student->advisors()->get(),
+        ], 200);
     }
 }

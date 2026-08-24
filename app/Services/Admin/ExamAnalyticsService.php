@@ -304,11 +304,13 @@ class ExamAnalyticsService
             ->get();
     }
 
-    /**
+        /**
      * Leaderboard of students based on average score and total attempts
      */
     public function leaderboard(int $limit = 20)
     {
+        $today = now()->toDateString();
+
         return Student::query()
             ->leftJoin(
                 'exam_attempts',
@@ -335,8 +337,9 @@ class ExamAnalyticsService
             ROUND(AVG(exam_attempts.percentage),2) AS average_score,
             MAX(exam_attempts.percentage) AS highest_score,
             COALESCE(SUM(exam_attempts.correct_answers),0) AS total_correct_answers,
-            COALESCE(SUM(exam_attempts.score),0) AS total_score
-        ")
+            COALESCE(SUM(exam_attempts.score),0) AS total_score,
+            COALESCE(SUM(CASE WHEN DATE(exam_attempts.submitted_at) = ? THEN exam_attempts.score ELSE 0 END), 0) AS today_points
+        ", [$today])
             ->groupBy(
                 'students.id',
                 'students.firstname',
@@ -352,30 +355,117 @@ class ExamAnalyticsService
             ->values()
             ->map(function ($student, $index) {
 
+                // Query dominant / most practiced subject
+                $mostPracticed = ExamAttempt::query()
+                    ->where('exam_attempts.student_id', $student->id)
+                    ->where('exam_attempts.status', ExamAttempt::COMPLETED)
+                    ->join('exam_years', 'exam_attempts.exam_year_id', '=', 'exam_years.id')
+                    ->join('subjects', 'exam_years.subject_id', '=', 'subjects.id')
+                    ->select('subjects.name')
+                    ->selectRaw('COUNT(exam_attempts.id) as attempts_count')
+                    ->groupBy('subjects.name')
+                    ->orderByDesc('attempts_count')
+                    ->value('subjects.name');
+
                 return [
-
                     'rank' => $index + 1,
-
                     'student_id' => $student->id,
-
                     'name' => trim(
                         $student->firstname . ' ' . $student->surname
                     ),
-
                     'profile_picture' => $student->profile_picture,
-
                     'total_correct_answers' => (int) $student->total_correct_answers,
-
                     'total_attempts' => (int) $student->total_attempts,
-
                     'highest_score' => (int) $student->highest_score,
-
                     'average_score' => (float) $student->average_score,
-
                     'total_score' => (int) $student->total_score,
-
+                    'today_points' => (int) $student->today_points,
+                    'most_practiced_subject' => $mostPracticed ?: 'General Studies',
                 ];
             });
+    }
+
+    /**
+     * Deep leadership intelligence breakdown for a specific student
+     */
+    public function studentLeaderboardDetail(int $studentId): array
+    {
+        $student = Student::findOrFail($studentId);
+
+        $attempts = ExamAttempt::query()
+            ->where('student_id', $studentId)
+            ->where('exam_attempts.status', ExamAttempt::COMPLETED)
+            ->with(['examYear.subject'])
+            ->orderByDesc('submitted_at')
+            ->get();
+
+        $today = now()->toDateString();
+        $totalPoints = (int) $attempts->sum('score');
+        $totalAttempts = (int) $attempts->count();
+        $totalCorrect = (int) $attempts->sum('correct_answers');
+        $totalQuestions = (int) $attempts->sum('total_questions');
+        $avgScore = $totalAttempts > 0 ? (float) round($attempts->avg('percentage'), 2) : 0.0;
+        $highestScore = (int) ($attempts->max('percentage') ?? 0);
+
+        // Group by Subject to calculate subject dominance, correct answers, and points
+        $subjectBreakdowns = $attempts->groupBy(function ($attempt) {
+            return $attempt->examYear?->subject?->name ?? 'General Studies';
+        })->map(function ($subjectAttempts, $subjectName) use ($today) {
+            $todayAttempts = $subjectAttempts->filter(function ($a) use ($today) {
+                return $a->submitted_at && $a->submitted_at->toDateString() === $today;
+            });
+
+            return [
+                'subject' => $subjectName,
+                'accumulated_score' => (int) $subjectAttempts->sum('score'),
+                'total_attempts' => (int) $subjectAttempts->count(),
+                'total_correct' => (int) $subjectAttempts->sum('correct_answers'),
+                'total_questions' => (int) $subjectAttempts->sum('total_questions'),
+                'highest_score' => (int) ($subjectAttempts->max('percentage') ?? 0),
+                'avg_score' => (int) round($subjectAttempts->avg('percentage') ?? 0),
+                'today_score' => (int) $todayAttempts->sum('score'),
+                'today_attempts' => (int) $todayAttempts->count(),
+            ];
+        })->sortByDesc('total_attempts')->values()->all();
+
+        $mostPracticed = !empty($subjectBreakdowns) ? $subjectBreakdowns[0]['subject'] : 'General Studies';
+
+        // Group by Date for the Daily Points Timeline
+        $dailyTimeline = $attempts->filter(fn($a) => $a->submitted_at !== null)
+            ->groupBy(function ($attempt) {
+                return $attempt->submitted_at->toDateString();
+            })->map(function ($dateAttempts, $dateStr) {
+                $subjects = $dateAttempts->map(function ($a) {
+                    return $a->examYear?->subject?->name ?? 'General';
+                })->unique()->values()->all();
+
+                return [
+                    'date' => $dateStr,
+                    'points_accumulated' => (int) $dateAttempts->sum('score'),
+                    'attempts_count' => (int) $dateAttempts->count(),
+                    'subjects' => $subjects,
+                ];
+            })->sortByDesc('date')->values()->all();
+
+        // Today's points
+        $todayAttempts = $attempts->filter(fn($a) => $a->submitted_at && $a->submitted_at->toDateString() === $today);
+        $todayPoints = (int) $todayAttempts->sum('score');
+
+        return [
+            'student_id' => $student->id,
+            'name' => trim(($student->firstname ?? '') . ' ' . ($student->surname ?? '')) ?: $student->name,
+            'profile_picture' => $student->profile_picture,
+            'total_score' => $totalPoints,
+            'total_attempts' => $totalAttempts,
+            'total_correct_answers' => $totalCorrect,
+            'total_questions' => $totalQuestions,
+            'average_score' => $avgScore,
+            'highest_score' => $highestScore,
+            'today_points' => $todayPoints,
+            'most_practiced_subject' => $mostPracticed,
+            'subject_breakdowns' => $subjectBreakdowns,
+            'daily_timeline' => $dailyTimeline,
+        ];
     }
     
     // public function leaderboard(int $limit = 20)
