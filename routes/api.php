@@ -1,33 +1,36 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\ZoomController;
-use App\Http\Controllers\StaffController;
-use App\Http\Controllers\CourseController;
-use App\Http\Controllers\SupportController;
-use App\Http\Controllers\PaymentController;
-use App\Http\Controllers\SubjectController;
+use App\Http\Controllers\AdminDashboardAnalyticsController;
+use App\Http\Controllers\AdminSupportController;
+use App\Http\Controllers\AdvisorDashboardController;
+use App\Http\Controllers\AttendanceController;
 use App\Http\Controllers\ClassesController;
-use App\Http\Controllers\StudentController;
+use App\Http\Controllers\CognitiveTestController;
+use App\Http\Controllers\CourseController;
+use App\Http\Controllers\ExamActivityController;
 use App\Http\Controllers\ExamBodyController;
+use App\Http\Controllers\ExamInteractionController;
 use App\Http\Controllers\ExamYearController;
+use App\Http\Controllers\FeedbackController;
 use App\Http\Controllers\GuardianController;
 use App\Http\Controllers\GuardianDashboardController;
-use App\Http\Controllers\FeedbackController;
-use App\Http\Controllers\AttendanceController;
-use App\Http\Controllers\StudentExamController;
-use App\Http\Controllers\AdminSupportController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PastQuestionController;
-use App\Http\Controllers\StudentExamResultController;
 use App\Http\Controllers\PastQuestionGroupController;
 use App\Http\Controllers\PastQuestionOptionController;
+use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\SpecialEventCalendarController;
+use App\Http\Controllers\StaffController;
+use App\Http\Controllers\StudentAchievementController;
+use App\Http\Controllers\StudentController;
+use App\Http\Controllers\StudentExamController;
 use App\Http\Controllers\StudentExamQuestionController;
-use App\Http\Controllers\AdminDashboardAnalyticsController;
-use App\Http\Controllers\AdvisorDashboardController;
-use App\Http\Controllers\CognitiveTestController;
+use App\Http\Controllers\StudentExamResultController;
+use App\Http\Controllers\SubjectController;
+use App\Http\Controllers\SupportController;
 use App\Http\Controllers\BlogController;
-
+use App\Http\Controllers\ZoomController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
@@ -93,13 +96,17 @@ Route::prefix('students')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('students')->middleware('auth:sanctum')->group(function () {
+    // Achievement endpoints: list the student's awards and current progress.
+    Route::get('/achievements', [StudentAchievementController::class, 'index']); // List active achievements and earned awards
+    Route::get('/achievements/progress', [StudentAchievementController::class, 'progress']); // Get milestone, streak, time, and weekly progress
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
     Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
     Route::post('/logout', [StudentController::class, 'logout']); // Logout Method
+    Route::get('/streak', [StudentController::class, 'learningStreak']); // Get ongoing and maximum learning streak
     Route::put('/profile/update', [StudentController::class, 'update']); // Update student profile
     Route::get('/payments', [PaymentController::class, 'myPayments']); // Listing out all payments
     Route::post('/attendance', [AttendanceController::class, 'store']); // Record attendance for a class session
-    Route::get('/courses', [CourseController::class, 'getActiveCourses']); // Get Active Courses and Subject 
+    Route::get('/courses', [CourseController::class, 'getActiveCourses']); // Get Active Courses and Subject
     Route::get('/class/schedule', [ClassesController::class, 'studentClassSchedule']); // Get student schedule with attendance status
     Route::get('/calendar/schedule', [ClassesController::class, 'studentCalenderSchedule']); // Get student schedule (classes and sessions)
     Route::post('/courses/disenroll/{courseId}', [CourseController::class, 'disenrollCourse']); // Course disenrollment
@@ -123,7 +130,13 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
         Route::get('/available', [StudentExamController::class, 'available']); // List exams student can access
         Route::post('/start/{examYear}', [StudentExamController::class, 'start']); // Start an exam
         Route::get('/{attempt}/questions', [StudentExamQuestionController::class, 'questions']); // Get questions for an attempt
-        Route::post('/{attempt}/answer', [StudentExamQuestionController::class, 'submitAnswer']); // Save/update answer        
+        Route::post('/{attempt}/questions/{question}/view', [ExamInteractionController::class, 'viewed']);
+        Route::post('/{attempt}/questions/{question}/answer', [ExamInteractionController::class, 'answered']);
+        Route::post('/{attempt}/questions/{question}/skip', [ExamInteractionController::class, 'skipped']);
+        Route::post('/{attempt}/activity/start', [ExamActivityController::class, 'start']);
+        Route::post('/{attempt}/activity/heartbeat', [ExamActivityController::class, 'heartbeat']);
+        Route::post('/{attempt}/activity/end', [ExamActivityController::class, 'end']);
+        Route::post('/{attempt}/answer', [StudentExamQuestionController::class, 'submitAnswer']); // Save/update answer
         Route::post('/{attempt}/submit', [StudentExamResultController::class, 'submit']); // Submit and finish exam
         Route::get('/results/history', [StudentExamResultController::class, 'history']); // Student attempt history
         Route::get('/{attempt}/review', [StudentExamResultController::class, 'review']); // Review attempt with answers and explanations
@@ -281,9 +294,9 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::get('/mock-analytics', [AdminDashboardAnalyticsController::class, 'examAnalytics']); // Exam Analytics
     });
 
-    //Staffs Management
+    // Staffs Management
     Route::prefix('staffs')->group(function () {
-        Route::get('/all', [StaffController::class, 'index']); // List all staff members 
+        Route::get('/all', [StaffController::class, 'index']); // List all staff members
         Route::get('/{id}', [StaffController::class, 'show']); // View a specific staff member's details
         Route::post('/register', [StaffController::class, 'store']); // Registration a new Staff
         Route::put('/update/{id}', [StaffController::class, 'update']); // Update staff member details
@@ -396,6 +409,20 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
             ->middleware('staff.role:admin');
     });
 
+    Route::prefix('special-event-calendars')->group(function () {
+        // Special-event calendar management for country-specific achievement windows.
+        Route::get('/', [SpecialEventCalendarController::class, 'index']); // List calendars and filter by country, event, status, or year
+        Route::get('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'show']); // View one calendar entry
+        Route::post('/', [SpecialEventCalendarController::class, 'store'])
+            ->middleware('staff.role:admin'); // Create a calendar entry; local dates are stored as UTC
+        Route::put('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'update'])
+            ->middleware('staff.role:admin'); // Replace a calendar entry
+        Route::patch('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'update'])
+            ->middleware('staff.role:admin'); // Partially update a calendar entry
+        Route::delete('/{specialEventCalendar}', [SpecialEventCalendarController::class, 'destroy'])
+            ->middleware('staff.role:admin'); // Deactivate a calendar entry without deleting history
+    });
+
     // Notification Routes
     Route::get('/notifications', [NotificationController::class, 'index']);
     Route::post('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
@@ -431,7 +458,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
  */
 Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tutor'])->group(function () {
     Route::prefix('classes')->group(function () {
-        Route::get('/schedule', [ClassesController::class, 'tutorClassesSchedule']); // Get tutor schedule with attendance status     
+        Route::get('/schedule', [ClassesController::class, 'tutorClassesSchedule']); // Get tutor schedule with attendance status
     });
 });
 
@@ -440,7 +467,7 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
  */
 Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:advisor'])->group(function () {
     Route::prefix('classes')->group(function () {
-        Route::get('/schedule', [ClassesController::class, 'advisorClassesSchedule']); // Get advisor schedule with attendance status     
+        Route::get('/schedule', [ClassesController::class, 'advisorClassesSchedule']); // Get advisor schedule with attendance status
     });
 
     // Advisor Dashboard

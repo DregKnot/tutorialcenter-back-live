@@ -1079,18 +1079,37 @@ class SubjectSeeder extends Seeder
             ],
         ];
 
+        $subjects = collect($subjects)
+            ->groupBy('name')
+            ->map(function ($definitions) {
+                $subject = $definitions->last();
+                $subject['courses'] = $definitions
+                    ->flatMap(fn ($definition) => $definition['courses'])
+                    ->unique()
+                    ->values()
+                    ->all();
+                $subject['departments'] = $definitions
+                    ->flatMap(fn ($definition) => $definition['departments'])
+                    ->unique()
+                    ->values()
+                    ->all();
+
+                return $subject;
+            });
+
         foreach ($subjects as $subject) {
-            Subject::updateOrCreate(
-                ['courses' => $subject['courses'], 'departments' => $subject['departments'], 'name' => $subject['name']],
+            $record = Subject::withTrashed()->updateOrCreate(
+                ['name' => $subject['name']],
                 [
-                    'name' => $subject['name'],
                     'description' => $subject['description'],
                     'banner' => $subject['banner'],
-                    'courses' => $subject['courses'],
                     'departments' => $subject['departments'],
                     'status' => 'active',
+                    'deleted_at' => null,
                 ]
             );
+
+            $record->courses()->sync($subject['courses']);
         }
     }
 }
