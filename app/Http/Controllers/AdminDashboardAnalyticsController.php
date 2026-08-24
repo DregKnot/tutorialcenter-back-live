@@ -52,4 +52,23 @@ class AdminDashboardAnalyticsController extends Controller
             'data' => $analytics->leaderboard(),
         ]);
     }
+
+    /**
+     * Student Leaderboard Subject & Daily Breakdown
+     */
+    public function studentLeaderboardDetail($studentId, ExamAnalyticsService $analytics)
+    {
+        try {
+            return response()->json([
+                'success' => true,
+                'data'    => $analytics->studentLeaderboardDetail((int) $studentId),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to retrieve student leaderboard detail.',
+                'error'   => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
 }
