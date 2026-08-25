@@ -201,4 +201,235 @@ class FeedbackController extends Controller
             'message' => 'Feedback deleted successfully.',
         ]);
     }
+
+    /**
+     * Admin: Get all feedbacks across all categories, subjects, courses, tutors, and authors.
+     * 
+     * [HTTP]: GET /api/admin/feedbacks/all or GET /api/staffs/feedbacks/all
+     */
+    public function adminIndex(Request $request)
+    {
+        $query = Feedback::query()->with(['feedbacker', 'feedbackable']);
+
+        // Filter by Category / Target Model
+        if ($request->filled('category') && $request->category !== 'all') {
+            $cat = strtolower(trim($request->category));
+            if ($cat === 'course' || $cat === 'courses') {
+                $query->where('feedbackable_type', \App\Models\Course::class);
+            } elseif ($cat === 'subject' || $cat === 'subjects') {
+                $query->where('feedbackable_type', \App\Models\Subject::class);
+            } elseif ($cat === 'class' || $cat === 'classes' || $cat === 'master_class') {
+                $query->where('feedbackable_type', \App\Models\Classes::class);
+            } elseif ($cat === 'staff' || $cat === 'tutor' || $cat === 'teacher') {
+                $query->where('feedbackable_type', \App\Models\Staff::class);
+            } elseif ($cat === 'exam' || $cat === 'exam_attempt' || $cat === 'exams') {
+                $query->where('feedbackable_type', \App\Models\ExamAttempt::class);
+            }
+        }
+
+        // Filter by Author Group
+        if ($request->filled('author_group') && $request->author_group !== 'all') {
+            $authorGroup = strtolower(trim($request->author_group));
+            if ($authorGroup === 'student' || $authorGroup === 'students') {
+                $query->where('feedbacker_type', \App\Models\Student::class);
+            } elseif ($authorGroup === 'guardian' || $authorGroup === 'guardians') {
+                $query->where('feedbacker_type', \App\Models\Guardian::class);
+            } elseif ($authorGroup === 'staff' || $authorGroup === 'tutor' || $authorGroup === 'teacher') {
+                $query->where('feedbacker_type', \App\Models\Staff::class);
+            }
+        }
+
+        // Filter by Rating
+        if ($request->filled('rating') && $request->rating !== 'all') {
+            $query->where('rating', (int)$request->rating);
+        }
+
+        // Filter by Recommendation
+        if ($request->filled('recommend') && $request->recommend !== 'all') {
+            $query->where('would_recommend', $request->recommend === 'yes' || $request->recommend === '1');
+        }
+
+        // Filter by Status
+        if ($request->filled('status') && $request->status !== 'all') {
+            $query->where('status', $request->status);
+        }
+
+        // Search Filter
+        if ($request->filled('search')) {
+            $search = trim($request->search);
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                  ->orWhere('comment', 'like', "%{$search}%")
+                  ->orWhereHasMorph('feedbacker', [\App\Models\Student::class, \App\Models\Staff::class, \App\Models\Guardian::class], function ($subQ) use ($search) {
+                      $subQ->where('firstname', 'like', "%{$search}%")
+                           ->orWhere('surname', 'like', "%{$search}%")
+                           ->orWhere('email', 'like', "%{$search}%");
+                  });
+            });
+        }
+
+        $perPage = (int)$request->input('per_page', 20);
+        $paginated = $query->latest('created_at')->paginate($perPage);
+
+        // Transform Collection with rich human-readable metadata
+        $paginated->getCollection()->transform(function ($item) {
+            $feedbacker = $item->feedbacker;
+            $feedbackable = $item->feedbackable;
+
+            // Resolve Reviewer Info
+            $authorGroup = 'user';
+            $authorRole = 'User';
+            $authorName = 'Anonymous Reviewer';
+            $authorEmail = '';
+            $authorAvatar = null;
+
+            if ($feedbacker instanceof \App\Models\Student) {
+                $authorGroup = 'student';
+                $authorRole = 'Student';
+                $authorName = trim(($feedbacker->firstname ?? '') . ' ' . ($feedbacker->surname ?? ''));
+                $authorEmail = $feedbacker->email ?? '';
+                $authorAvatar = $feedbacker->profile_picture ?? null;
+            } elseif ($feedbacker instanceof \App\Models\Guardian) {
+                $authorGroup = 'guardian';
+                $authorRole = 'Guardian';
+                $authorName = trim(($feedbacker->firstname ?? '') . ' ' . ($feedbacker->surname ?? ''));
+                $authorEmail = $feedbacker->email ?? '';
+            } elseif ($feedbacker instanceof \App\Models\Staff) {
+                $authorGroup = 'staff';
+                $authorRole = ucfirst($feedbacker->role ?? 'Staff');
+                $authorName = trim(($feedbacker->firstname ?? '') . ' ' . ($feedbacker->surname ?? ''));
+                $authorEmail = $feedbacker->email ?? '';
+                $authorAvatar = $feedbacker->profile_picture ?? null;
+            }
+
+            // Resolve Target Model (Category & Title)
+            $category = 'General';
+            $categoryKey = 'general';
+            $targetTitle = 'System & Platform';
+
+            if ($feedbackable instanceof \App\Models\Course) {
+                $category = 'Course';
+                $categoryKey = 'course';
+                $targetTitle = $feedbackable->title ?? $feedbackable->name ?? 'Course';
+            } elseif ($feedbackable instanceof \App\Models\Subject) {
+                $category = 'Subject';
+                $categoryKey = 'subject';
+                $targetTitle = $feedbackable->name ?? 'Subject';
+            } elseif ($feedbackable instanceof \App\Models\Classes) {
+                $category = 'Master Class';
+                $categoryKey = 'class';
+                $targetTitle = $feedbackable->title ?? ($feedbackable->subject ? $feedbackable->subject->name . ' Class' : 'Master Class');
+            } elseif ($feedbackable instanceof \App\Models\Staff) {
+                $category = 'Tutor / Teacher';
+                $categoryKey = 'staff';
+                $targetTitle = trim(($feedbackable->firstname ?? '') . ' ' . ($feedbackable->surname ?? '')) . ' (' . ucfirst($feedbackable->role ?? 'Tutor') . ')';
+            } elseif ($feedbackable instanceof \App\Models\ExamAttempt) {
+                $category = 'Exam';
+                $categoryKey = 'exam';
+                $targetTitle = 'Exam Attempt #' . $feedbackable->id;
+            }
+
+            $ratingsBreakdown = is_array($item->ratings) ? $item->ratings : json_decode($item->ratings, true) ?? [];
+
+            return [
+                'id' => $item->id,
+                'author_group' => $authorGroup,
+                'author_role' => $authorRole,
+                'author_name' => $item->is_anonymous ? 'Anonymous (' . $authorRole . ')' : ($authorName ?: 'Unknown User'),
+                'author_email' => $item->is_anonymous ? '' : $authorEmail,
+                'author_avatar' => $item->is_anonymous ? null : $authorAvatar,
+                'is_anonymous' => (bool)$item->is_anonymous,
+                'category' => $category,
+                'category_key' => $categoryKey,
+                'target_title' => $targetTitle,
+                'feedbackable_type' => class_basename($item->feedbackable_type),
+                'feedbackable_id' => $item->feedbackable_id,
+                'rating' => (int)$item->rating,
+                'title' => $item->title ?: 'Feedback Review',
+                'comment' => $item->comment ?: '',
+                'ratings' => $ratingsBreakdown,
+                'would_recommend' => (bool)$item->would_recommend,
+                'status' => $item->status ?? 'published',
+                'created_at' => $item->created_at ? $item->created_at->toISOString() : null,
+                'created_at_human' => $item->created_at ? $item->created_at->diffForHumans() : '',
+            ];
+        });
+
+        // Compute System-Wide Feedback Metrics & Analytics
+        $totalCount = Feedback::count();
+        $avgRating = $totalCount > 0 ? round(Feedback::avg('rating'), 1) : 5.0;
+        $recommendCount = Feedback::where('would_recommend', true)->count();
+        $recommendRate = $totalCount > 0 ? round(($recommendCount / $totalCount) * 100) : 100;
+
+        $starCounts = [
+            5 => Feedback::where('rating', 5)->count(),
+            4 => Feedback::where('rating', 4)->count(),
+            3 => Feedback::where('rating', 3)->count(),
+            2 => Feedback::where('rating', 2)->count(),
+            1 => Feedback::where('rating', 1)->count(),
+        ];
+
+        $categoryCounts = [
+            'all' => $totalCount,
+            'course' => Feedback::where('feedbackable_type', \App\Models\Course::class)->count(),
+            'subject' => Feedback::where('feedbackable_type', \App\Models\Subject::class)->count(),
+            'class' => Feedback::where('feedbackable_type', \App\Models\Classes::class)->count(),
+            'staff' => Feedback::where('feedbackable_type', \App\Models\Staff::class)->count(),
+            'exam' => Feedback::where('feedbackable_type', \App\Models\ExamAttempt::class)->count(),
+        ];
+
+        $authorCounts = [
+            'all' => $totalCount,
+            'student' => Feedback::where('feedbacker_type', \App\Models\Student::class)->count(),
+            'guardian' => Feedback::where('feedbacker_type', \App\Models\Guardian::class)->count(),
+            'staff' => Feedback::where('feedbacker_type', \App\Models\Staff::class)->count(),
+        ];
+
+        return response()->json([
+            'success' => true,
+            'feedbacks' => $paginated,
+            'stats' => [
+                'total' => $totalCount,
+                'average_rating' => $avgRating,
+                'recommendation_rate' => $recommendRate,
+                'stars' => $starCounts,
+                'categories' => $categoryCounts,
+                'authors' => $authorCounts,
+            ]
+        ], 200);
+    }
+
+    /**
+     * Admin: Toggle status of feedback (published / hidden)
+     */
+    public function adminToggleStatus(Request $request, $id)
+    {
+        $feedback = Feedback::findOrFail($id);
+        $newStatus = $feedback->status === 'published' ? 'hidden' : 'published';
+        if ($request->filled('status')) {
+            $newStatus = $request->status === 'hidden' ? 'hidden' : 'published';
+        }
+        $feedback->status = $newStatus;
+        $feedback->save();
+
+        return response()->json([
+            'success' => true,
+            'message' => "Feedback status updated to {$newStatus}.",
+            'status' => $newStatus,
+        ], 200);
+    }
+
+    /**
+     * Admin: Delete feedback
+     */
+    public function adminDestroy(Request $request, $id)
+    {
+        $feedback = Feedback::findOrFail($id);
+        $feedback->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Feedback deleted successfully.',
+        ], 200);
+    }
 }

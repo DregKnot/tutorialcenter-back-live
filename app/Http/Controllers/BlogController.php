@@ -218,6 +218,7 @@ class BlogController extends Controller
 
         $validator = Validator::make($request->all(), [
             'title' => 'sometimes|required|string|max:255',
+            'meta_keywords' => 'nullable|string|max:500',
             'blog_category_id' => 'nullable|exists:blog_categories,id',
             'category_name' => 'nullable|string|max:100',
             'content' => 'sometimes|required|string',

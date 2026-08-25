@@ -218,7 +218,9 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
 | Staff Registration Verification
 |--------------------------------------------------------------------------
 */
-Route::prefix('staffs')->group(function () {
+Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
+
+    Route::prefix('staffs')->group(function () {
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
         Route::get('/leaderboard/students/{id}', [AdminDashboardAnalyticsController::class, 'studentLeaderboardDetail']); // Student Subject & Daily Leaderboard Detail
     Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
@@ -288,6 +290,10 @@ Route::prefix('staffs')->group(function () {
  * Admin Only Protected Routes (enforced in controller)
  */
 Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo'])->group(function () {
+    Route::get('/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
+    Route::patch('/feedbacks/{id}/status', [\App\Http\Controllers\FeedbackController::class, 'adminToggleStatus']);
+    Route::delete('/feedbacks/{id}/admin', [\App\Http\Controllers\FeedbackController::class, 'adminDestroy']);
+
 
     // Guardians Management
     Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
@@ -304,6 +310,8 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     });
 
     // Staffs Management
+    Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
+
     Route::prefix('staffs')->group(function () {
         Route::get('/all', [StaffController::class, 'index']); // List all staff members
         Route::get('/{id}', [StaffController::class, 'show']); // View a specific staff member's details
@@ -504,3 +512,7 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
         Route::get('/{id}', [StudentController::class, 'show']); // Show student details
     });
 });
+
+Route::get('/staffs/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
+
+Route::get('/staffs/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
