@@ -1717,6 +1717,25 @@ class StudentController extends Controller
         }
     }
 
+    private function formatAchievement($award): ?array
+    {
+        if (! $award?->wasRecentlyCreated) {
+            return null;
+        }
+
+        $award->loadMissing('achievement');
+
+        return [
+            'id' => $award->id,
+            'code' => $award->achievement?->code,
+            'name' => $award->achievement?->name,
+            'category' => $award->achievement?->category,
+            'type' => $award->achievement?->type,
+            'tier' => $award->tier,
+            'awarded_at' => $award->awarded_at,
+        ];
+    }
+
 
     /**
      * Get all guardians for admin selection

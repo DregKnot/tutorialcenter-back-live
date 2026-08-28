@@ -48,4 +48,14 @@ return [
         'client_id' => env('ZOOM_CLIENT_ID'),
         'client_secret' => env('ZOOM_CLIENT_SECRET'),
     ],
+
+    'paystack' => [
+        'public_key' => env('PAYSTACK_PUBLIC_KEY'),
+        'secret_key' => env('PAYSTACK_SECRET_KEY'),
+        'payment_url' => env('PAYSTACK_PAYMENT_URL', 'https://api.paystack.co'),
+    ],
+
+    'affiliate' => [
+        'url' => env('AFFILIATE_API_URL', 'http://tutorialcenter-affiliate.test'),
+    ],
 ];
