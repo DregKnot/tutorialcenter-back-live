@@ -6,6 +6,7 @@ use App\Models\CoursesEnrollment;
 use App\Models\Payment;
 use App\Services\AdminNotificationService;
 use App\Services\ExamPreparationAchievementService;
+use App\Services\PaystackService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -247,6 +248,56 @@ class PaymentController extends Controller
 
             return response()->json([
                 'message' => 'Registration recovery failed.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Public / Authenticated: Verify Paystack payment atomically and activate courses.
+     */
+    public function verifyPaystackPayment(Request $request, PaystackService $paystackService)
+    {
+        $validated = $request->validate([
+            'reference' => 'required|string',
+            'fallback_metadata' => 'nullable|array',
+        ]);
+
+        $reference = trim($validated['reference']);
+
+        try {
+            // 1. Verify with Paystack server-to-server
+            $verifyResult = $paystackService->verifyTransaction($reference);
+
+            if (!$verifyResult['status'] || empty($verifyResult['data'])) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $verifyResult['message'] ?? 'Payment verification failed on Paystack.',
+                ], 400);
+            }
+
+            // 2. Process and activate course in database
+            $processResult = $paystackService->processSuccessfulPayment(
+                $verifyResult['data'],
+                $validated['fallback_metadata'] ?? []
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => $processResult['already_processed']
+                    ? 'Payment was already verified and activated.'
+                    : 'Payment verified and courses activated successfully.',
+                'payments' => $processResult['payments'],
+            ], 200);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('verifyPaystackPayment error', [
+                'reference' => $reference,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to process payment verification.',
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }

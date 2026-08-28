@@ -272,13 +272,6 @@ class CourseController extends Controller
                 ], 404);
             }
 
-            if (CoursesEnrollment::where('course_id', $course->id)->where('student_id', $student->id)->exists()) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'You are already enrolled in this course.',
-                ], 409);
-            }
-
             $months = match ($request->billing_cycle) {
                 'monthly' => 1,
                 'quarterly' => 3,
@@ -290,6 +283,44 @@ class CourseController extends Controller
             if ($months > 1)
                 $cost *= 0.95; // 5% discount for multi-month cycles
 
+            $existingEnrollment = CoursesEnrollment::withTrashed()
+                ->where('course_id', $course->id)
+                ->where('student_id', $student->id)
+                ->first();
+
+            if ($existingEnrollment) {
+                $isActivelyEnrolled = !$existingEnrollment->trashed()
+                    && $existingEnrollment->status === 'active'
+                    && $existingEnrollment->end_date
+                    && \Carbon\Carbon::parse($existingEnrollment->end_date)->isFuture();
+
+                if ($isActivelyEnrolled) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'You are already actively enrolled in this course.',
+                    ], 409);
+                }
+
+                if ($existingEnrollment->trashed()) {
+                    $existingEnrollment->restore();
+                }
+
+                $existingEnrollment->update([
+                    'start_date' => now(),
+                    'end_date' => now()->addMonths($months),
+                    'billing_cycle' => $request->billing_cycle,
+                    'cost' => $cost,
+                    'status' => 'pending',
+                ]);
+
+                DB::commit();
+                return response()->json([
+                    'success' => true,
+                    'message' => 'Enrollment renewed successfully.',
+                    'enrollment' => $existingEnrollment,
+                ], 200);
+            }
+
             $enrollment = CoursesEnrollment::create([
                 'course_id' => $course->id,
                 'student_id' => $student->id,
@@ -297,6 +328,7 @@ class CourseController extends Controller
                 'end_date' => now()->addMonths($months),
                 'billing_cycle' => $request->billing_cycle,
                 'cost' => $cost,
+                'status' => 'pending',
             ]);
 
             DB::commit();

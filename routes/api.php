@@ -19,6 +19,7 @@ use App\Http\Controllers\PastQuestionController;
 use App\Http\Controllers\PastQuestionGroupController;
 use App\Http\Controllers\PastQuestionOptionController;
 use App\Http\Controllers\PaymentController;
+use App\Http\Controllers\PaystackWebhookController;
 use App\Http\Controllers\SpecialEventCalendarController;
 use App\Http\Controllers\StaffController;
 use App\Http\Controllers\StudentAchievementController;
@@ -50,6 +51,8 @@ Route::post('/subject/enrollment', [SubjectController::class, 'subjectEnroll']);
 Route::get('/courses/{courseId}/subjects', [SubjectController::class, 'subjectsByCourse']); // Public: List subjects by course
 Route::get('/courses/{courseId}/subjects/{department}', [SubjectController::class, 'subjectsByCourseAndDepartment']); // Public: List subjects by course and department
 Route::post('payments', [PaymentController::class, 'store']);
+Route::post('payments/verify-paystack', [PaymentController::class, 'verifyPaystackPayment']);
+Route::post('paystack/webhook', [PaystackWebhookController::class, 'handle']);
 
 // Blog Public Routes
 Route::get('/blogs', [BlogController::class, 'index']);
