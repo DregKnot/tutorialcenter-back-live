@@ -107,6 +107,7 @@ class PaystackService
             // 1. Check if this reference was already processed successfully
             $existingPayment = Payment::where('gateway_reference', $reference)
                 ->where('status', 'successful')
+                ->lockForUpdate()
                 ->first();
 
             if ($existingPayment) {
@@ -246,7 +247,19 @@ class PaystackService
             default => 1,
         };
 
-        $price = (float) ($courseItem['price'] ?? ($course->price * $months));
+        // Price Calculation: Minimum base price derived from official Course model
+        $standardPrice = (float) ($course->price * $months);
+        $suppliedPrice = (float) ($courseItem['price'] ?? $standardPrice);
+
+        // Security check: If supplied price is suspiciously low (< 100 NGN) and standard price > 1000, enforce official price
+        if ($suppliedPrice < 100 && $standardPrice > 1000) {
+            Log::warning('Supplied price below threshold. Enforcing official price.', [
+                'supplied' => $suppliedPrice,
+                'expected' => $standardPrice,
+                'course_id' => $courseId
+            ]);
+            $suppliedPrice = $standardPrice;
+        }
 
         // Find existing enrollment or create new one
         $enrollment = CoursesEnrollment::where('course_id', $courseId)
@@ -261,7 +274,7 @@ class PaystackService
                 'start_date' => $startDate,
                 'end_date' => $endDate,
                 'billing_cycle' => $billingCycle,
-                'cost' => $price,
+                'cost' => $suppliedPrice,
                 'status' => 'active',
             ]);
         } else {
@@ -271,20 +284,32 @@ class PaystackService
                 'start_date' => $startDate,
                 'end_date' => $endDate,
                 'billing_cycle' => $billingCycle,
-                'cost' => $price,
+                'cost' => $suppliedPrice,
                 'status' => 'active',
             ]);
         }
 
-        // Attach selected subjects
+        // Attach selected subjects safely (preventing foreign key constraint errors on subject_id 0)
         $subjects = $courseItem['subjects'] ?? [];
-        foreach ($subjects as $subjectId) {
-            if ($subjectId) {
-                SubjectsEnrollment::firstOrCreate([
-                    'course_enrollment_id' => $enrollment->id,
-                    'student_id' => $student->id,
-                    'subject_id' => (int) $subjectId,
-                ]);
+        if (is_array($subjects)) {
+            foreach ($subjects as $subjectItem) {
+                $subId = 0;
+                if (is_numeric($subjectItem)) {
+                    $subId = (int) $subjectItem;
+                } elseif (is_array($subjectItem) && !empty($subjectItem['id'])) {
+                    $subId = (int) $subjectItem['id'];
+                } elseif (is_string($subjectItem) && trim($subjectItem) !== '') {
+                    $subObj = \App\Models\Subject::where('name', trim($subjectItem))->first();
+                    $subId = $subObj ? $subObj->id : 0;
+                }
+
+                if ($subId > 0 && \App\Models\Subject::where('id', $subId)->exists()) {
+                    SubjectsEnrollment::firstOrCreate([
+                        'course_enrollment_id' => $enrollment->id,
+                        'student_id' => $student->id,
+                        'subject_id' => $subId,
+                    ]);
+                }
             }
         }
 
@@ -292,7 +317,7 @@ class PaystackService
         $payment = Payment::create([
             'student_id' => $student->id,
             'course_enrollment_id' => $enrollment->id,
-            'amount' => $price,
+            'amount' => $suppliedPrice,
             'payment_method' => $channel ?: 'card',
             'billing_cycle' => $billingCycle,
             'gateway' => 'paystack',

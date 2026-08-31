@@ -409,18 +409,50 @@ class ExamAnalyticsService
 
         // Group by Subject to calculate subject dominance, correct answers, and points
         $subjectBreakdowns = $attempts->groupBy(function ($attempt) {
-            return $attempt->examYear?->subject?->name ?? 'General Studies';
-        })->map(function ($subjectAttempts, $subjectName) use ($today) {
+            return $attempt->examYear?->subject?->id ?? 0;
+        })->map(function ($subjectAttempts, $subjectId) use ($today, $student) {
+            $first = $subjectAttempts->first();
+            $subjectName = $first->examYear?->subject?->name ?? 'General Studies';
+
             $todayAttempts = $subjectAttempts->filter(function ($a) use ($today) {
                 return $a->submitted_at && $a->submitted_at->toDateString() === $today;
             });
 
+            $totalCorrect = (int) $subjectAttempts->sum('correct_answers');
+            $totalQuestionsAttempted = (int) $subjectAttempts->sum('total_questions');
+            $accuracy = $totalQuestionsAttempted > 0 ? round(($totalCorrect / $totalQuestionsAttempted) * 100, 1) : 0;
+
+            $totalInBank = 0;
+            $uniqueAnswered = 0;
+            $bankCoverage = 0;
+
+            if ($subjectId > 0) {
+                $totalInBank = \App\Models\PastQuestion::whereHas('examYear', function ($q) use ($subjectId) {
+                    $q->where('subject_id', $subjectId)->whereNull('deleted_at');
+                })->whereNull('deleted_at')->count();
+
+                $uniqueAnswered = \DB::table('exam_attempt_answers')
+                    ->join('exam_attempts', 'exam_attempts.id', '=', 'exam_attempt_answers.exam_attempt_id')
+                    ->join('exam_years', 'exam_years.id', '=', 'exam_attempts.exam_year_id')
+                    ->where('exam_attempts.student_id', $student->id)
+                    ->where('exam_years.subject_id', $subjectId)
+                    ->distinct('exam_attempt_answers.past_question_id')
+                    ->count('exam_attempt_answers.past_question_id');
+
+                $bankCoverage = $totalInBank > 0 ? round(($uniqueAnswered / $totalInBank) * 100, 1) : 0;
+            }
+
             return [
+                'subject_id' => $subjectId,
                 'subject' => $subjectName,
                 'accumulated_score' => (int) $subjectAttempts->sum('score'),
                 'total_attempts' => (int) $subjectAttempts->count(),
-                'total_correct' => (int) $subjectAttempts->sum('correct_answers'),
-                'total_questions' => (int) $subjectAttempts->sum('total_questions'),
+                'total_correct' => $totalCorrect,
+                'total_questions' => $totalQuestionsAttempted,
+                'accuracy_percentage' => $accuracy,
+                'unique_questions_answered' => $uniqueAnswered,
+                'total_questions_in_bank' => $totalInBank,
+                'bank_coverage_percentage' => $bankCoverage,
                 'highest_score' => (int) ($subjectAttempts->max('percentage') ?? 0),
                 'avg_score' => (int) round($subjectAttempts->avg('percentage') ?? 0),
                 'today_score' => (int) $todayAttempts->sum('score'),
