@@ -243,70 +243,158 @@ class ClassesController extends Controller
     /**
      * (student) Get student schedule with basic session info
     **/
-    public function studentCalenderSchedule(Request $request){
-        $student = $request->user();
+    // public function studentCalenderSchedule(Request $request){
+    //     $student = $request->user();
 
-        /*
-        |--------------------------------------------------------------------------
-        | 1. Get Active Course Enrollments
-        |--------------------------------------------------------------------------
-        */
+    //     /*
+    //     |--------------------------------------------------------------------------
+    //     | 1. Get Active Course Enrollments
+    //     |--------------------------------------------------------------------------
+    //     */
 
-        $activeEnrollments = $student->courseEnrollments()
-            ->where('status', 'active')
-            ->where('end_date', '>=', now())
-            ->whereHas('payments', function ($query) {
-                $query->where('status', 'successful');
-            })
-            ->pluck('id');
+    //     $activeEnrollments = $student->courseEnrollments()
+    //         ->where('status', 'active')
+    //         ->where('end_date', '>=', now())
+    //         ->whereHas('payments', function ($query) {
+    //             $query->where('status', 'successful');
+    //         })
+    //         ->pluck('id');
 
-        if ($activeEnrollments->isEmpty()) {
-            return response()->json([
-                'message' => 'No active courses found',
-                'sessions' => []
-            ]);
-        }
+    //     if ($activeEnrollments->isEmpty()) {
+    //         return response()->json([
+    //             'message' => 'No active courses found',
+    //             'sessions' => []
+    //         ]);
+    //     }
 
-        /*
-        |--------------------------------------------------------------------------
-        | 2. Get Registered Subjects
-        |--------------------------------------------------------------------------
-        */
+    //     /*
+    //     |--------------------------------------------------------------------------
+    //     | 2. Get Registered Subjects
+    //     |--------------------------------------------------------------------------
+    //     */
 
-        $subjectIds = $student->subjectEnrollments()
-            ->whereIn('course_enrollment_id', $activeEnrollments)
-            ->pluck('subject_id');
+    //     $subjectIds = $student->subjectEnrollments()
+    //         ->whereIn('course_enrollment_id', $activeEnrollments)
+    //         ->pluck('subject_id');
 
-        if ($subjectIds->isEmpty()) {
-            return response()->json([
-                'message' => 'No subjects registered',
-                'sessions' => []
-            ]);
-        }
+    //     if ($subjectIds->isEmpty()) {
+    //         return response()->json([
+    //             'message' => 'No subjects registered',
+    //             'sessions' => []
+    //         ]);
+    //     }
 
-        /*
-        |--------------------------------------------------------------------------
-        | 3. Fetch Sessions
-        |--------------------------------------------------------------------------
-        */
+    //     /*
+    //     |--------------------------------------------------------------------------
+    //     | 3. Fetch Sessions
+    //     |--------------------------------------------------------------------------
+    //     */
 
-        $sessions = ClassSession::with([
-            'class.subject',
-            'class.staffs'
-        ])
-            ->whereHas('class', function ($query) use ($subjectIds) {
-                $query->whereIn('subject_id', $subjectIds)
-                    ->where('status', 'active');
-            })
-            ->whereDate('session_date', '>=', now())
-            ->orderBy('session_date')
-            ->orderBy('starts_at')
-            ->get();
+    //     $sessions = ClassSession::with([
+    //         'class.subject',
+    //         'class.staffs'
+    //     ])
+    //         ->whereHas('class', function ($query) use ($subjectIds) {
+    //             $query->whereIn('subject_id', $subjectIds)
+    //                 ->where('status', 'active');
+    //         })
+    //         ->whereDate('session_date', '>=', now())
+    //         ->orderBy('session_date')
+    //         ->orderBy('starts_at')
+    //         ->get();
 
+    //     return response()->json([
+    //         'sessions' => $sessions
+    //     ]);
+    // }
+
+    /**
+ * (student) Get student calendar schedule
+ */
+public function studentCalenderSchedule(Request $request)
+{
+    $student = $request->user();
+
+    /*
+    |--------------------------------------------------------------------------
+    | 1. Get Active Course Enrollments
+    |--------------------------------------------------------------------------
+    */
+
+    $activeEnrollments = $student->courseEnrollments()
+        ->where('status', 'active')
+        ->where('end_date', '>=', now())
+        ->whereHas('payments', function ($query) {
+            $query->where('status', 'successful');
+        })
+        ->pluck('id');
+
+    if ($activeEnrollments->isEmpty()) {
         return response()->json([
-            'sessions' => $sessions
+            'message' => 'No active courses found',
+            'sessions' => []
         ]);
     }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 2. Get Registered Subjects
+    |--------------------------------------------------------------------------
+    */
+
+    $subjectIds = $student->subjectEnrollments()
+        ->whereIn('course_enrollment_id', $activeEnrollments)
+        ->pluck('subject_id');
+
+    if ($subjectIds->isEmpty()) {
+        return response()->json([
+            'message' => 'No subjects registered',
+            'sessions' => []
+        ]);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | 3. Calendar Date Range
+    |--------------------------------------------------------------------------
+    */
+
+    $startDate = $request->input(
+        'start',
+        now()->startOfMonth()->toDateString()
+    );
+
+    $endDate = $request->input(
+        'end',
+        now()->endOfMonth()->toDateString()
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | 4. Fetch Sessions
+    |--------------------------------------------------------------------------
+    */
+
+    $sessions = ClassSession::with([
+        'class.subject',
+        'class.staffs'
+    ])
+        ->whereHas('class', function ($query) use ($subjectIds) {
+            $query->whereIn('subject_id', $subjectIds)
+                ->where('status', 'active');
+        })
+        ->whereBetween('session_date', [
+            $startDate,
+            $endDate
+        ])
+        ->orderBy('session_date')
+        ->orderBy('starts_at')
+        ->get();
+
+    return response()->json([
+        'sessions' => $sessions
+    ]);
+}
 
     /**
      * (student) Get student schedule with attendance status
@@ -411,15 +499,6 @@ class ClassesController extends Controller
                 'older_sessions' => $olderSessions,
                 'attendance' => $attendance,
             ]);
-            
-            /*
-            return response()->json([
-                'next_class' => $nextClass ? array_merge($nextClass->toArray(), ['attendance_status' => $attendance[$nextClass->id] ?? 'not_marked']) : null,
-                'today_classes' => $todayClasses->map(fn($session) => array_merge($session->toArray(), ['attendance_status' => $attendance[$session->id] ?? 'not_marked'])),
-                'week_schedule' => $weekSchedule->map(fn($sessions) => $sessions->map(fn($session) => array_merge($session->toArray(), ['attendance_status' => $attendance[$session->id] ?? 'not_marked']))),
-                'upcoming_sessions' => $upcomingSessions->map(fn($session) => array_merge($session->toArray(), ['attendance_status' => $attendance[$session->id] ?? 'not_marked'])),
-            ]);
-            */
         } catch (\Throwable $e) {
             return response()->json([
                 'message' => 'Failed to fetch schedule',
