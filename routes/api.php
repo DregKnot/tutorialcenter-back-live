@@ -213,6 +213,15 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
     Route::get('/dashboard/wards', [GuardianDashboardController::class, 'getWardsDashboard']);
     Route::get('/dashboard/wards/{student_id}/performance', [GuardianDashboardController::class, 'getWardPerformance']);
     Route::get('/dashboard/wards/{student_id}/attendance', [GuardianDashboardController::class, 'getWardAttendance']);
+    Route::get('/dashboard/wards/{student_id}/performance-overview', [GuardianDashboardController::class, 'getWardPerformanceOverview']);
+    Route::get('/dashboard/wards/{student_id}/subscription', [GuardianDashboardController::class, 'getWardSubscription']);
+    Route::get('/dashboard/wards/{student_id}/weekly-report', [GuardianDashboardController::class, 'getWardWeeklyReport']);
+    Route::get('/dashboard/wards/{student_id}/performance-details', [GuardianDashboardController::class, 'getWardDetailedPerformance']);
+        Route::get('/audit-logs', [GuardianDashboardController::class, 'getWardAuditLogs']);
+    Route::post('/wards/create-or-link', [GuardianDashboardController::class, 'createOrLinkWard']);
+    Route::get('/payments/history', [GuardianDashboardController::class, 'getPaymentHistory']);
+    Route::post('/payments/training/renew', [GuardianDashboardController::class, 'renewTrainingSubscription']);
+    Route::post('/payments/training/add-course', [GuardianDashboardController::class, 'addTrainingCourse']);
     Route::post('/logout', [GuardianController::class, 'logout']);
 });
 

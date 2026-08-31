@@ -270,13 +270,43 @@ class PaymentController extends Controller
             $verifyResult = $paystackService->verifyTransaction($reference);
 
             if (!$verifyResult['status'] || empty($verifyResult['data'])) {
+                // SECURITY HARDENING: Fallback is strictly disallowed in production
+                $isLocalOrTesting = app()->environment('local', 'testing') || config('app.env') === 'local';
+                $isMockAllowed = $isLocalOrTesting && (
+                    str_starts_with($reference, 'TCA_') || 
+                    str_starts_with($reference, 'TCR_') ||
+                    config('services.paystack.mock_fallback', false)
+                );
+
+                if ($isMockAllowed && !empty($validated['fallback_metadata']) && (!empty($validated['fallback_metadata']['courses']) || !empty($validated['fallback_metadata']['student_id']))) {
+                    \Illuminate\Support\Facades\Log::info('Local mock verification used for reference', ['reference' => $reference]);
+                    $mockData = [
+                        'reference' => $reference,
+                        'amount' => ((float) ($validated['fallback_metadata']['courses'][0]['price'] ?? 10000)) * 100,
+                        'status' => 'success',
+                        'paid_at' => now()->toIso8601String(),
+                        'channel' => 'card',
+                        'metadata' => $validated['fallback_metadata'],
+                    ];
+                    $processResult = $paystackService->processSuccessfulPayment(
+                        $mockData,
+                        $validated['fallback_metadata']
+                    );
+
+                    return response()->json([
+                        'success' => true,
+                        'message' => 'Payment verified (Development Mode) and courses activated.',
+                        'payments' => $processResult['payments'],
+                    ], 200);
+                }
+
                 return response()->json([
                     'success' => false,
                     'message' => $verifyResult['message'] ?? 'Payment verification failed on Paystack.',
                 ], 400);
             }
 
-            // 2. Process and activate course in database
+            // 2. Process and activate course in database atomically
             $processResult = $paystackService->processSuccessfulPayment(
                 $verifyResult['data'],
                 $validated['fallback_metadata'] ?? []
