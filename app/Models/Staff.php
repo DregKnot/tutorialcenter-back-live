@@ -52,6 +52,12 @@ class Staff extends Authenticatable
             ->withTimestamps();
     }
 
+    // Assessments created by this staff member
+    public function assessments()
+    {
+        return $this->hasMany(Assessment::class, 'created_by');
+    }
+
     public function scopeAdmins($query)
     {
         return $query->where('role', 'admin');

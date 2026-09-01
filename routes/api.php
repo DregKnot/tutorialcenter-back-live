@@ -31,6 +31,7 @@ use App\Http\Controllers\SubjectController;
 use App\Http\Controllers\SupportController;
 use App\Http\Controllers\BlogController;
 use App\Http\Controllers\ZoomController;
+use App\Http\Controllers\AssessmentController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -127,6 +128,13 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
     Route::post('/notifications/mark-all-read', [NotificationController::class, 'markAllAsRead']);
     // Route::delete('/notifications/{id}', [NotificationController::class, 'destroy']);
     Route::get('/notifications/unread-count', [NotificationController::class, 'unreadCount']);
+
+    // Assessment Routes (student)
+    Route::prefix('assessments')->group(function () {
+        Route::get('/', [AssessmentController::class, 'studentIndex']);
+        Route::get('/{assessment}', [AssessmentController::class, 'studentShow']);
+        Route::post('/{assessment}/submit', [AssessmentController::class, 'submit']);
+    });
 
     /*
     |--------------------------------------------------------------------------
@@ -236,7 +244,7 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
 */
 Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
 
-    Route::prefix('staffs')->group(function () {
+Route::prefix('staffs')->group(function () {
     Route::post('/classes/tutor-report', [\App\Http\Controllers\FeedbackController::class, 'storeTutorReport']);
 
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
@@ -329,6 +337,12 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
 
     // Staffs Management
     Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
+
+    // Assessment Routes (read-only for admin)
+    Route::prefix('assessments')->group(function () {
+        Route::get('/', [AssessmentController::class, 'adminIndex']);
+        Route::get('/{assessment}/stats', [AssessmentController::class, 'adminStats']);
+    });
 
     Route::prefix('staffs')->group(function () {
     Route::post('/classes/tutor-report', [\App\Http\Controllers\FeedbackController::class, 'storeTutorReport']);
@@ -504,6 +518,20 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
     Route::prefix('classes')->group(function () {
         Route::get('/schedule', [ClassesController::class, 'tutorClassesSchedule']); // Get tutor schedule with attendance status
     });
+
+    // Assessment Routes (tutor only)
+    Route::prefix('assessments')->group(function () {
+        Route::get('/', [AssessmentController::class, 'tutorIndex']);
+        Route::post('/', [AssessmentController::class, 'store']);
+        Route::get('/{assessment}', [AssessmentController::class, 'show']);
+        Route::put('/{assessment}', [AssessmentController::class, 'update']);
+        Route::delete('/{assessment}', [AssessmentController::class, 'destroy']);
+        Route::post('/{assessment}/publish', [AssessmentController::class, 'publish']);
+        Route::get('/{assessment}/submissions', [AssessmentController::class, 'submissions']);
+        Route::get('/{assessment}/submissions/{submission}', [AssessmentController::class, 'submission']);
+        Route::post('/{assessment}/submissions/{submission}/grade', [AssessmentController::class, 'grade']);
+        Route::post('/{assessment}/submissions/{submission}/reopen', [AssessmentController::class, 'reopen']);
+    });
 });
 
 /*
@@ -517,6 +545,12 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
     // Advisor Dashboard
     Route::prefix('dashboard')->group(function () {
         Route::get('/stats', [AdvisorDashboardController::class, 'stats']); // Get average points and attempts
+    });
+
+    // Assessment Routes (read-only for advisor)
+    Route::prefix('assessments')->group(function () {
+        Route::get('/', [AssessmentController::class, 'advisorIndex']);
+        Route::get('/{assessment}/stats', [AssessmentController::class, 'advisorStats']);
     });
 
     // Guardians Management

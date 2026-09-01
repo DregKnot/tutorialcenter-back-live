@@ -56,6 +56,12 @@ class Student extends Model
         return $this->hasMany(SubjectsEnrollment::class, 'student_id');
     }
 
+    // Each student can have many assessment submissions
+    public function assessments()
+    {
+        return $this->hasMany(AssessmentSubmission::class, 'student_id');
+    }
+
     // Each student can have many payments
     public function payments()
     {
