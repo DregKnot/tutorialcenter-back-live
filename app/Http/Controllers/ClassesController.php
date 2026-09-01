@@ -387,15 +387,6 @@ class ClassesController extends Controller
                 'sessions' => $allSessions,
                 'attendance' => $attendance,
             ]);
-            
-            /*
-            return response()->json([
-                'next_class' => $nextClass ? array_merge($nextClass->toArray(), ['attendance_status' => $attendance[$nextClass->id] ?? 'not_marked']) : null,
-                'today_classes' => $todayClasses->map(fn($session) => array_merge($session->toArray(), ['attendance_status' => $attendance[$session->id] ?? 'not_marked'])),
-                'week_schedule' => $weekSchedule->map(fn($sessions) => $sessions->map(fn($session) => array_merge($session->toArray(), ['attendance_status' => $attendance[$session->id] ?? 'not_marked']))),
-                'upcoming_sessions' => $upcomingSessions->map(fn($session) => array_merge($session->toArray(), ['attendance_status' => $attendance[$session->id] ?? 'not_marked'])),
-            ]);
-            */
         } catch (\Throwable $e) {
             return response()->json([
                 'message' => 'Failed to fetch schedule',
