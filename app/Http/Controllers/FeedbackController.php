@@ -432,4 +432,135 @@ class FeedbackController extends Controller
             'message' => 'Feedback deleted successfully.',
         ], 200);
     }
+
+    /**
+     * Staff/Tutor: Submit Official Post-Class Tutor Report
+     * [HTTP]: POST /api/staffs/classes/tutor-report
+     */
+    public function storeTutorReport(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'class_session_id' => 'required|exists:class_sessions,id',
+            'attendance' => 'required|array',
+            'attendance.present_count' => 'required|integer|min:0',
+            'attendance.total_count' => 'required|integer|min:0',
+            'attendance.has_issues' => 'required|boolean',
+            'attendance.issues_detail' => 'nullable|string',
+
+            'lesson_delivery' => 'required|array',
+            'lesson_delivery.aspects_covered' => 'required|string',
+            'lesson_delivery.completion_status' => 'required|string|in:Fully,Partially,Not completed',
+            'lesson_delivery.left_reason' => 'nullable|string',
+
+            'student_understanding' => 'required|array',
+            'student_understanding.evidence' => 'required|string',
+            'student_understanding.struggled_concepts' => 'nullable|string',
+            'student_understanding.students_needing_attention' => 'nullable|string',
+
+            'student_engagement' => 'required|array',
+            'student_engagement.participation_level' => 'required|string|in:Very Active,Active,Moderate,Low',
+            'student_engagement.responded_well_to' => 'nullable|string',
+            'student_engagement.issues_affecting_concentration' => 'nullable|string',
+
+            'assessment' => 'required|array',
+            'assessment.assessed_today' => 'required|boolean',
+            'assessment.general_performance' => 'nullable|string|in:Excellent,Good,Average,Poor',
+
+            'class_challenges' => 'required|array',
+            'class_challenges.challenges' => 'nullable|array',
+            'class_challenges.other_challenge' => 'nullable|string',
+            'class_challenges.explanation' => 'nullable|string',
+
+            'next_steps' => 'required|array',
+            'next_steps.improvement_plan' => 'required|string',
+            'next_steps.support_required' => 'required|boolean',
+            'next_steps.support_detail' => 'nullable|string',
+
+            'overall_assessment' => 'required|array',
+            'overall_assessment.management_summary' => 'required|string',
+            'overall_assessment.tutor_signature' => 'nullable|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed. Please complete all required sections of the report.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        try {
+            $staff = $request->user();
+            $sessionId = (int) $request->input('class_session_id');
+            $session = \App\Models\ClassSession::with(['class.subject'])->findOrFail($sessionId);
+
+            // Compute equivalent numerical score for reporting/statistics (1-5 scale)
+            $performanceScore = match ($request->input('assessment.general_performance')) {
+                'Excellent' => 5,
+                'Good' => 4,
+                'Average' => 3,
+                'Poor' => 2,
+                default => 4,
+            };
+
+            $reportData = [
+                'session_metadata' => [
+                    'session_id' => $session->id,
+                    'class_id' => $session->class_id,
+                    'subject' => $session->class?->subject?->name ?? 'General Subject',
+                    'class_title' => $session->class?->title ?? 'Masterclass',
+                    'date' => $session->session_date ? $session->session_date->toDateString() : today()->toDateString(),
+                    'time' => "{$session->starts_at} - {$session->ends_at}",
+                    'tutor_name' => trim(($staff->firstname ?? 'Tutor') . ' ' . ($staff->surname ?? '')),
+                ],
+                'attendance' => $request->input('attendance'),
+                'lesson_delivery' => $request->input('lesson_delivery'),
+                'student_understanding' => $request->input('student_understanding'),
+                'student_engagement' => $request->input('student_engagement'),
+                'assessment' => $request->input('assessment'),
+                'class_challenges' => $request->input('class_challenges'),
+                'next_steps' => $request->input('next_steps'),
+                'overall_assessment' => array_merge(
+                    $request->input('overall_assessment', []),
+                    [
+                        'tutor_name' => trim(($staff->firstname ?? 'Tutor') . ' ' . ($staff->surname ?? '')),
+                        'submitted_at' => now()->toIso8601String(),
+                    ]
+                ),
+            ];
+
+            // Find existing feedback or create new
+            $feedback = \App\Models\Feedback::updateOrCreate(
+                [
+                    'feedbacker_type' => get_class($staff),
+                    'feedbacker_id' => $staff->id,
+                    'feedbackable_type' => \App\Models\Classes::class,
+                    'feedbackable_id' => $session->class_id,
+                ],
+                [
+                    'rating' => $performanceScore,
+                    'title' => "Post-Class Report: " . ($session->class?->title ?? 'Lesson'),
+                    'comment' => $request->input('overall_assessment.management_summary'),
+                    'ratings' => $reportData,
+                    'would_recommend' => true,
+                    'is_anonymous' => false,
+                    'status' => 'approved',
+                ]
+            );
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Post-Class Tutor Report submitted successfully to management.',
+                'data' => $feedback,
+            ], 201);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('storeTutorReport error', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to submit report. ' . $e->getMessage(),
+            ], 500);
+        }
+    }
 }

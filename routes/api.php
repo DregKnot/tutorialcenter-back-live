@@ -80,12 +80,10 @@ Route::middleware('auth:sanctum')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('students')->group(function () {
-    Route::post('/send-phone-otp', [StudentController::class, 'sendPhoneOtp']); // Send Phone OTP
     Route::post('/login', [StudentController::class, 'login']); // Login Method
-    // Route::post('/register', [StudentController::class, 'store']); // Registration
-    // Route::post('/biodata', [StudentController::class, 'biodata']); // Biodata completion (NO AUTH REQUIRED, but verification enforced)
     Route::post('/verify-email', [StudentController::class, 'verifyEmail']); // Email verification
     Route::post('/enroll-course', [CourseController::class, 'courseEnroll']); // Course enrollment
+    Route::post('/send-phone-otp', [StudentController::class, 'sendPhoneOtp']); // Send Phone OTP
     Route::post('/verify-phone', [StudentController::class, 'verifyPhoneOtp']); // Phone OTP verification
     Route::post('/register', [StudentController::class, 'registerWithBiodata']); // Registration
     Route::post('/forget-password', [StudentController::class, 'forgetPassword']); // Forget Password
@@ -100,6 +98,11 @@ Route::prefix('students')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('students')->middleware('auth:sanctum')->group(function () {
+    // Masterclass Attendance Lifecycle
+    Route::post('/classes/attendance/join', [AttendanceController::class, 'joinAttendance']);
+    Route::post('/classes/attendance/heartbeat', [AttendanceController::class, 'heartbeat']);
+    Route::post('/classes/attendance/leave', [AttendanceController::class, 'leaveAttendance']);
+
     // Achievement endpoints: list the student's awards and current progress.
     Route::get('/achievements', [StudentAchievementController::class, 'index']); // List active achievements and earned awards
     Route::get('/achievements/progress', [StudentAchievementController::class, 'progress']); // Get milestone, streak, time, and weekly progress
@@ -221,6 +224,16 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
     Route::get('/dashboard/wards', [GuardianDashboardController::class, 'getWardsDashboard']);
     Route::get('/dashboard/wards/{student_id}/performance', [GuardianDashboardController::class, 'getWardPerformance']);
     Route::get('/dashboard/wards/{student_id}/attendance', [GuardianDashboardController::class, 'getWardAttendance']);
+    Route::get('/dashboard/wards/{student_id}/classes/schedule', [GuardianDashboardController::class, 'getWardClassesSchedule']);
+    Route::get('/dashboard/wards/{student_id}/performance-overview', [GuardianDashboardController::class, 'getWardPerformanceOverview']);
+    Route::get('/dashboard/wards/{student_id}/subscription', [GuardianDashboardController::class, 'getWardSubscription']);
+    Route::get('/dashboard/wards/{student_id}/weekly-report', [GuardianDashboardController::class, 'getWardWeeklyReport']);
+    Route::get('/dashboard/wards/{student_id}/performance-details', [GuardianDashboardController::class, 'getWardDetailedPerformance']);
+        Route::get('/audit-logs', [GuardianDashboardController::class, 'getWardAuditLogs']);
+    Route::post('/wards/create-or-link', [GuardianDashboardController::class, 'createOrLinkWard']);
+    Route::get('/payments/history', [GuardianDashboardController::class, 'getPaymentHistory']);
+    Route::post('/payments/training/renew', [GuardianDashboardController::class, 'renewTrainingSubscription']);
+    Route::post('/payments/training/add-course', [GuardianDashboardController::class, 'addTrainingCourse']);
     Route::post('/logout', [GuardianController::class, 'logout']);
 });
 
@@ -232,6 +245,9 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
 Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
 
 Route::prefix('staffs')->group(function () {
+    Route::prefix('staffs')->group(function () {
+    Route::post('/classes/tutor-report', [\App\Http\Controllers\FeedbackController::class, 'storeTutorReport']);
+
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
         Route::get('/leaderboard/students/{id}', [AdminDashboardAnalyticsController::class, 'studentLeaderboardDetail']); // Student Subject & Daily Leaderboard Detail
     Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
@@ -330,6 +346,8 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     });
 
     Route::prefix('staffs')->group(function () {
+    Route::post('/classes/tutor-report', [\App\Http\Controllers\FeedbackController::class, 'storeTutorReport']);
+
         Route::get('/all', [StaffController::class, 'index']); // List all staff members
         Route::get('/{id}', [StaffController::class, 'show']); // View a specific staff member's details
         Route::post('/register', [StaffController::class, 'store']); // Registration a new Staff
@@ -360,6 +378,9 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     // Classes Management
     Route::prefix('classes')->group(function () {
         Route::post('/create', [ClassesController::class, 'store']); // Create class, class schedule, assign staff to class and class sessions
+        Route::put('/update/{id}', [ClassesController::class, 'update']); // Update class, staff assignments, schedules and sessions
+        Route::post('/update/{id}', [ClassesController::class, 'update']);
+        Route::delete('/destroy/{id}', [ClassesController::class, 'destroy']); // Deactivate class and cleanup future sessions
         Route::get('/all', [ClassesController::class, 'allClassesSchedule']); // List all classes
     });
 

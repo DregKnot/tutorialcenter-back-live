@@ -362,11 +362,15 @@ class CourseController extends Controller
                 'subjects.subject'
             ])
                 ->where('student_id', $studentId)
-                ->where('start_date', '<=', $now)
-                ->where('end_date', '>=', $now)
-                ->whereHas('payments', function ($q) {
-                    $q->where('status', 'successful');
+                ->where('status', 'active')
+                ->where(function ($q) use ($now) {
+                    $q->whereNull('end_date')
+                      ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
                 })
+                ->whereHas('payments', function ($q) {
+                    $q->whereIn('status', ['successful', 'paid']);
+                })
+                ->latest('updated_at')
                 ->get();
 
             $courses = $enrollments->map(function ($enrollment) {
