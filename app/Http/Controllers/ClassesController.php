@@ -486,7 +486,12 @@ class ClassesController extends Controller
                 ->whereDate('session_date', '>=', now())
                 ->orderBy('session_date')
                 ->orderBy('starts_at')
-                ->limit(10)
+                ->limit(200)
+                ->get();
+
+            $allSessions = (clone $sessionQuery)
+                ->orderBy('session_date', 'asc')
+                ->orderBy('starts_at', 'asc')
                 ->get();
     
             $formattedResponse = $this->formatStaffScheduleResponse(
@@ -494,7 +499,8 @@ class ClassesController extends Controller
                 $nextClass,
                 $todayClasses,
                 $weekSchedule,
-                $upcomingSessions
+                $upcomingSessions,
+                $allSessions
             );
             return response()->json($formattedResponse);
         } catch (\Throwable $e) {
@@ -594,7 +600,12 @@ class ClassesController extends Controller
                 ->whereDate('session_date', '>=', now())
                 ->orderBy('session_date')
                 ->orderBy('starts_at')
-                ->limit(10)
+                ->limit(200)
+                ->get();
+
+            $allSessions = (clone $sessionQuery)
+                ->orderBy('session_date', 'asc')
+                ->orderBy('starts_at', 'asc')
                 ->get();
     
             $formattedResponse = $this->formatStaffScheduleResponse(
@@ -602,7 +613,8 @@ class ClassesController extends Controller
                 $nextClass,
                 $todayClasses,
                 $weekSchedule,
-                $upcomingSessions
+                $upcomingSessions,
+                $allSessions
             );
             return response()->json($formattedResponse);
         } catch (\Throwable $e) {
@@ -1002,7 +1014,7 @@ class ClassesController extends Controller
         }
     }
 
-    private function formatStaffScheduleResponse($staff, $nextClass, $todayClasses, $weekSchedule, $upcomingSessions)
+    private function formatStaffScheduleResponse($staff, $nextClass, $todayClasses, $weekSchedule, $upcomingSessions, $allSessions = null)
     {
         $isAdmin = $staff->role === 'admin';
         
@@ -1043,11 +1055,17 @@ class ClassesController extends Controller
             });
         }
 
+        $sessions = null;
+        if ($allSessions) {
+            $sessions = $allSessions->map($transformSession);
+        }
+
         return [
             'next_class' => $nextClass,
             'today_classes' => $todayClasses,
             'week_schedule' => $weekSchedule,
-            'upcoming_sessions' => $upcomingSessions
+            'upcoming_sessions' => $upcomingSessions,
+            'sessions' => $sessions ?? $upcomingSessions,
         ];
     }
 }

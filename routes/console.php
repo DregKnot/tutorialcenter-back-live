@@ -12,6 +12,8 @@ Schedule::command('users:delete-unverified')->hourly();
 
 Schedule::command('exam:mark-abandoned')->everyTenMinutes();
 
+Schedule::command('assessment:mark-unattended')->everyTenMinutes();
+
 Schedule::command(
     'achievements:finalize-weekly-accuracy --timezone=Africa/Lagos'
 )
