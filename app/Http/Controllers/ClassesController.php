@@ -183,11 +183,16 @@ class ClassesController extends Controller
                 |--------------------------------------------------------------------------
                 */
 
-                $current = Carbon::parse($request->start_date);
+                $startDate = Carbon::parse($request->start_date)->startOfDay();
+                $endDate = Carbon::parse($request->end_date)->endOfDay();
+                $targetDay = strtolower(trim($scheduleData['day_of_week']));
 
-                $current->next($scheduleData['day_of_week']);
+                $current = $startDate->copy();
+                if (strtolower($current->format('l')) !== $targetDay) {
+                    $current->next($targetDay);
+                }
 
-                while ($current->lte($request->end_date)) {
+                while ($current->lte($endDate)) {
 
                     $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
 
@@ -246,17 +251,13 @@ class ClassesController extends Controller
     public function studentCalenderSchedule(Request $request){
         $student = $request->user();
 
-        /*
-        |--------------------------------------------------------------------------
-        | 1. Get Active Course Enrollments
-        |--------------------------------------------------------------------------
-        */
-
         $activeEnrollments = $student->courseEnrollments()
             ->where('status', 'active')
-            ->where('end_date', '>=', now())
+            ->where(function ($q) {
+                $q->whereNull('end_date')->orWhere('end_date', '>=', now()->subDays(1));
+            })
             ->whereHas('payments', function ($query) {
-                $query->where('status', 'successful');
+                $query->whereIn('status', ['successful', 'paid']);
             })
             ->pluck('id');
 
@@ -266,12 +267,6 @@ class ClassesController extends Controller
                 'sessions' => []
             ]);
         }
-
-        /*
-        |--------------------------------------------------------------------------
-        | 2. Get Registered Subjects
-        |--------------------------------------------------------------------------
-        */
 
         $subjectIds = $student->subjectEnrollments()
             ->whereIn('course_enrollment_id', $activeEnrollments)
@@ -284,12 +279,6 @@ class ClassesController extends Controller
             ]);
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | 3. Fetch Sessions
-        |--------------------------------------------------------------------------
-        */
-
         $sessions = ClassSession::with([
             'class.subject',
             'class.staffs'
@@ -298,7 +287,6 @@ class ClassesController extends Controller
                 $query->whereIn('subject_id', $subjectIds)
                     ->where('status', 'active');
             })
-            ->whereDate('session_date', '>=', now())
             ->orderBy('session_date')
             ->orderBy('starts_at')
             ->get();
@@ -315,14 +303,15 @@ class ClassesController extends Controller
         try {
             $student = $request->user();
     
-            /*
-            |--------------------------------------------------------------------------
-            | 1. Get Active Enrollments
-            |--------------------------------------------------------------------------
-            */
-            $activeEnrollments = $student->courseEnrollments()->where('status', 'active')->where('end_date', '>=', now())->whereHas('payments', function ($q) {
-                $q->where('status', 'successful');
-            })->pluck('id');
+            $activeEnrollments = $student->courseEnrollments()
+                ->where('status', 'active')
+                ->where(function ($q) {
+                    $q->whereNull('end_date')->orWhere('end_date', '>=', now()->subDays(1));
+                })
+                ->whereHas('payments', function ($q) {
+                    $q->whereIn('status', ['successful', 'paid']);
+                })
+                ->pluck('id');
     
             if ($activeEnrollments->isEmpty()) {
                 return response()->json([
@@ -331,84 +320,71 @@ class ClassesController extends Controller
                     'week_schedule' => [],
                     'upcoming_sessions' => [],
                     'older_sessions' => [],
+                    'sessions' => [],
+                    'attendance' => [],
                 ]);
             }
     
-            /*
-            |--------------------------------------------------------------------------
-            | 2. Subjects Registered
-            |--------------------------------------------------------------------------
-            */
-            $subjectIds = $student->subjectEnrollments()->whereIn('course_enrollment_id', $activeEnrollments)->pluck('subject_id');
+            $subjectIds = $student->subjectEnrollments()
+                ->whereIn('course_enrollment_id', $activeEnrollments)
+                ->pluck('subject_id');
     
-            /*
-            |--------------------------------------------------------------------------
-            | 3. Base Session Query
-            |--------------------------------------------------------------------------
-            */
             $sessionQuery = ClassSession::with([
                 'class.subject',
                 'class.staffs'
             ])->whereHas('class', function ($q) use ($subjectIds) {
                 $q->whereIn('subject_id', $subjectIds)->where('status', 'active');
             });
-    
-            /*
-            |--------------------------------------------------------------------------
-            | 4. Next Class
-            |--------------------------------------------------------------------------
-            */
-            $nextClass = (clone $sessionQuery)->whereDate('session_date', '>=', now())->orderBy('session_date')->orderBy('starts_at')->first();
-    
-            /*
-            |--------------------------------------------------------------------------
-            | 5. Today's Classes
-            |--------------------------------------------------------------------------
-            */
-            $todayClasses = (clone $sessionQuery)->whereDate('session_date', today())->orderBy('starts_at')->get();
-    
-            /*
-            |--------------------------------------------------------------------------
-            | 6. Weekly Schedule
-            |--------------------------------------------------------------------------
-            */
-            $weekSchedule = (clone $sessionQuery)->whereBetween('session_date', [
-                now()->startOfWeek(),
-                now()->endOfWeek()
-            ])->orderBy('session_date')->orderBy('starts_at')->get()->groupBy('session_date');
-    
-            /*
-            |--------------------------------------------------------------------------
-            | 7. Upcoming Sessions
-            |--------------------------------------------------------------------------
-            */
-            $upcomingSessions = (clone $sessionQuery)->whereDate('session_date', '>=', now())->orderBy('session_date')->orderBy('starts_at')->limit(10)->get();
 
-            /*
-            |--------------------------------------------------------------------------
-            | 8. Older Sessions
-            |--------------------------------------------------------------------------
-            */
-            $olderSessions = (clone $sessionQuery)->whereDate('session_date', '<', now())->orderBy('session_date', 'desc')->orderBy('starts_at', 'desc')->limit(10)->get();
+            $allSessions = (clone $sessionQuery)
+                ->orderBy('session_date', 'asc')
+                ->orderBy('starts_at', 'asc')
+                ->get();
     
-            /*
-            |--------------------------------------------------------------------------
-            | 9. Attendance Status
-            |--------------------------------------------------------------------------
-            */
+            $nextClass = (clone $sessionQuery)
+                ->whereDate('session_date', '>=', today())
+                ->orderBy('session_date')
+                ->orderBy('starts_at')
+                ->first();
+    
+            $todayClasses = (clone $sessionQuery)
+                ->whereDate('session_date', today())
+                ->orderBy('starts_at')
+                ->get();
+    
+            $weekSchedule = (clone $sessionQuery)
+                ->whereBetween('session_date', [
+                    now()->startOfWeek(),
+                    now()->endOfWeek()
+                ])
+                ->orderBy('session_date')
+                ->orderBy('starts_at')
+                ->get()
+                ->groupBy('session_date');
+    
+            $upcomingSessions = (clone $sessionQuery)
+                ->whereDate('session_date', '>=', today())
+                ->orderBy('session_date')
+                ->orderBy('starts_at')
+                ->limit(100)
+                ->get();
+
+            $olderSessions = (clone $sessionQuery)
+                ->whereDate('session_date', '<', today())
+                ->orderBy('session_date', 'desc')
+                ->orderBy('starts_at', 'desc')
+                ->limit(100)
+                ->get();
+    
             $attendance = ClassAttendance::where('student_id', $student->id)->pluck('status', 'class_session_id');
 
-            /*
-            |--------------------------------------------------------------------------
-            | 10. Return Response
-            |--------------------------------------------------------------------------
-            */
             return response()->json([
                 'next_class' => $nextClass,
                 'today_classes' => $todayClasses,
                 'week_schedule' => $weekSchedule,
                 'upcoming_sessions' => $upcomingSessions,
                 'older_sessions' => $olderSessions,
+                'sessions' => $allSessions,
                 'attendance' => $attendance,
             ]);
             
@@ -791,9 +767,9 @@ class ClassesController extends Controller
                 // Get subject
                 $subject = $class ? ($class->subject ? $class->subject->name : "General") : "General";
 
-                // Format title: Tutor - Subject - Topic
-                $topic = $class ? $class->title : $session->title;
-                $formattedTitle = trim("$tutorName - $subject - $topic", " -");
+                // Format clean title without repeating tutor and subject
+                $topic = $session->title ?: ($class ? $class->title : "$subject Class");
+                $formattedTitle = $topic;
 
                 // Calculate duration
                 $duration = "1h";
@@ -841,6 +817,196 @@ class ClassesController extends Controller
                 'success' => false,
                 'message' => 'Failed to fetch recorded classes',
                 'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
+
+    
+    /**
+     * (admin) update an existing class, its assigned staff, and schedule/sessions
+    **/
+    public function update(Request $request, $id, ZoomService $zoomService){
+        $validator = Validator::make($request->all(), [
+            'subject_id' => 'nullable|exists:subjects,id',
+            'title' => 'nullable|string|max:255',
+            'description' => 'nullable|string',
+            'status' => 'nullable|in:active,inactive',
+
+            'staffs' => 'nullable|array',
+            'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
+            'staffs.*.role' => 'nullable|string|max:100',
+
+            'start_date' => 'nullable|date',
+            'end_date' => 'nullable|date',
+            
+            'class_link' => 'nullable|url',
+
+            'schedules' => 'nullable|array',
+            'schedules.*.day_of_week' => 'required_with:schedules|string|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
+            'schedules.*.start_time' => 'required_with:schedules',
+            'schedules.*.duration_minutes' => 'nullable|integer|min:1',
+            'schedules.*.end_time' => 'nullable',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        DB::beginTransaction();
+
+        try {
+            $class = Classes::with(['staffs', 'schedules.sessions'])->findOrFail($id);
+
+            $updateData = [];
+            if ($request->has('subject_id') && !empty($request->subject_id)) {
+                $updateData['subject_id'] = $request->subject_id;
+            }
+            if ($request->has('title')) {
+                $updateData['title'] = $request->title;
+            }
+            if ($request->has('description')) {
+                $updateData['description'] = $request->description;
+            }
+            if ($request->has('status')) {
+                $updateData['status'] = $request->status;
+            }
+            if ($request->has('class_link')) {
+                $updateData['class_link'] = $request->class_link;
+            }
+
+            if (!empty($updateData)) {
+                $class->update($updateData);
+            }
+
+            // Sync assigned staff
+            if ($request->has('staffs')) {
+                $staffData = [];
+                foreach ($request->staffs as $staff) {
+                    $staffData[$staff['staff_id']] = [
+                        'role' => $staff['role'] ?? 'tutor'
+                    ];
+                }
+                $class->staffs()->sync($staffData);
+            }
+
+            // If schedules or dates are provided, alter future sessions while preserving past attendance
+            if ($request->has('schedules') && is_array($request->schedules) && count($request->schedules) > 0) {
+                $startDate = $request->filled('start_date') 
+                    ? Carbon::parse($request->start_date)->startOfDay() 
+                    : Carbon::parse($class->schedules->min('start_date') ?? now())->startOfDay();
+
+                $endDate = $request->filled('end_date') 
+                    ? Carbon::parse($request->end_date)->endOfDay() 
+                    : Carbon::parse($class->schedules->max('end_date') ?? now()->addMonths(3))->endOfDay();
+
+                $todayStr = today()->toDateString();
+
+                // Delete future scheduled sessions that do not have attendance recorded
+                ClassSession::where('class_id', $class->id)
+                    ->whereDate('session_date', '>=', $todayStr)
+                    ->whereDoesntHave('attendances')
+                    ->delete();
+
+                // Delete existing schedules (they will be recreated)
+                ClassSchedule::where('class_id', $class->id)->delete();
+
+                $classLink = $request->class_link ?? $class->zoom_join_url ?? $class->class_link;
+
+                foreach ($request->schedules as $scheduleData) {
+                    $startTime = $scheduleData['start_time'];
+                    $duration = $scheduleData['duration_minutes'] ?? 60;
+                    
+                    $endTime = !empty($scheduleData['end_time']) 
+                        ? $scheduleData['end_time']
+                        : Carbon::createFromFormat('H:i', $startTime)->addMinutes($duration)->format('H:i');
+
+                    $schedule = ClassSchedule::create([
+                        'class_id' => $class->id,
+                        'day_of_week' => strtolower(trim($scheduleData['day_of_week'])),
+                        'start_time' => $startTime,
+                        'end_time' => $endTime,
+                        'start_date' => $startDate->toDateString(),
+                        'end_date' => $endDate->toDateString()
+                    ]);
+
+                    // Generate upcoming sessions starting from today (or start_date if in future)
+                    $iterationStart = $startDate->greaterThan(today()) ? $startDate->copy() : today();
+                    $targetDay = strtolower(trim($scheduleData['day_of_week']));
+
+                    $current = $iterationStart->copy();
+                    if (strtolower($current->format('l')) !== $targetDay) {
+                        $current->next($targetDay);
+                    }
+
+                    while ($current->lte($endDate)) {
+                        $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
+                        if (!$isHoliday) {
+                            ClassSession::firstOrCreate(
+                                [
+                                    'class_id' => $class->id,
+                                    'class_schedule_id' => $schedule->id,
+                                    'session_date' => $current->toDateString()
+                                ],
+                                [
+                                    'starts_at' => $startTime,
+                                    'ends_at' => $endTime,
+                                    'class_link' => $classLink,
+                                    'status' => 'scheduled'
+                                ]
+                            );
+                        }
+                        $current->addWeek();
+                    }
+                }
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Masterclass and schedules updated successfully',
+                'class' => $class->fresh([
+                    'subject',
+                    'staffs',
+                    'schedules.sessions'
+                ])
+            ], 200);
+
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => 'Class update failed',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    /**
+     * (admin) deactivate class and delete future unattended sessions
+    **/
+    public function destroy($id){
+        try {
+            $class = Classes::findOrFail($id);
+            $class->update(['status' => 'inactive']);
+            
+            ClassSession::where('class_id', $class->id)
+                ->whereDate('session_date', '>=', today())
+                ->whereDoesntHave('attendances')
+                ->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Class deactivated and upcoming sessions removed successfully'
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to deactivate class',
+                'error' => $e->getMessage()
             ], 500);
         }
     }
