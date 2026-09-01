@@ -128,13 +128,19 @@ class AssessmentController extends Controller
         return response()->json(['submissions' => $this->service->tutorSubmissions($request->user(), $assessment)]);
     }
 
-    public function submission(Request $request, AssessmentSubmission $submission): JsonResponse
+    public function submission(Request $request, $assessment, $submission): JsonResponse
     {
+        $submission = AssessmentSubmission::findOrFail($submission);
+        abort_unless($submission->assessment_id === (int) $assessment, 404);
+
         return response()->json(['submission' => $this->service->submissionDetail($request->user(), $submission)]);
     }
 
-    public function grade(Request $request, AssessmentSubmission $submission): JsonResponse
+    public function grade(Request $request, $assessment, $submission): JsonResponse
     {
+        $submission = AssessmentSubmission::findOrFail($submission);
+        abort_unless($submission->assessment_id === (int) $assessment, 404);
+
         $validator = Validator::make($request->all(), [
             'grades' => 'required|array',
             'grades.*.marks_awarded' => 'nullable|numeric|min:0',
@@ -154,8 +160,11 @@ class AssessmentController extends Controller
         }
     }
 
-    public function reopen(Request $request, AssessmentSubmission $submission): JsonResponse
+    public function reopen(Request $request, $assessment, $submission): JsonResponse
     {
+        $submission = AssessmentSubmission::findOrFail($submission);
+        abort_unless($submission->assessment_id === (int) $assessment, 404);
+
         $submission = $this->service->reopen($request->user(), $submission);
         return response()->json(['submission' => $submission]);
     }

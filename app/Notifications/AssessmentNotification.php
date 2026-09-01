@@ -60,14 +60,18 @@ class AssessmentNotification extends Notification
             $total = $this->data['total_marks'] ?? null;
 
             if ($score !== null) {
-                $line = 'Your score: ' . $score;
+                $line = 'You scored ' . $score;
                 if ($total !== null) {
-                    $line .= ' out of ' . $total;
+                    $line .= ' out of ' . $total . ' marks';
                 }
                 if (isset($this->data['percentage'])) {
                     $line .= ' (' . $this->data['percentage'] . '%)';
                 }
                 $mail->line($line . '.');
+            }
+
+            if (! empty($this->data['question_count'])) {
+                $mail->line('This assessment had ' . $this->data['question_count'] . ' questions.');
             }
         }
 

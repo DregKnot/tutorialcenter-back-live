@@ -359,6 +359,7 @@ class AssessmentService
                         'score' => $score,
                         'total_marks' => $submission->total_marks,
                         'percentage' => $submission->percentage,
+                        'question_count' => $submission->answers()->count(),
                     ]
                 ));
             }
