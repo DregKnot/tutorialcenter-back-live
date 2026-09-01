@@ -245,7 +245,6 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
 Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
 
 Route::prefix('staffs')->group(function () {
-    Route::prefix('staffs')->group(function () {
     Route::post('/classes/tutor-report', [\App\Http\Controllers\FeedbackController::class, 'storeTutorReport']);
 
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
