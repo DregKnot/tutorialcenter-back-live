@@ -61,6 +61,12 @@ class Classes extends Model
         return $this->belongsTo(Subject::class, 'subject_id');
     }
 
+    // Assessments created for this class
+    public function assessments()
+    {
+        return $this->hasMany(Assessment::class, 'class_id');
+    }
+
     // Optional: students enrolled in this class via sessions/enrollments
     public function students()
     {

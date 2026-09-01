@@ -58,4 +58,15 @@ return [
     'affiliate' => [
         'url' => env('AFFILIATE_API_URL', 'http://tutorialcenter-affiliate.test'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Assessment Email Toggle
+    |--------------------------------------------------------------------------
+    | Set ASSESSMENT_EMAIL_ENABLED=false in your .env to disable assessment
+    | emails (publish/grade). Database notifications always remain on.
+    */
+    'assessments' => [
+        'send_email' => env('ASSESSMENT_EMAIL_ENABLED', true),
+    ],
 ];
