@@ -275,14 +275,21 @@ class PaymentController extends Controller
                 $isMockAllowed = $isLocalOrTesting && (
                     str_starts_with($reference, 'TCA_') || 
                     str_starts_with($reference, 'TCR_') ||
+                    str_starts_with($reference, 'TC-') ||
+                    str_starts_with($reference, 'TC-REN-') ||
+                    empty(config('services.paystack.secret_key')) ||
                     config('services.paystack.mock_fallback', false)
                 );
 
-                if ($isMockAllowed && !empty($validated['fallback_metadata']) && (!empty($validated['fallback_metadata']['courses']) || !empty($validated['fallback_metadata']['student_id']))) {
+                if ($isMockAllowed && !empty($validated['fallback_metadata']) && (!empty($validated['fallback_metadata']['courses']) || !empty($validated['fallback_metadata']['student_id']) || !empty($validated['fallback_metadata']['course_id']))) {
                     \Illuminate\Support\Facades\Log::info('Local mock verification used for reference', ['reference' => $reference]);
+                    $price = (float) (
+                        $validated['fallback_metadata']['price'] 
+                        ?? ($validated['fallback_metadata']['courses'][0]['price'] ?? 10000)
+                    );
                     $mockData = [
                         'reference' => $reference,
-                        'amount' => ((float) ($validated['fallback_metadata']['courses'][0]['price'] ?? 10000)) * 100,
+                        'amount' => $price * 100,
                         'status' => 'success',
                         'paid_at' => now()->toIso8601String(),
                         'channel' => 'card',

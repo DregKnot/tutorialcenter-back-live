@@ -27,6 +27,15 @@ class PaystackService
      */
     public function verifyTransaction(string $reference): array
     {
+        if (empty(trim($this->secretKey))) {
+            Log::warning('Paystack secret key is not configured in environment.', ['reference' => $reference]);
+            return [
+                'status' => false,
+                'message' => 'Paystack secret key is not configured in backend environment.',
+                'data' => null,
+            ];
+        }
+
         try {
             $response = Http::withToken($this->secretKey)
                 ->acceptJson()
@@ -261,8 +270,9 @@ class PaystackService
             $suppliedPrice = $standardPrice;
         }
 
-        // Find existing enrollment or create new one
-        $enrollment = CoursesEnrollment::where('course_id', $courseId)
+                // Find existing enrollment (including soft-deleted) or create new one
+        $enrollment = CoursesEnrollment::withTrashed()
+            ->where('course_id', $courseId)
             ->where('student_id', $student->id)
             ->first();
 
@@ -270,6 +280,9 @@ class PaystackService
         $endDate = now()->addMonths($months);
 
         if ($enrollment) {
+            if ($enrollment->trashed()) {
+                $enrollment->restore();
+            }
             $enrollment->update([
                 'start_date' => $startDate,
                 'end_date' => $endDate,
@@ -289,9 +302,9 @@ class PaystackService
             ]);
         }
 
-        // Attach selected subjects safely (preventing foreign key constraint errors on subject_id 0)
+        // Attach or restore selected subjects safely
         $subjects = $courseItem['subjects'] ?? [];
-        if (is_array($subjects)) {
+        if (!empty($subjects) && is_array($subjects)) {
             foreach ($subjects as $subjectItem) {
                 $subId = 0;
                 if (is_numeric($subjectItem)) {
@@ -304,13 +317,31 @@ class PaystackService
                 }
 
                 if ($subId > 0 && \App\Models\Subject::where('id', $subId)->exists()) {
-                    SubjectsEnrollment::firstOrCreate([
-                        'course_enrollment_id' => $enrollment->id,
-                        'student_id' => $student->id,
-                        'subject_id' => $subId,
-                    ]);
+                    $subEnrollment = SubjectsEnrollment::withTrashed()
+                        ->where('course_enrollment_id', $enrollment->id)
+                        ->where('student_id', $student->id)
+                        ->where('subject_id', $subId)
+                        ->first();
+
+                    if ($subEnrollment) {
+                        if ($subEnrollment->trashed()) {
+                            $subEnrollment->restore();
+                        }
+                    } else {
+                        SubjectsEnrollment::create([
+                            'course_enrollment_id' => $enrollment->id,
+                            'student_id' => $student->id,
+                            'subject_id' => $subId,
+                        ]);
+                    }
                 }
             }
+        } else {
+            // If subjects array was omitted in renewal payload, inherit & restore all existing subject enrollments
+            SubjectsEnrollment::withTrashed()
+                ->where('course_enrollment_id', $enrollment->id)
+                ->where('student_id', $student->id)
+                ->restore();
         }
 
         // Create new Payment record

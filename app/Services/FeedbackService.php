@@ -24,6 +24,8 @@ class FeedbackService
 
         'class' => Classes::class,
 
+        'class_session' => \App\Models\ClassSession::class,
+
         'staff' => Staff::class,
 
         'exam_attempt' => ExamAttempt::class,

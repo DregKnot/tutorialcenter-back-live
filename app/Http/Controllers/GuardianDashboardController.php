@@ -196,14 +196,47 @@ class GuardianDashboardController extends Controller
         }
 
         $attendance = ClassAttendance::where('student_id', $student_id)
-            ->with(['session.class.subject'])
+            ->with(['session.class.subject', 'session.class.staffs'])
             ->latest('created_at')
-            ->limit(10)
+            ->limit(20)
             ->get()
             ->map(function ($att) {
+                $session = $att->session;
+                $class = $session?->class;
+                $subject = $class?->subject?->name ?? 'General Session';
+                $classTitle = $class?->title ?? $subject;
+                
+                $tutorName = 'Instructor';
+                if ($class && $class->staffs && $class->staffs->isNotEmpty()) {
+                    $firstStaff = $class->staffs->first();
+                    $tutorName = trim(($firstStaff->firstname ?? '') . ' ' . ($firstStaff->surname ?? '')) ?: 'Instructor';
+                }
+
+                // Calculate duration spent in minutes
+                $durationStr = 'Attended';
+                if ($att->joined_at && $att->left_at) {
+                    $mins = (int) $att->joined_at->diffInMinutes($att->left_at);
+                    if ($mins >= 60) {
+                        $hrs = floor($mins / 60);
+                        $remMins = $mins % 60;
+                        $durationStr = $remMins > 0 ? "{$hrs}h {$remMins}m" : "{$hrs}h";
+                    } elseif ($mins > 0) {
+                        $durationStr = "{$mins} mins";
+                    } else {
+                        $durationStr = "Just joined";
+                    }
+                }
+
+                $sessionDate = $session && $session->session_date ? \Carbon\Carbon::parse($session->session_date)->format('M d, Y') : ($att->joined_at ? $att->joined_at->format('M d, Y') : 'Recent');
+
                 return [
                     'id' => $att->id,
-                    'subject' => $att->session?->class?->subject?->name ?? 'General Session',
+                    'class_name' => $classTitle,
+                    'subject' => $subject,
+                    'topic' => $session?->title ?? $classTitle,
+                    'tutor' => $tutorName,
+                    'duration' => $durationStr,
+                    'date' => $sessionDate,
                     'joined_at' => $att->joined_at ? $att->joined_at->toISOString() : null,
                     'left_at' => $att->left_at ? $att->left_at->toISOString() : null,
                     'status' => $att->status ?? 'present',
@@ -911,6 +944,101 @@ class GuardianDashboardController extends Controller
             'success' => true,
             'message' => 'Training course addition initialized',
             'data' => $paystackData
+        ]);
+    }
+
+    /**
+     * Return weekly masterclass schedule for a ward, showing teacher name, class/subject title, and scheduled time.
+     * [HTTP]: GET /api/guardians/dashboard/wards/{student_id}/classes/schedule
+     */
+    public function getWardClassesSchedule(Request $request, int $student_id)
+    {
+        $guardian = $this->authorizeGuardian($request);
+        $isWard = $guardian->students()->where('students.id', $student_id)->exists();
+        if (!$isWard) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $student = Student::find($student_id);
+        if (!$student) {
+            return response()->json(['message' => 'Student not found'], 404);
+        }
+
+        // Get student's enrolled subjects
+        $enrolledSubjectIds = $student->coursesEnrollments()
+            ->with('subjects')
+            ->get()
+            ->pluck('subjects')
+            ->flatten()
+            ->pluck('subject_id')
+            ->unique()
+            ->filter()
+            ->values()
+            ->toArray();
+
+        $startOfWeek = now()->startOfWeek();
+        $endOfWeek = now()->endOfWeek();
+
+        $sessionsQuery = \App\Models\ClassSession::query()
+            ->with([
+                'class.subject:id,name',
+                'class.staffs:staffs.id,firstname,surname',
+                'attendances' => function ($query) use ($student_id) {
+                    $query->where('student_id', $student_id);
+                }
+            ])
+            ->whereBetween('session_date', [$startOfWeek, $endOfWeek])
+            ->orderBy('session_date', 'asc')
+            ->orderBy('starts_at', 'asc');
+
+        if (!empty($enrolledSubjectIds)) {
+            $sessionsQuery->whereHas('class', function ($q) use ($enrolledSubjectIds) {
+                $q->whereIn('subject_id', $enrolledSubjectIds);
+            });
+        }
+
+        $sessions = $sessionsQuery->get()->map(function ($session) {
+            $staff = $session->class?->staffs?->first();
+            $tutorName = $staff ? trim($staff->firstname . ' ' . $staff->surname) : 'Course Tutor';
+            $subjectName = $session->class?->subject?->name ?? 'General Masterclass';
+            $classTitle = $session->class?->title ?? $subjectName;
+            
+            $sessionDate = Carbon::parse($session->session_date);
+            $dayName = $sessionDate->format('l');
+            $dateFormatted = $sessionDate->format('M d, Y');
+
+            $startTime = $session->starts_at ? Carbon::parse($session->starts_at)->format('g:i A') : 'TBD';
+            $endTime = $session->ends_at ? Carbon::parse($session->ends_at)->format('g:i A') : '';
+            $timeRange = $endTime ? "{$startTime} - {$endTime}" : $startTime;
+
+            $attendance = $session->attendances->first();
+            $attendanceStatus = $attendance ? $attendance->status : ($sessionDate->isPast() ? 'absent' : 'upcoming');
+            $durationMinutes = $attendance && $attendance->joined_at && $attendance->left_at
+                ? max(1, (int) $attendance->joined_at->diffInMinutes($attendance->left_at))
+                : 0;
+
+            return [
+                'id' => $session->id,
+                'class_title' => $classTitle,
+                'subject' => $subjectName,
+                'tutor' => $tutorName,
+                'date' => $sessionDate->toDateString(),
+                'date_formatted' => $dateFormatted,
+                'day' => $dayName,
+                'time' => $timeRange,
+                'status' => $session->status ?? 'active',
+                'attendance_status' => $attendanceStatus,
+                'attendance_duration' => $durationMinutes,
+            ];
+        });
+
+        return response()->json([
+            'success' => true,
+            'data' => $sessions,
+            'week_period' => [
+                'start' => $startOfWeek->toDateString(),
+                'end' => $endOfWeek->toDateString(),
+            ]
         ]);
     }
 }
