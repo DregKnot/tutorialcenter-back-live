@@ -320,7 +320,7 @@ Route::prefix('staffs')->group(function () {
 Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo'])->group(function () {
     // Enrollment Analytics & Subject Rosters
     Route::prefix('enrollments')->group(function () {
-        Route::get('/subjects/roster', [\App\HttpControllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+        Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
         Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
         Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
     });
@@ -549,7 +549,7 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
 Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:advisor'])->group(function () {
     // Enrollment Analytics & Subject Rosters
     Route::prefix('enrollments')->group(function () {
-        Route::get('/subjects/roster', [\App\HttpControllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+        Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
         Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
         Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
     });

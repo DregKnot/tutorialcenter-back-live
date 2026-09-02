@@ -1,14 +1,14 @@
 <?php
 
-namespace AppHttpControllers;
+namespace App\Http\Controllers;
 
-use IlluminateHttpRequest;
-use AppModelsSubject;
-use AppModelsSubjectsEnrollment;
-use AppModelsCoursesEnrollment;
-use AppModelsStudent;
-use IlluminateSupportFacadesDB;
-use IlluminateSupportFacadesLog;
+use Illuminate\Http\Request;
+use App\Models\Subject;
+use App\Models\SubjectsEnrollment;
+use App\Models\CoursesEnrollment;
+use App\Models\Student;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class EnrollmentAnalyticsController extends Controller
 {
@@ -18,7 +18,7 @@ class EnrollmentAnalyticsController extends Controller
      * 
      * Returns:
      * - roster_map: Dictionary keyed by subject_id with list of enrolled students.
-     * - subjects_summary: List of subjects with enrolled counts and metadata.
+     * - most_registered_ranking: List of subjects with enrolled counts and metadata.
      * - total_unique_students: Count of distinct students enrolled in at least one subject.
      */
     public function subjectRoster(Request $request)
