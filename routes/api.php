@@ -318,6 +318,13 @@ Route::prefix('staffs')->group(function () {
  * Admin Only Protected Routes (enforced in controller)
  */
 Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo'])->group(function () {
+    // Enrollment Analytics & Subject Rosters
+    Route::prefix('enrollments')->group(function () {
+        Route::get('/subjects/roster', [\App\HttpControllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+        Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
+        Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
+    });
+
     Route::get('/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
     Route::patch('/feedbacks/{id}/status', [\App\Http\Controllers\FeedbackController::class, 'adminToggleStatus']);
     Route::delete('/feedbacks/{id}/admin', [\App\Http\Controllers\FeedbackController::class, 'adminDestroy']);
@@ -540,6 +547,13 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
  * Tutor Only Protected Routes (enforced in controller)
  */
 Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:advisor'])->group(function () {
+    // Enrollment Analytics & Subject Rosters
+    Route::prefix('enrollments')->group(function () {
+        Route::get('/subjects/roster', [\App\HttpControllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+        Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
+        Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
+    });
+
     Route::prefix('classes')->group(function () {
         Route::get('/schedule', [ClassesController::class, 'advisorClassesSchedule']); // Get advisor schedule with attendance status
     });
@@ -575,3 +589,5 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
 Route::get('/staffs/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
 
 Route::get('/staffs/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
+Route::get('/staffs/enrollments/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+Route::get('/staffs/enrollments/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);

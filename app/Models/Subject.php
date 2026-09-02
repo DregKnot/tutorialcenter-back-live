@@ -60,6 +60,11 @@ class Subject extends Model
         return $this->hasMany(StudentAchievementProgress::class);
     }
 
+    public function subjectEnrollments()
+    {
+        return $this->hasMany(SubjectsEnrollment::class, 'subject_id');
+    }
+
     public function studentTrials()
     {
         return $this->hasMany(StudentSubjectTrial::class);
