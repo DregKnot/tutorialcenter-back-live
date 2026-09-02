@@ -531,8 +531,8 @@ class FeedbackController extends Controller
             // Find existing feedback or create new
             $feedback = \App\Models\Feedback::updateOrCreate(
                 [
-                    'feedbacker_type' => get_class($staff),
-                    'feedbacker_id' => $staff->id,
+'feedbacker_type' => $staff ? get_class($staff) : \App\Models\Staff::class,
+                    'feedbacker_id' => $staff ? $staff->id : ($request->input('staff_id') ?: ($session->class?->staffs?->first()?->id ?? 1)),
                     'feedbackable_type' => \App\Models\Classes::class,
                     'feedbackable_id' => $session->class_id,
                 ],
@@ -543,7 +543,7 @@ class FeedbackController extends Controller
                     'ratings' => $reportData,
                     'would_recommend' => true,
                     'is_anonymous' => false,
-                    'status' => 'approved',
+'status' => 'published',
                 ]
             );
 

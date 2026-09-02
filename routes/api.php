@@ -80,10 +80,12 @@ Route::middleware('auth:sanctum')->group(function () {
 |--------------------------------------------------------------------------
 */
 Route::prefix('students')->group(function () {
+    Route::post('/send-phone-otp', [StudentController::class, 'sendPhoneOtp']); // Send Phone OTP
     Route::post('/login', [StudentController::class, 'login']); // Login Method
+    // Route::post('/register', [StudentController::class, 'store']); // Registration
+    // Route::post('/biodata', [StudentController::class, 'biodata']); // Biodata completion (NO AUTH REQUIRED, but verification enforced)
     Route::post('/verify-email', [StudentController::class, 'verifyEmail']); // Email verification
     Route::post('/enroll-course', [CourseController::class, 'courseEnroll']); // Course enrollment
-    Route::post('/send-phone-otp', [StudentController::class, 'sendPhoneOtp']); // Send Phone OTP
     Route::post('/verify-phone', [StudentController::class, 'verifyPhoneOtp']); // Phone OTP verification
     Route::post('/register', [StudentController::class, 'registerWithBiodata']); // Registration
     Route::post('/forget-password', [StudentController::class, 'forgetPassword']); // Forget Password
@@ -316,6 +318,13 @@ Route::prefix('staffs')->group(function () {
  * Admin Only Protected Routes (enforced in controller)
  */
 Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo'])->group(function () {
+    // Enrollment Analytics & Subject Rosters
+    Route::prefix('enrollments')->group(function () {
+        Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+        Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
+        Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
+    });
+
     Route::get('/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
     Route::patch('/feedbacks/{id}/status', [\App\Http\Controllers\FeedbackController::class, 'adminToggleStatus']);
     Route::delete('/feedbacks/{id}/admin', [\App\Http\Controllers\FeedbackController::class, 'adminDestroy']);
@@ -538,6 +547,13 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
  * Tutor Only Protected Routes (enforced in controller)
  */
 Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:advisor'])->group(function () {
+    // Enrollment Analytics & Subject Rosters
+    Route::prefix('enrollments')->group(function () {
+        Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+        Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
+        Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
+    });
+
     Route::prefix('classes')->group(function () {
         Route::get('/schedule', [ClassesController::class, 'advisorClassesSchedule']); // Get advisor schedule with attendance status
     });
@@ -573,3 +589,5 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
 Route::get('/staffs/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
 
 Route::get('/staffs/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
+Route::get('/staffs/enrollments/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+Route::get('/staffs/enrollments/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
