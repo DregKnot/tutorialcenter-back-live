@@ -547,6 +547,7 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
  * Tutor Only Protected Routes (enforced in controller)
  */
 Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:advisor'])->group(function () {
+    Route::get('/students/all', [StudentController::class, 'index']);
     // Enrollment Analytics & Subject Rosters
     Route::prefix('enrollments')->group(function () {
         Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);

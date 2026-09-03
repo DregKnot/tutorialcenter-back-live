@@ -48,9 +48,16 @@ class AssessmentService
     public function update(Staff $tutor, Assessment $assessment, array $data): Assessment
     {
         $this->ensureTutorCanManage($tutor, $assessment);
-        $this->ensureDraft($assessment);
+
+        if ($assessment->status === Assessment::CLOSED) {
+            throw ValidationException::withMessages(['assessment' => 'Closed assessments cannot be edited.']);
+        }
 
         if (array_key_exists('questions', $data)) {
+            $hasSubmissions = $assessment->submissions()->where('status', '!=', AssessmentSubmission::IN_PROGRESS)->exists();
+            if ($hasSubmissions) {
+                throw ValidationException::withMessages(['assessment' => 'Questions cannot be modified because students have already submitted answers.']);
+            }
             $assessment->questions()->forceDelete();
             $this->storeQuestions($assessment, $data['questions']);
         }
@@ -70,7 +77,10 @@ class AssessmentService
     public function publish(Staff $tutor, Assessment $assessment, ?string $opensAt, string $dueAt): Assessment
     {
         $this->ensureTutorCanManage($tutor, $assessment);
-        $this->ensureDraft($assessment);
+
+        if ($assessment->status === Assessment::CLOSED) {
+            throw ValidationException::withMessages(['assessment' => 'Closed assessments cannot be republished.']);
+        }
 
         $assessment->update([
             'status' => Assessment::PUBLISHED,
@@ -103,7 +113,10 @@ class AssessmentService
     public function destroy(Staff $tutor, Assessment $assessment): void
     {
         $this->ensureTutorCanManage($tutor, $assessment);
-        $this->ensureDraft($assessment);
+        $hasSubmissions = $assessment->submissions()->where('status', '!=', AssessmentSubmission::IN_PROGRESS)->exists();
+        if ($hasSubmissions) {
+            throw ValidationException::withMessages(['assessment' => 'Cannot delete an assessment that already has student submissions.']);
+        }
         $assessment->delete();
     }
 
@@ -111,7 +124,7 @@ class AssessmentService
     {
         $classIds = ClassStaff::where('staff_id', $tutor->id)->pluck('class_id');
 
-        $assessments = Assessment::with(['class.subject', 'questions'])
+        $assessments = Assessment::with(['class.subject', 'questions.options'])
             ->where(function ($q) use ($tutor, $classIds) {
                 $q->whereIn('class_id', $classIds)->orWhere('created_by', $tutor->id);
             })
