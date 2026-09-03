@@ -1441,11 +1441,44 @@ class StudentController extends Controller
      */
     public function index()
     {
-        $students = Student::withTrashed()->get();
+        $students = Student::withTrashed()
+            ->with([
+                'courseEnrollments.course',
+                'courseEnrollments.subjects.subject',
+                'subjectEnrollments.subject',
+                'guardians',
+                'advisors',
+            ])
+            ->get();
+
+        $formatted = $students->map(function ($student) {
+            $enrolledSubjects = $student->courseEnrollments
+                ->flatMap(function ($enrollment) {
+                    return $enrollment->subjects->map(function ($subEnrollment) {
+                        return $subEnrollment->subject;
+                    });
+                })
+                ->merge($student->subjectEnrollments->map(fn ($se) => $se->subject))
+                ->filter()
+                ->unique('id')
+                ->values();
+
+            $enrolledCourses = $student->courseEnrollments
+                ->map(fn ($ce) => $ce->course)
+                ->filter()
+                ->unique('id')
+                ->values();
+
+            $data = $student->toArray();
+            $data['enrolled_subjects'] = $enrolledSubjects;
+            $data['enrolled_courses'] = $enrolledCourses;
+            $data['subject_enrollments'] = $enrolledSubjects;
+            return $data;
+        });
 
         return response()->json([
             'message' => 'Students retrieved successfully.',
-            'students' => $students,
+            'students' => $formatted,
         ], 200);
     }
 
