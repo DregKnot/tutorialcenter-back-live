@@ -34,12 +34,39 @@ class AdvisorDashboardController extends Controller
      */
     public function guardians(Request $request)
     {
-        // Fetch guardians with their associated students
-        $guardians = Guardian::with('students')->get();
+        // Fetch guardians with their associated students and academic enrollments
+        $guardians = Guardian::with([
+            'students.courseEnrollments.course',
+            'students.courseEnrollments.subjects.subject',
+        ])
+        ->orderBy('created_at', 'desc')
+        ->get();
         
         return response()->json([
             'message' => 'Guardians retrieved successfully',
             'guardians' => $guardians,
+        ], 200);
+    }
+
+    /**
+     * Get a single guardian and their wards with academic enrollments
+     */
+    public function show(Request $request, $id)
+    {
+        $guardian = Guardian::with([
+            'students.courseEnrollments.course',
+            'students.courseEnrollments.subjects.subject',
+        ])->find($id);
+
+        if (!$guardian) {
+            return response()->json([
+                'message' => 'Guardian not found.',
+            ], 404);
+        }
+
+        return response()->json([
+            'message' => 'Guardian retrieved successfully',
+            'guardian' => $guardian,
         ], 200);
     }
 }

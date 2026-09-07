@@ -336,6 +336,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
 
     Route::prefix('guardians')->group(function () {
         Route::get('/all', [App\Http\Controllers\AdvisorDashboardController::class, 'guardians']);
+        Route::get('/{id}', [App\Http\Controllers\AdvisorDashboardController::class, 'show']);
     });
 
     Route::prefix('dashboard')->group(function () {
@@ -576,6 +577,7 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
 
     Route::prefix('guardians')->group(function () {
         Route::get('/all', [AdvisorDashboardController::class, 'guardians']); // List all guardians and their wards
+        Route::get('/{id}', [AdvisorDashboardController::class, 'show']);
     });
 
     // Student Management
