@@ -25,6 +25,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\Rule;
 use Illuminate\Support\Str;
 
 class StudentController extends Controller
@@ -1556,19 +1557,28 @@ class StudentController extends Controller
     // Admin: Register a new student and grant complimentary course access
     public function createComplimentaryRegistration(Request $request)
     {
+        $studentId = $request->input('student_id');
+
         $validated = $request->validate([
+            'student_id' => 'nullable|integer|exists:students,id',
+            'payment_id' => 'nullable|integer|exists:payments,id',
             'firstname' => 'required|string|max:50',
             'surname' => 'required|string|max:50',
-            'email' => 'nullable|email|unique:students,email|required_without:tel',
+            'email' => [
+                'nullable',
+                'email',
+                'required_without:tel',
+                $studentId ? Rule::unique('students', 'email')->ignore($studentId) : Rule::unique('students', 'email'),
+            ],
             'tel' => [
                 'nullable',
                 'string',
-                'unique:students,tel',
                 'required_without:email',
                 'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                $studentId ? Rule::unique('students', 'tel')->ignore($studentId) : Rule::unique('students', 'tel'),
             ],
-            'password' => 'required|string|min:8|same:confirmPassword',
-            'confirmPassword' => 'required|string|min:8|same:password',
+            'password' => $studentId ? 'nullable|string|min:8|same:confirmPassword' : 'required|string|min:8|same:confirmPassword',
+            'confirmPassword' => $studentId ? 'nullable|string|min:8|same:password' : 'required|string|min:8|same:password',
             'gender' => 'required|in:male,female,others',
             'date_of_birth' => 'required|date|before:today',
             'location' => 'required|string|max:255',
@@ -1582,7 +1592,7 @@ class StudentController extends Controller
         ]);
 
         try {
-            $result = DB::transaction(function () use ($request, $validated) {
+            $result = DB::transaction(function () use ($request, $validated, $studentId) {
                 $course = Course::whereKey($validated['course_id'])
                     ->where('status', 'active')
                     ->lockForUpdate()
@@ -1600,20 +1610,43 @@ class StudentController extends Controller
                     abort(422, 'One or more selected subjects do not belong to this course.');
                 }
 
-                $student = Student::create([
-                    'firstname' => $validated['firstname'],
-                    'surname' => $validated['surname'],
-                    'email' => $validated['email'] ?? null,
-                    'tel' => $validated['tel'] ?? null,
-                    'password' => Hash::make($validated['password']),
-                    'gender' => $validated['gender'],
-                    'date_of_birth' => $validated['date_of_birth'],
-                    'location' => $validated['location'],
-                    'address' => $validated['address'] ?? null,
-                    'department' => $validated['department'],
-                    'email_verified_at' => null,
-                    'tel_verified_at' => null,
-                ]);
+                if (!empty($studentId)) {
+                    $student = Student::lockForUpdate()->findOrFail($studentId);
+                    $updateData = [
+                        'firstname' => $validated['firstname'],
+                        'surname' => $validated['surname'],
+                        'gender' => $validated['gender'],
+                        'date_of_birth' => $validated['date_of_birth'],
+                        'location' => $validated['location'],
+                        'address' => $validated['address'] ?? null,
+                        'department' => $validated['department'],
+                    ];
+                    if (!empty($validated['email'])) {
+                        $updateData['email'] = $validated['email'];
+                    }
+                    if (!empty($validated['tel'])) {
+                        $updateData['tel'] = $validated['tel'];
+                    }
+                    if (!empty($validated['password'])) {
+                        $updateData['password'] = Hash::make($validated['password']);
+                    }
+                    $student->update($updateData);
+                } else {
+                    $student = Student::create([
+                        'firstname' => $validated['firstname'],
+                        'surname' => $validated['surname'],
+                        'email' => $validated['email'] ?? null,
+                        'tel' => $validated['tel'] ?? null,
+                        'password' => Hash::make($validated['password']),
+                        'gender' => $validated['gender'],
+                        'date_of_birth' => $validated['date_of_birth'],
+                        'location' => $validated['location'],
+                        'address' => $validated['address'] ?? null,
+                        'department' => $validated['department'],
+                        'email_verified_at' => null,
+                        'tel_verified_at' => null,
+                    ]);
+                }
 
                 $months = match ($validated['billing_cycle']) {
                     'monthly' => 1,
@@ -1622,32 +1655,79 @@ class StudentController extends Controller
                     'annual' => 12,
                 };
 
-                $enrollment = CoursesEnrollment::create([
-                    'student_id' => $student->id,
-                    'course_id' => $course->id,
-                    'start_date' => now(),
-                    'end_date' => now()->addMonths($months),
-                    'billing_cycle' => $validated['billing_cycle'],
-                    'cost' => 0,
-                    'status' => 'active',
-                ]);
+                $existingEnrollment = CoursesEnrollment::where('student_id', $student->id)
+                    ->where('course_id', $course->id)
+                    ->first();
 
-                $payment = Payment::create([
-                    'student_id' => $student->id,
-                    'course_enrollment_id' => $enrollment->id,
-                    'amount' => 0,
-                    'currency' => 'NGN',
-                    'payment_method' => 'manual',
-                    'gateway_reference' => 'FREE-' . Str::uuid(),
-                    'status' => 'successful',
-                    'billing_cycle' => $validated['billing_cycle'],
-                    'paid_at' => now(),
-                    'meta' => [
-                        'type' => 'complimentary',
-                        'reason' => $validated['reason'],
-                        'created_by_staff_id' => $request->user()->id,
-                    ],
-                ]);
+                if ($existingEnrollment) {
+                    $existingEnrollment->update([
+                        'start_date' => now(),
+                        'end_date' => now()->addMonths($months),
+                        'billing_cycle' => $validated['billing_cycle'],
+                        'cost' => 0,
+                        'status' => 'active',
+                    ]);
+                    $enrollment = $existingEnrollment;
+                } else {
+                    $enrollment = CoursesEnrollment::create([
+                        'student_id' => $student->id,
+                        'course_id' => $course->id,
+                        'start_date' => now(),
+                        'end_date' => now()->addMonths($months),
+                        'billing_cycle' => $validated['billing_cycle'],
+                        'cost' => 0,
+                        'status' => 'active',
+                    ]);
+                }
+
+                $payment = null;
+                if (!empty($validated['payment_id'])) {
+                    $existingPayment = Payment::where('id', $validated['payment_id'])
+                        ->where('student_id', $student->id)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($existingPayment) {
+                        $existingPayment->update([
+                            'course_enrollment_id' => $enrollment->id,
+                            'status' => 'successful',
+                            'paid_at' => $existingPayment->paid_at ?? now(),
+                            'billing_cycle' => $validated['billing_cycle'],
+                            'meta' => array_merge($existingPayment->meta ?? [], [
+                                'registration_recovery' => [
+                                    'completed_by_staff_id' => $request->user()->id,
+                                    'reason' => $validated['reason'],
+                                    'completed_at' => now()->toIso8601String(),
+                                    'type' => 'assigned_missing_enrollment',
+                                ],
+                            ]),
+                        ]);
+                        $payment = $existingPayment;
+                    }
+                }
+
+                if (!$payment) {
+                    $payment = Payment::create([
+                        'student_id' => $student->id,
+                        'course_enrollment_id' => $enrollment->id,
+                        'amount' => 0,
+                        'currency' => 'NGN',
+                        'payment_method' => 'manual',
+                        'gateway' => 'complimentary',
+                        'gateway_reference' => 'FREE-' . Str::uuid(),
+                        'status' => 'successful',
+                        'billing_cycle' => $validated['billing_cycle'],
+                        'paid_at' => now(),
+                        'meta' => [
+                            'type' => 'complimentary',
+                            'reason' => $validated['reason'],
+                            'created_by_staff_id' => $request->user()->id,
+                        ],
+                    ]);
+                }
+
+                // Clear previous subjects if any and attach new ones
+                SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->delete();
 
                 foreach ($subjectIds as $subjectId) {
                     SubjectsEnrollment::create([
@@ -1684,7 +1764,7 @@ class StudentController extends Controller
                 ]
             );
 
-            if ($result['student']->email) {
+            if ($result['student']->email && empty($result['student']->email_verified_at)) {
                 try {
                     app(EmailVerificationService::class)->send($result['student']);
                     $verification['email_sent'] = true;
@@ -1694,39 +1774,22 @@ class StudentController extends Controller
                 }
             }
 
-            if ($result['student']->tel) {
+            if ($result['student']->tel && empty($result['student']->tel_verified_at)) {
                 try {
                     $code = random_int(100000, 999999);
                     $message = "Your verification code is {$code}. It expires in 10 minutes.";
-
-                    app(BulkSMSService::class)->sendSMS(
-                        $result['student']->tel,
-                        $message
-                    );
-
-                    DB::transaction(function () use ($result, $code) {
-                        DB::table('phone_otps')
-                            ->where('tel', $result['student']->tel)
-                            ->delete();
-
-                        DB::table('phone_otps')->insert([
-                            'tel' => $result['student']->tel,
-                            'code' => Hash::make((string) $code),
-                            'expires_at' => Carbon::now()->addMinutes(10),
-                            'created_at' => now(),
-                            'updated_at' => now(),
-                        ]);
-                    });
-
+                    app(BulkSMSService::class)->send($result['student']->tel, $message);
                     $verification['phone_otp_sent'] = true;
                 } catch (\Throwable $e) {
                     report($e);
-                    $verification['errors']['phone'] = 'Phone verification OTP could not be generated.';
+                    $verification['errors']['tel'] = 'Verification SMS could not be sent.';
                 }
             }
 
             return response()->json([
-                'message' => 'Student registered with complimentary enrollment. Verification is required before login.',
+                'message' => !empty($studentId) 
+                    ? 'Student registration completed successfully!' 
+                    : 'Student registered with complimentary enrollment. Verification is required before login.',
                 'student' => $result['student']->fresh(),
                 'enrollment' => $result['enrollment'],
                 'payment' => $result['payment'],
