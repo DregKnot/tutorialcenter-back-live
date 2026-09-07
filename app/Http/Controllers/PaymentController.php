@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\CoursesEnrollment;
 use App\Models\Payment;
+use App\Models\Student;
 use App\Services\AdminNotificationService;
 use App\Services\ExamPreparationAchievementService;
 use App\Services\PaystackService;
@@ -132,41 +133,92 @@ class PaymentController extends Controller
         }
     }
 
-    // Admin: Find payments and enrollments that may need registration recovery
+    // Admin: Find payments and enrollments that may need registration recovery or completion
     public function searchRegistrationRecovery(Request $request)
     {
         $validated = $request->validate([
-            'search' => 'required|string|max:255',
+            'search' => 'nullable|string|max:255',
         ]);
 
-        $search = trim($validated['search']);
+        $search = !empty($validated['search']) ? trim($validated['search']) : null;
 
-        $payments = Payment::with(['student', 'enrollment.course', 'enrollment.subjects.subject'])
-            ->where(function ($query) use ($search) {
-                $query->where('gateway_reference', $search);
+        $paymentsQuery = Payment::with(['student', 'enrollment.course', 'enrollment.subjects.subject']);
+
+        if ($search) {
+            // Admin is searching explicitly for a reference, payment ID, or student
+            $paymentsQuery->where(function ($query) use ($search) {
+                $query->where('gateway_reference', 'like', "%{$search}%");
 
                 if (ctype_digit($search)) {
                     $query->orWhere('id', (int) $search);
                 }
 
                 $query->orWhereHas('student', function ($studentQuery) use ($search) {
-                        $studentQuery->where('email', $search)
-                            ->orWhere('tel', $search);
+                    $studentQuery->where('email', 'like', "%{$search}%")
+                        ->orWhere('tel', 'like', "%{$search}%")
+                        ->orWhere('firstname', 'like', "%{$search}%")
+                        ->orWhere('surname', 'like', "%{$search}%");
 
-                        if (ctype_digit($search)) {
-                            $studentQuery->orWhere('id', (int) $search);
-                        }
+                    if (ctype_digit($search)) {
+                        $studentQuery->orWhere('id', (int) $search);
+                    }
                 });
-            })
-            ->latest()
-            ->limit(20)
-            ->get();
+            });
+        } else {
+            // Default view: fetch actionable payments needing triage
+            // 1. Pending or failed status
+            // 2. Orphaned payment (no course enrollment)
+            // 3. Payment where enrollment has no course or no subjects
+            $paymentsQuery->where(function ($query) {
+                $query->whereIn('status', ['pending', 'failed'])
+                    ->orWhereNull('course_enrollment_id')
+                    ->orWhereDoesntHave('enrollment')
+                    ->orWhereHas('enrollment', function ($q) {
+                        $q->whereNull('course_id')
+                            ->orWhereDoesntHave('subjects');
+                    });
+            });
+        }
+
+        $payments = $paymentsQuery->latest()->limit(50)->get();
+
+        $paymentStudentIds = $payments->pluck('student_id')->filter()->unique()->values()->all();
+
+        // Also fetch students who signed up but have incomplete registration
+        // (no active course enrollment, or active enrollment with 0 subjects)
+        $incompleteQuery = Student::with(['courseEnrollments.course', 'courseEnrollments.subjects.subject'])
+            ->whereNotIn('id', $paymentStudentIds)
+            ->where(function ($query) {
+                $query->whereDoesntHave('courseEnrollments', function ($q) {
+                    $q->where('status', 'active');
+                })
+                ->orWhereHas('courseEnrollments', function ($q) {
+                    $q->where('status', 'active')
+                        ->whereDoesntHave('subjects');
+                });
+            });
+
+        if ($search) {
+            $incompleteQuery->where(function ($query) use ($search) {
+                $query->where('email', 'like', "%{$search}%")
+                    ->orWhere('tel', 'like', "%{$search}%")
+                    ->orWhere('firstname', 'like', "%{$search}%")
+                    ->orWhere('surname', 'like', "%{$search}%");
+
+                if (ctype_digit($search)) {
+                    $query->orWhere('id', (int) $search);
+                }
+            });
+        }
+
+        $incompleteStudents = $incompleteQuery->latest()->limit(50)->get();
 
         return response()->json([
-            'message' => $payments->isEmpty()
-                ? 'No matching payment was found.'
-                : 'Matching payments retrieved successfully.',
+            'message' => ($payments->isEmpty() && $incompleteStudents->isEmpty())
+                ? 'No actionable payment or incomplete registration was found.'
+                : 'Actionable recovery and incomplete registration records retrieved successfully.',
             'payments' => $payments,
+            'incomplete_students' => $incompleteStudents,
         ]);
     }
 
