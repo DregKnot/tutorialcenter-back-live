@@ -133,6 +133,7 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
 
     // Assessment Routes (student)
     Route::prefix('assessments')->group(function () {
+        Route::post('/upload', [AssessmentController::class, 'upload']);
         Route::get('/', [AssessmentController::class, 'studentIndex']);
         Route::get('/{assessment}', [AssessmentController::class, 'studentShow']);
         Route::post('/{assessment}/submit', [AssessmentController::class, 'submit']);
@@ -530,6 +531,7 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
 
     // Assessment Routes (tutor only)
     Route::prefix('assessments')->group(function () {
+        Route::post('/upload', [AssessmentController::class, 'upload']);
         Route::get('/', [AssessmentController::class, 'tutorIndex']);
         Route::post('/', [AssessmentController::class, 'store']);
         Route::get('/{assessment}', [AssessmentController::class, 'show']);

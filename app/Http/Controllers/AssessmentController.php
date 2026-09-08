@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Assessment;
 use App\Models\AssessmentSubmission;
+use App\Models\Student;
 use App\Services\AssessmentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -31,10 +32,11 @@ class AssessmentController extends Controller
             'pass_mark' => 'nullable|numeric|min:0|max:100',
             'timer_minutes' => 'nullable|integer|min:1',
             'questions' => 'required|array|min:1',
-            'questions.*.type' => 'required|in:mcq,essay',
+            'questions.*.type' => 'required|in:mcq,essay,paper_submission',
             'questions.*.question' => 'required|string',
             'questions.*.marks' => 'required|numeric|min:0',
             'questions.*.explanation' => 'nullable|string',
+            'questions.*.model_image' => 'nullable|string',
             'questions.*.options' => 'required_if:questions.*.type,mcq|array|min:2',
             'questions.*.options.*.option_text' => 'required_with:questions.*.options|string',
             'questions.*.options.*.is_correct' => 'nullable|boolean',
@@ -67,10 +69,11 @@ class AssessmentController extends Controller
             'pass_mark' => 'nullable|numeric|min:0|max:100',
             'timer_minutes' => 'nullable|integer|min:1',
             'questions' => 'nullable|array|min:1',
-            'questions.*.type' => 'required|in:mcq,essay',
+            'questions.*.type' => 'required|in:mcq,essay,paper_submission',
             'questions.*.question' => 'required|string',
             'questions.*.marks' => 'required|numeric|min:0',
             'questions.*.explanation' => 'nullable|string',
+            'questions.*.model_image' => 'nullable|string',
             'questions.*.options' => 'required_if:questions.*.type,mcq|array|min:2',
             'questions.*.options.*.option_text' => 'required_with:questions.*.options|string',
             'questions.*.options.*.is_correct' => 'nullable|boolean',
@@ -189,6 +192,8 @@ class AssessmentController extends Controller
             'answers' => 'required|array',
             'answers.*.question_option_id' => 'nullable|integer',
             'answers.*.answer' => 'nullable|string',
+            'answers.*.file_paths' => 'nullable|array|max:5',
+            'answers.*.file_paths.*' => 'string',
         ]);
 
         if ($validator->fails()) {
@@ -200,6 +205,28 @@ class AssessmentController extends Controller
             return response()->json(['submission' => $submission], 201);
         } catch (ValidationException $e) {
             return response()->json(['errors' => $e->errors()], 422);
+        }
+    }
+
+    public function upload(Request $request): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'images' => 'required|array|min:1|max:5',
+            'images.*' => 'required|image|mimes:jpeg,jpg,png,webp,heic,heif|max:5120',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $user = $request->user();
+        $folder = $user instanceof Student ? 'student-' . $user->id : 'staff-' . $user->id;
+
+        try {
+            $paths = $this->service->storeUploads($folder, $validator->validated()['images']);
+            return response()->json(['files' => $paths], 201);
+        } catch (\Throwable $e) {
+            return response()->json(['error' => 'Upload failed.'], 500);
         }
     }
 

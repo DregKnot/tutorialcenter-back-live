@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Storage;
 
 class AssessmentQuestion extends Model
 {
@@ -16,7 +17,10 @@ class AssessmentQuestion extends Model
         'marks',
         'order',
         'explanation',
+        'model_image',
     ];
+
+    protected $appends = ['model_image_url'];
 
     protected $casts = [
         'marks' => 'float',
@@ -36,5 +40,12 @@ class AssessmentQuestion extends Model
     public function answers()
     {
         return $this->hasMany(AssessmentAnswer::class, 'question_id');
+    }
+
+    public function getModelImageUrlAttribute(): ?string
+    {
+        return $this->model_image
+            ? Storage::disk('local')->temporaryUrl($this->model_image, now()->addMinutes(60))
+            : null;
     }
 }

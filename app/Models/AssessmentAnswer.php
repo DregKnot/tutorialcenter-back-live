@@ -35,4 +35,9 @@ class AssessmentAnswer extends Model
     {
         return $this->belongsTo(AssessmentQuestionOption::class, 'question_option_id');
     }
+
+    public function files()
+    {
+        return $this->hasMany(AssessmentAnswerFile::class, 'answer_id');
+    }
 }

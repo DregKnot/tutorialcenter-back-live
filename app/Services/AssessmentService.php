@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Assessment;
 use App\Models\AssessmentAnswer;
+use App\Models\AssessmentAnswerFile;
 use App\Models\AssessmentQuestion;
 use App\Models\AssessmentQuestionOption;
 use App\Models\AssessmentSubmission;
@@ -15,6 +16,8 @@ use App\Models\SubjectsEnrollment;
 use App\Notifications\AssessmentNotification;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 
 class AssessmentService
@@ -173,8 +176,9 @@ class AssessmentService
 
         $submission = $this->submissionFor($student, $assessment);
         $submittedOrGraded = in_array($submission?->status, [AssessmentSubmission::SUBMITTED, AssessmentSubmission::GRADED], true);
+        $graded = $submission?->status === AssessmentSubmission::GRADED;
 
-        $questions = $assessment->questions->map(function (AssessmentQuestion $q) use ($submittedOrGraded) {
+        $questions = $assessment->questions->map(function (AssessmentQuestion $q) use ($submittedOrGraded, $graded) {
             $payload = $q->only(['id', 'type', 'question', 'marks', 'order', 'explanation']);
 
             if ($q->type === 'mcq') {
@@ -188,6 +192,8 @@ class AssessmentService
             } elseif (! $submittedOrGraded) {
                 $payload['explanation'] = null;
             }
+
+            $payload['model_image'] = $graded ? $q->model_image_url : null;
 
             return $payload;
         });
@@ -259,7 +265,7 @@ class AssessmentService
                             'feedback' => null,
                         ]
                     );
-                } else {
+                } elseif ($question->type === 'essay') {
                     AssessmentAnswer::updateOrCreate(
                         ['submission_id' => $submission->id, 'question_id' => $question->id],
                         [
@@ -270,6 +276,20 @@ class AssessmentService
                             'feedback' => null,
                         ]
                     );
+                } else {
+                    // paper_submission: student uploads one or more images.
+                    $answer = AssessmentAnswer::updateOrCreate(
+                        ['submission_id' => $submission->id, 'question_id' => $question->id],
+                        [
+                            'question_option_id' => null,
+                            'answer' => $given['answer'] ?? null,
+                            'is_correct' => null,
+                            'marks_awarded' => null,
+                            'feedback' => null,
+                        ]
+                    );
+
+                    $this->syncAnswerFiles($student, $answer, $given['file_paths'] ?? []);
                 }
             }
 
@@ -289,7 +309,7 @@ class AssessmentService
                 ));
             }
 
-            return $submission->fresh('answers');
+            return $submission->fresh('answers.files');
         });
     }
 
@@ -311,7 +331,7 @@ class AssessmentService
     public function submissionDetail(Staff $tutor, AssessmentSubmission $submission): AssessmentSubmission
     {
         $this->ensureTutorCanManage($tutor, $submission->assessment);
-        return $submission->load(['student', 'answers.question', 'answers.option']);
+        return $submission->load(['student', 'answers.question', 'answers.option', 'answers.files']);
     }
 
     public function grade(Staff $tutor, AssessmentSubmission $submission, array $payload): AssessmentSubmission
@@ -377,7 +397,7 @@ class AssessmentService
                 ));
             }
 
-            return $submission->fresh(['answers.question', 'answers.option', 'student']);
+            return $submission->fresh(['answers.question', 'answers.option', 'answers.files', 'student']);
         });
     }
 
@@ -410,6 +430,24 @@ class AssessmentService
                 ['stats' => $this->aggregateStats($a)]
             ))
             ->all();
+    }
+
+    public function storeUploads(string $ownerFolder, array $files): array
+    {
+        $stored = [];
+
+        foreach (array_values($files) as $file) {
+            $extension = strtolower((string) $file->getClientOriginalExtension());
+            $extension = $extension ?: 'img';
+
+            $stored[] = $file->storeAs(
+                'assessment-uploads/' . $ownerFolder,
+                Str::uuid() . '.' . $extension,
+                'local'
+            );
+        }
+
+        return $stored;
     }
 
     public function aggregateStats(Assessment $assessment): array
@@ -501,6 +539,17 @@ class AssessmentService
     private function storeQuestions(Assessment $assessment, array $questions): void
     {
         foreach (array_values($questions) as $index => $qdata) {
+            if (! empty($qdata['model_image'])) {
+                $prefix = 'assessment-uploads/staff-' . $assessment->created_by . '/';
+
+                if (! str_starts_with((string) $qdata['model_image'], $prefix)
+                    || ! Storage::disk('local')->exists($qdata['model_image'])) {
+                    throw ValidationException::withMessages([
+                        "questions.{$index}.model_image" => 'The model image is invalid or does not belong to you.',
+                    ]);
+                }
+            }
+
             $question = AssessmentQuestion::create([
                 'assessment_id' => $assessment->id,
                 'type' => $qdata['type'],
@@ -508,6 +557,7 @@ class AssessmentService
                 'marks' => $qdata['marks'] ?? 1,
                 'order' => $index,
                 'explanation' => $qdata['explanation'] ?? null,
+                'model_image' => $qdata['model_image'] ?? null,
             ]);
 
             if ($question->type === 'mcq' && isset($qdata['options'])) {
@@ -528,6 +578,53 @@ class AssessmentService
                 }
             }
         }
+    }
+
+    private function syncAnswerFiles(Student $student, AssessmentAnswer $answer, array $paths): void
+    {
+        $paths = array_values(array_filter($paths));
+
+        if (empty($paths)) {
+            throw ValidationException::withMessages([
+                'answers' => 'At least one image is required for a paper submission question.',
+            ]);
+        }
+
+        if (count($paths) > 5) {
+            throw ValidationException::withMessages([
+                'answers' => 'A paper submission question accepts at most 5 images.',
+            ]);
+        }
+
+        $this->validateStudentOwnedPaths($student, $paths);
+
+        $answer->files()->delete();
+
+        foreach ($paths as $path) {
+            $answer->files()->create([
+                'file_path' => $path,
+                'file_name' => basename($path),
+                'file_type' => $this->guessImageType($path),
+            ]);
+        }
+    }
+
+    private function validateStudentOwnedPaths(Student $student, array $paths): void
+    {
+        $prefix = 'assessment-uploads/student-' . $student->id . '/';
+
+        foreach ($paths as $path) {
+            if (! str_starts_with((string) $path, $prefix) || ! Storage::disk('local')->exists($path)) {
+                throw ValidationException::withMessages([
+                    'answers' => 'One of the uploaded files is invalid or does not belong to you.',
+                ]);
+            }
+        }
+    }
+
+    private function guessImageType(string $path): string
+    {
+        return strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
     }
 
     private function ensureDraft(Assessment $assessment): void
@@ -575,7 +672,7 @@ class AssessmentService
     {
         return AssessmentSubmission::where('assessment_id', $assessment->id)
             ->where('student_id', $student->id)
-            ->with('answers')
+            ->with('answers.files')
             ->first();
     }
 }
