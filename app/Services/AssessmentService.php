@@ -22,6 +22,12 @@ use Illuminate\Validation\ValidationException;
 
 class AssessmentService
 {
+    /**
+     * Create a new draft assessment with questions.
+     *
+     * Verifies the tutor is assigned to the class, computes total marks from the
+     * questions and stores them (including MCQ options).
+     */
     public function create(Staff $tutor, array $data): Assessment
     {
         $class = Classes::findOrFail($data['class_id']);
@@ -48,6 +54,12 @@ class AssessmentService
         return $assessment->fresh(['class.subject', 'questions.options']);
     }
 
+    /**
+     * Update a draft assessment and optionally replace its questions.
+     *
+     * Guards against editing closed assessments or changing questions once
+     * students have already submitted answers.
+     */
     public function update(Staff $tutor, Assessment $assessment, array $data): Assessment
     {
         $this->ensureTutorCanManage($tutor, $assessment);
@@ -77,6 +89,11 @@ class AssessmentService
         return $assessment->fresh(['class.subject', 'questions.options']);
     }
 
+    /**
+     * Publish an assessment within an opens/due date window.
+     *
+     * Sets status to published and notifies all students enrolled in the subject.
+     */
     public function publish(Staff $tutor, Assessment $assessment, ?string $opensAt, string $dueAt): Assessment
     {
         $this->ensureTutorCanManage($tutor, $assessment);
@@ -113,6 +130,9 @@ class AssessmentService
         return $assessment->fresh('questions.options');
     }
 
+    /**
+     * Delete (soft-delete) an assessment that has no student submissions.
+     */
     public function destroy(Staff $tutor, Assessment $assessment): void
     {
         $this->ensureTutorCanManage($tutor, $assessment);
@@ -123,6 +143,9 @@ class AssessmentService
         $assessment->delete();
     }
 
+    /**
+     * Return the tutor's assessments (created or assigned) with aggregate stats.
+     */
     public function tutorAssessments(Staff $tutor): array
     {
         $classIds = ClassStaff::where('staff_id', $tutor->id)->pluck('class_id');
@@ -140,6 +163,11 @@ class AssessmentService
         ))->all();
     }
 
+    /**
+     * Return assessments assigned to a student, with the student's own submission state.
+     *
+     * Only published, opened assessments in subjects the student is enrolled in.
+     */
     public function studentAssessments(Student $student): array
     {
         $subjectIds = SubjectsEnrollment::where('student_id', $student->id)
@@ -166,6 +194,12 @@ class AssessmentService
         })->all();
     }
 
+    /**
+     * Build the student-facing detail payload for an assessment.
+     *
+     * Hides MCQ correct options and explanations until the student submits, and
+     * only reveals model images after grading to prevent answer leakage.
+     */
     public function studentAssessmentDetail(Student $student, Assessment $assessment): array
     {
         $this->ensureStudentEnrolled($student, $assessment);
@@ -210,6 +244,12 @@ class AssessmentService
         ];
     }
 
+    /**
+     * Submit a student's answers for an assessment.
+     *
+     * Auto-grades MCQ answers, stores essay text, and attaches uploaded paper
+     * submission files. Guards against late, unopened or duplicate submissions.
+     */
     public function submit(Student $student, Assessment $assessment, array $payload): AssessmentSubmission
     {
         $this->ensureStudentEnrolled($student, $assessment);
@@ -313,6 +353,9 @@ class AssessmentService
         });
     }
 
+    /**
+     * List all student submissions for an assessment the tutor manages.
+     */
     public function tutorSubmissions(Staff $tutor, Assessment $assessment): array
     {
         $this->ensureTutorCanManage($tutor, $assessment);
@@ -328,12 +371,20 @@ class AssessmentService
             ->all();
     }
 
+    /**
+     * Return one submission fully loaded (student, answers, options and files) for grading.
+     */
     public function submissionDetail(Staff $tutor, AssessmentSubmission $submission): AssessmentSubmission
     {
         $this->ensureTutorCanManage($tutor, $submission->assessment);
         return $submission->load(['student', 'answers.question', 'answers.option', 'answers.files']);
     }
 
+    /**
+     * Grade a submission by awarding per-question marks and feedback.
+     *
+     * Recomputes the score/percentage, marks it graded and notifies the student.
+     */
     public function grade(Staff $tutor, AssessmentSubmission $submission, array $payload): AssessmentSubmission
     {
         $this->ensureTutorCanManage($tutor, $submission->assessment);
@@ -401,6 +452,11 @@ class AssessmentService
         });
     }
 
+    /**
+     * Reopen a graded submission so the student can attempt it again.
+     *
+     * Clears answers and resets the submission to in_progress.
+     */
     public function reopen(Staff $tutor, AssessmentSubmission $submission): AssessmentSubmission
     {
         $this->ensureTutorCanManage($tutor, $submission->assessment);
@@ -420,6 +476,9 @@ class AssessmentService
         });
     }
 
+    /**
+     * Return every assessment with aggregate stats (read-only views).
+     */
     public function aggregateList(): array
     {
         return Assessment::with(['class.subject', 'creator'])
@@ -432,6 +491,13 @@ class AssessmentService
             ->all();
     }
 
+    /**
+     * Store uploaded assessment images on the private local disk.
+     *
+     * @param  string  $ownerFolder  Folder key, e.g. student-12 or staff-3.
+     * @param  array   $files        UploadedFile instances.
+     * @return array  Stored relative paths.
+     */
     public function storeUploads(string $ownerFolder, array $files): array
     {
         $stored = [];
@@ -450,6 +516,12 @@ class AssessmentService
         return $stored;
     }
 
+    /**
+     * Compute aggregate submission statistics for an assessment.
+     *
+     * Returns enrollment counts, submission status counts, average percentage and
+     * pass rate without exposing individual student answers.
+     */
     public function aggregateStats(Assessment $assessment): array
     {
         $enrolledIds = SubjectsEnrollment::where('subject_id', $assessment->subject_id)
@@ -486,6 +558,9 @@ class AssessmentService
         ];
     }
 
+    /**
+     * Close past-due published assessments and mark non-submitters as absent.
+     */
     public function markUnattended(): void
     {
         Assessment::where('status', Assessment::PUBLISHED)
@@ -497,6 +572,9 @@ class AssessmentService
             });
     }
 
+    /**
+     * Close one assessment and create/update absent submissions for students who did not submit.
+     */
     private function closeAndMarkAbsent(Assessment $assessment): void
     {
         DB::transaction(function () use ($assessment) {
@@ -536,6 +614,12 @@ class AssessmentService
         });
     }
 
+    /**
+     * Persist the questions of an assessment.
+     *
+     * Validates MCQ options (exactly one correct) and that any model image belongs
+     * to the tutor who owns the assessment.
+     */
     private function storeQuestions(Assessment $assessment, array $questions): void
     {
         foreach (array_values($questions) as $index => $qdata) {
@@ -580,6 +664,13 @@ class AssessmentService
         }
     }
 
+    /**
+     * Replace the file attachments for a paper_submission answer with validated uploads.
+     *
+     * @param  Student  $student  Owner whose uploads are allowed.
+     * @param  AssessmentAnswer  $answer  The answer row.
+     * @param  array  $paths  Stored upload paths from the student.
+     */
     private function syncAnswerFiles(Student $student, AssessmentAnswer $answer, array $paths): void
     {
         $paths = array_values(array_filter($paths));
@@ -609,6 +700,9 @@ class AssessmentService
         }
     }
 
+    /**
+     * Ensure every given file path belongs to the student's own upload folder and exists.
+     */
     private function validateStudentOwnedPaths(Student $student, array $paths): void
     {
         $prefix = 'assessment-uploads/student-' . $student->id . '/';
@@ -622,11 +716,17 @@ class AssessmentService
         }
     }
 
+    /**
+     * Derive an image type/extension label from a stored path.
+     */
     private function guessImageType(string $path): string
     {
         return strtolower((string) pathinfo($path, PATHINFO_EXTENSION));
     }
 
+    /**
+     * Throw a validation error unless the assessment is still a draft.
+     */
     private function ensureDraft(Assessment $assessment): void
     {
         if ($assessment->status !== Assessment::DRAFT) {
@@ -634,6 +734,9 @@ class AssessmentService
         }
     }
 
+    /**
+     * Throw unless the tutor is assigned to the given class.
+     */
     private function ensureTutorAssignedToClass(Staff $tutor, Classes $class): void
     {
         $assigned = ClassStaff::where('class_id', $class->id)
@@ -645,6 +748,9 @@ class AssessmentService
         }
     }
 
+    /**
+     * Throw unless the tutor is assigned to the assessment's class or created it.
+     */
     private function ensureTutorCanManage(Staff $tutor, Assessment $assessment): void
     {
         $assigned = ClassStaff::where('class_id', $assessment->class_id)
@@ -656,6 +762,9 @@ class AssessmentService
         }
     }
 
+    /**
+     * Throw unless the student is enrolled in the assessment's subject.
+     */
     private function ensureStudentEnrolled(Student $student, Assessment $assessment): void
     {
         $enrolled = SubjectsEnrollment::where('subject_id', $assessment->subject_id)
@@ -668,6 +777,9 @@ class AssessmentService
         }
     }
 
+    /**
+     * Fetch the student's existing submission (with answers and files) if any.
+     */
     private function submissionFor(Student $student, Assessment $assessment): ?AssessmentSubmission
     {
         return AssessmentSubmission::where('assessment_id', $assessment->id)

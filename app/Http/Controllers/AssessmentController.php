@@ -17,11 +17,24 @@ class AssessmentController extends Controller
     {
     }
 
+    /**
+     * List assessments for the authenticated tutor.
+
+     * Returns all assessments the tutor created or is assigned to, each with
+     * aggregate submission stats for the tutor dashboard.
+     */
     public function tutorIndex(Request $request): JsonResponse
     {
         return response()->json(['assessments' => $this->service->tutorAssessments($request->user())]);
     }
 
+    /**
+     * Create a new draft assessment with questions.
+
+     * Supports question types: mcq, essay and paper_submission. MCQ questions must
+     * have exactly one correct option. Created assessments are drafts and must be
+     * published before students can submit.
+     */
     public function store(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
@@ -54,12 +67,18 @@ class AssessmentController extends Controller
         }
     }
 
+    /**
+     * Show a single assessment with its questions and options.
+     */
     public function show(Request $request, Assessment $assessment): JsonResponse
     {
         $assessment->load(['class.subject', 'questions.options']);
         return response()->json(['assessment' => $assessment]);
     }
 
+    /**
+     * Update a draft assessment and optionally replace its questions.
+     */
     public function update(Request $request, Assessment $assessment): JsonResponse
     {
         $validator = Validator::make($request->all(), [
@@ -91,6 +110,9 @@ class AssessmentController extends Controller
         }
     }
 
+    /**
+     * Delete (soft-delete) a draft assessment.
+     */
     public function destroy(Request $request, Assessment $assessment): JsonResponse
     {
         try {
@@ -101,6 +123,12 @@ class AssessmentController extends Controller
         }
     }
 
+    /**
+     * Publish an assessment for a date window and notify enrolled students.
+
+     * Sets status to published, stores the opens/due window, and notifies (in-app
+     * + email) every student enrolled in the assessment's subject.
+     */
     public function publish(Request $request, Assessment $assessment): JsonResponse
     {
         $validator = Validator::make($request->all(), [
@@ -126,11 +154,19 @@ class AssessmentController extends Controller
         }
     }
 
+    /**
+     * List all student submissions for an assessment.
+     */
     public function submissions(Request $request, Assessment $assessment): JsonResponse
     {
         return response()->json(['submissions' => $this->service->tutorSubmissions($request->user(), $assessment)]);
     }
 
+    /**
+     * Show one submission in full detail for grading.
+
+     * Includes the student, every answer and attached files (with signed URLs).
+     */
     public function submission(Request $request, $assessment, $submission): JsonResponse
     {
         $submission = AssessmentSubmission::findOrFail($submission);
@@ -139,6 +175,12 @@ class AssessmentController extends Controller
         return response()->json(['submission' => $this->service->submissionDetail($request->user(), $submission)]);
     }
 
+    /**
+     * Grade a submission by awarding per-question marks and feedback.
+
+     * Keys are question IDs. Re-calling this re-grades. Status becomes 'graded'
+     * and the student is notified with their score.
+     */
     public function grade(Request $request, $assessment, $submission): JsonResponse
     {
         $submission = AssessmentSubmission::findOrFail($submission);
@@ -163,6 +205,11 @@ class AssessmentController extends Controller
         }
     }
 
+    /**
+     * Reopen a submission so the student can attempt it again.
+
+     * Resets the submission to in_progress and clears its answers.
+     */
     public function reopen(Request $request, $assessment, $submission): JsonResponse
     {
         $submission = AssessmentSubmission::findOrFail($submission);
@@ -172,11 +219,23 @@ class AssessmentController extends Controller
         return response()->json(['submission' => $submission]);
     }
 
+    /**
+     * List assessments assigned to the authenticated student.
+
+     * Only published, opened assessments in subjects the student is enrolled in,
+     * each with the student's own submission state.
+     */
     public function studentIndex(Request $request): JsonResponse
     {
         return response()->json(['assessments' => $this->service->studentAssessments($request->user())]);
     }
 
+    /**
+     * Show assessment detail to the student.
+
+     * MCQ correct options and essay/paper explanations are hidden until the
+     * student submits, to prevent answer leakage.
+     */
     public function studentShow(Request $request, Assessment $assessment): JsonResponse
     {
         try {
@@ -186,6 +245,12 @@ class AssessmentController extends Controller
         }
     }
 
+    /**
+     * Submit the authenticated student's answers for an assessment.
+
+     * MCQ answers are auto-graded; essays and paper submissions are graded later
+     * by the tutor. Blocks late or duplicate submissions.
+     */
     public function submit(Request $request, Assessment $assessment): JsonResponse
     {
         $validator = Validator::make($request->all(), [
@@ -208,6 +273,12 @@ class AssessmentController extends Controller
         }
     }
 
+    /**
+     * Upload assessment images (student A4 work or tutor model image).
+
+     * Stores images privately under assessment-uploads and returns their paths,
+     * which are then referenced at submit/create time. Validates image type and size.
+     */
     public function upload(Request $request): JsonResponse
     {
         $validator = Validator::make($request->all(), [
@@ -230,11 +301,17 @@ class AssessmentController extends Controller
         }
     }
 
+    /**
+     * List all assessments with aggregate stats (read-only, admin).
+     */
     public function adminIndex(): JsonResponse
     {
         return response()->json(['assessments' => $this->service->aggregateList()]);
     }
 
+    /**
+     * Aggregate-only stats for a single assessment (read-only, admin).
+     */
     public function adminStats(Assessment $assessment): JsonResponse
     {
         return response()->json([
@@ -243,11 +320,17 @@ class AssessmentController extends Controller
         ]);
     }
 
+    /**
+     * List all assessments with aggregate stats (read-only, advisor).
+     */
     public function advisorIndex(): JsonResponse
     {
         return response()->json(['assessments' => $this->service->aggregateList()]);
     }
 
+    /**
+     * Aggregate-only stats for a single assessment (read-only, advisor).
+     */
     public function advisorStats(Assessment $assessment): JsonResponse
     {
         return response()->json([

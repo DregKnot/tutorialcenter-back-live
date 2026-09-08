@@ -17,11 +17,19 @@ class AssessmentAnswerFile extends Model
 
     protected $appends = ['url'];
 
+    /**
+     * The answer this uploaded file is attached to.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
     public function answer()
     {
         return $this->belongsTo(AssessmentAnswer::class);
     }
 
+    /**
+     * Signed URL used to display the student's uploaded paper image.
+     */
     public function getUrlAttribute(): ?string
     {
         if (! $this->file_path || ! Storage::disk('local')->exists($this->file_path)) {
