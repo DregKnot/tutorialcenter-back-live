@@ -34,21 +34,41 @@ class AssessmentSubmission extends Model
         'percentage' => 'float',
     ];
 
+    /**
+     * The assessment this submission belongs to.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
     public function assessment()
     {
         return $this->belongsTo(Assessment::class);
     }
 
+    /**
+     * The student who owns this submission.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
     public function student()
     {
         return $this->belongsTo(Student::class);
     }
 
+    /**
+     * The tutor who graded this submission.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
     public function grader()
     {
         return $this->belongsTo(Staff::class, 'graded_by');
     }
 
+    /**
+     * The per-question answers within this submission.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\HasMany
+     */
     public function answers()
     {
         return $this->hasMany(AssessmentAnswer::class, 'submission_id');

@@ -6,12 +6,20 @@ use Illuminate\Notifications\Notification;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Support\Carbon;
 
+/**
+ * Sends assessment notifications (in-app and optionally email) to students.
+ */
 class AssessmentNotification extends Notification
 {
     protected $type;
     protected $message;
     protected $data;
 
+    /**
+     * @param  string  $type     One of the notification types (e.g. assessment_published).
+     * @param  string  $message  Human-readable notification body.
+     * @param  array   $data     Optional context used to build the mail (due date, score, etc.).
+     */
     public function __construct(string $type, string $message, array $data = [])
     {
         $this->type = $type;
@@ -19,6 +27,9 @@ class AssessmentNotification extends Notification
         $this->data = $data;
     }
 
+    /**
+     * Choose channels: email only for publish/grade when the mail toggle is on.
+     */
     public function via(object $notifiable): array
     {
         $emailTypes = ['assessment_published', 'assessment_graded'];
@@ -30,6 +41,9 @@ class AssessmentNotification extends Notification
         return ['database'];
     }
 
+    /**
+     * Build the in-app (database) notification payload.
+     */
     public function toArray(object $notifiable): array
     {
         return [
@@ -40,6 +54,9 @@ class AssessmentNotification extends Notification
         ];
     }
 
+    /**
+     * Build the email content for a student.
+     */
     public function toMail(object $notifiable): MailMessage
     {
         $name = isset($notifiable->firstname)
@@ -82,6 +99,9 @@ class AssessmentNotification extends Notification
         return $mail->line('Thank you for using Tutorial Center.');
     }
 
+    /**
+     * Derive the email subject from the notification type.
+     */
     protected function subjectLine(): string
     {
         return match ($this->type) {
@@ -91,6 +111,9 @@ class AssessmentNotification extends Notification
         };
     }
 
+    /**
+     * Link back to the assessment in the front-end app.
+     */
     protected function assessmentUrl(): string
     {
         $id = $this->data['assessment_id'] ?? null;
@@ -99,6 +122,9 @@ class AssessmentNotification extends Notification
         return $id ? $base . '/assessments/' . $id : $base;
     }
 
+    /**
+     * Format a date value for the email body.
+     */
     protected function formatDate($value): string
     {
         if (! $value) {
