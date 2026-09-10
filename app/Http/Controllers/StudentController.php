@@ -201,7 +201,7 @@ class StudentController extends Controller
             }
 
             DB::commit();
-            StudentNotificationService::notify($request->user(), 'forget password');
+            StudentNotificationService::notify($student, 'forget password');
 
             return response()->json([
                 'message' => 'Password reset OTP sent successfully.',
@@ -317,7 +317,7 @@ class StudentController extends Controller
 
             DB::commit();
 
-            StudentNotificationService::notify($request->user(), 'change password');
+            StudentNotificationService::notify($student, 'change password');
 
             return response()->json([
                 'message' => 'Password changed successfully.',

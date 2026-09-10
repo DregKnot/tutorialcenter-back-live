@@ -283,7 +283,7 @@ class GuardianDashboardController extends Controller
                 'id' => $enrollment->id,
                 'course_id' => $enrollment->course_id,
                 'course_title' => $course?->title ?? ('Course #' . $enrollment->course_id),
-                'course_price' => (float) ($enrollment->cost ?? ($course?->price ?? 10000)),
+                'course_price' => (float) ($course?->price ?? ($enrollment->cost ?? 10000)),
                 'banner' => $course?->banner,
                 'status' => $enrollment->status,
                 'is_active' => $isActive,
@@ -866,7 +866,8 @@ class GuardianDashboardController extends Controller
 
         $validated = $request->validate([
             'student_id' => 'required|exists:students,id',
-            'billing_cycle' => 'nullable|in:monthly,quarterly,annual',
+            'course_id' => 'nullable|exists:courses,id',
+            'billing_cycle' => 'nullable|in:monthly,quarterly,semi_annual,annual',
             'amount' => 'nullable|numeric|min:100',
         ]);
 
@@ -876,8 +877,20 @@ class GuardianDashboardController extends Controller
         }
 
         $student = Student::find($validated['student_id']);
-        $amount = $validated['amount'] ?? 10000;
-        $cycle = $validated['billing_cycle'] ?? 'monthly';
+        $course = isset($validated['course_id']) ? Course::find($validated['course_id']) : null;
+        $cycle = $validated['billing_cycle'] ?? 'quarterly';
+        $months = match ($cycle) {
+            'monthly' => 1,
+            'quarterly' => 3,
+            'semi_annual' => 6,
+            'annual' => 12,
+            default => 3,
+        };
+
+        $calculatedPlanPrice = $course
+            ? ($months === 1 ? (float)$course->price : (float)round($course->price * $months * 0.95))
+            : null;
+        $amount = $validated['amount'] ?? ($calculatedPlanPrice ?? 10000);
         $reference = 'TCR_' . strtoupper(uniqid()) . '_' . time();
 
         $paystackData = [
@@ -886,6 +899,8 @@ class GuardianDashboardController extends Controller
             'email' => $guardian->email ?: ($student->email ?: 'guardian@tutorialcenter.com'),
             'student_id' => $student->id,
             'student_name' => trim($student->firstname . ' ' . $student->surname),
+            'course_id' => $course?->id,
+            'course_title' => $course?->title,
             'guardian_id' => $guardian->id,
             'payment_type' => 'training_renewal',
             'billing_cycle' => $cycle,
@@ -911,7 +926,7 @@ class GuardianDashboardController extends Controller
             'student_id' => 'required|exists:students,id',
             'course_id' => 'nullable|exists:courses,id',
             'amount' => 'nullable|numeric|min:100',
-            'billing_cycle' => 'nullable|in:monthly,quarterly,annual',
+            'billing_cycle' => 'nullable|in:monthly,quarterly,semi_annual,annual',
             'subject_ids' => 'nullable|array',
         ]);
 
@@ -922,7 +937,19 @@ class GuardianDashboardController extends Controller
 
         $student = Student::find($validated['student_id']);
         $course = isset($validated['course_id']) ? Course::find($validated['course_id']) : null;
-        $amount = $validated['amount'] ?? ($course->price ?? 10000);
+        $cycle = $validated['billing_cycle'] ?? 'quarterly';
+        $months = match ($cycle) {
+            'monthly' => 1,
+            'quarterly' => 3,
+            'semi_annual' => 6,
+            'annual' => 12,
+            default => 3,
+        };
+
+        $calculatedPlanPrice = $course
+            ? ($months === 1 ? (float)$course->price : (float)round($course->price * $months * 0.95))
+            : null;
+        $amount = $validated['amount'] ?? ($calculatedPlanPrice ?? ($course->price ?? 10000));
         $reference = 'TCA_' . strtoupper(uniqid()) . '_' . time();
 
         $paystackData = [
@@ -936,7 +963,7 @@ class GuardianDashboardController extends Controller
             'subject_ids' => $validated['subject_ids'] ?? [],
             'guardian_id' => $guardian->id,
             'payment_type' => 'add_training_course',
-            'billing_cycle' => $validated['billing_cycle'] ?? 'monthly',
+            'billing_cycle' => $cycle,
             'key' => config('services.paystack.public_key') ?: env('PAYSTACK_PUBLIC_KEY', 'pk_test_d810e0935d60a336bea860384aabbc753cdd78ff')
         ];
 

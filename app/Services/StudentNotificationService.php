@@ -8,8 +8,12 @@ use Illuminate\Support\Facades\Cache;
 
 class StudentNotificationService
 {
-    public static function notify(Student $student, string $type, array $data = [])
+    public static function notify(?Student $student, string $type, array $data = [])
     {
+        if (!$student) {
+            return;
+        }
+
         // Prevent spam (optional)
         $key = "student-activity-{$type}-{$student->id}";
 
