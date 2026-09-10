@@ -19,6 +19,11 @@ class AssessmentQuestionOption extends Model
         'is_correct' => 'boolean',
     ];
 
+    /**
+     * The question this option belongs to.
+     *
+     * @return \Illuminate\Database\Eloquent\Relations\BelongsTo
+     */
     public function question()
     {
         return $this->belongsTo(AssessmentQuestion::class, 'question_id');
