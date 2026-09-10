@@ -651,27 +651,45 @@ class StaffController extends Controller
      */
     public function resendEmailVerification(Request $request)
     {
-        try {
-            $request->validate([
-                'email' => 'required|email|exists:staffs,email',
-            ]);
+        $emailInput = trim(strtolower($request->email ?? ''));
 
-            $staff = Staff::where('email', $request->email)->first();
-
-            if ($staff->email_verified_at) {
-                return response()->json([
-                    'message' => 'Email already verified.',
-                ], 400);
-            }
-        } catch (\Throwable $e) {
+        if (empty($emailInput)) {
             return response()->json([
-                'message' => 'Failed to process request.',
-                'error' => config('app.debug') ? $e->getMessage() : null,
-            ], 500);
+                'message' => 'Email address is required.',
+            ], 422);
+        }
+
+        $validator = Validator::make(['email' => $emailInput], [
+            'email' => 'required|email',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Please provide a valid email address.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        $staff = Staff::whereRaw('LOWER(email) = ?', [$emailInput])->first();
+
+        if (!$staff) {
+            return response()->json([
+                'message' => 'No staff account found with this email address.',
+            ], 404);
+        }
+
+        if ($staff->email_verified_at) {
+            return response()->json([
+                'message' => 'Email already verified.',
+            ], 400);
         }
 
         DB::beginTransaction();
         try {
+            EmailVerification::where('verifiable_type', Staff::class)
+                ->where('verifiable_id', $staff->id)
+                ->delete();
+
             app(EmailVerificationService::class)->send($staff);
 
             DB::commit();

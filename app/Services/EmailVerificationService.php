@@ -29,19 +29,27 @@ class EmailVerificationService
             'expires_at' => now()->addMinutes(30),
         ]);
 
-        if ($user instanceof Student) {
-            $user->notify(new StudentEmailVerification($token));
-            return;
-        }
+        try {
+            if ($user instanceof Student) {
+                $user->notify(new StudentEmailVerification($token));
+                return;
+            }
 
-        if ($user instanceof Staff) {
-            $user->notify(new StaffEmailVerificationNotification($token));
-            return;
-        }
+            if ($user instanceof Staff) {
+                $user->notify(new StaffEmailVerificationNotification($token));
+                return;
+            }
 
-        if ($user instanceof Guardian) {
-            $user->notify(new GuardianEmailVerificationNotification($token));
-            return;
+            if ($user instanceof Guardian) {
+                $user->notify(new GuardianEmailVerificationNotification($token));
+                return;
+            }
+        } catch (\Throwable $mailEx) {
+            logger()->error("EmailVerificationService mail sending failed for " . ($user->email ?? 'unknown') . ": " . $mailEx->getMessage());
+            logger()->info("Fallback Verification OTP for " . ($user->email ?? 'unknown') . " is: {$token}");
+            if (app()->environment('production')) {
+                throw $mailEx;
+            }
         }
     }
 }

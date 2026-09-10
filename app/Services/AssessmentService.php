@@ -188,8 +188,20 @@ class AssessmentService
             ->get();
 
         return $assessments->map(function (Assessment $a) use ($student) {
+            $submission = $this->submissionFor($student, $a);
+
+            $isMissed = false;
+            if ($a->due_at && \Carbon\Carbon::parse($a->due_at)->isPast()) {
+                if (!$submission || !in_array($submission->status, [AssessmentSubmission::SUBMITTED, AssessmentSubmission::GRADED], true)) {
+                    $isMissed = true;
+                }
+            } elseif ($submission && $submission->status === AssessmentSubmission::ABSENT) {
+                $isMissed = true;
+            }
+
             return array_merge($a->toArray(), [
-                'submission' => $this->submissionFor($student, $a),
+                'submission' => $submission,
+                'is_missed' => $isMissed,
             ]);
         })->all();
     }
@@ -232,15 +244,25 @@ class AssessmentService
             return $payload;
         });
 
+        $isMissed = false;
+        if ($assessment->due_at && \Carbon\Carbon::parse($assessment->due_at)->isPast() && !$submittedOrGraded) {
+            $isMissed = true;
+        } elseif ($submission && $submission->status === AssessmentSubmission::ABSENT) {
+            $isMissed = true;
+        }
+
         return [
-            'assessment' => $assessment->only([
+            'assessment' => array_merge($assessment->only([
                 'id', 'class_id', 'subject_id', 'title', 'description',
                 'instructions', 'opens_at', 'due_at', 'status', 'total_marks',
                 'pass_mark', 'timer_minutes',
+            ]), [
+                'is_missed' => $isMissed,
             ]),
             'questions' => $questions->values(),
             'submission' => $submission,
             'answers' => $submission?->answers ?? collect(),
+            'is_missed' => $isMissed,
         ];
     }
 
