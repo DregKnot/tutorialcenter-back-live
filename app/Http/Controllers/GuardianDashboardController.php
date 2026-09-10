@@ -904,7 +904,7 @@ class GuardianDashboardController extends Controller
             'guardian_id' => $guardian->id,
             'payment_type' => 'training_renewal',
             'billing_cycle' => $cycle,
-            'key' => config('services.paystack.public_key') ?: env('PAYSTACK_PUBLIC_KEY', 'pk_test_d810e0935d60a336bea860384aabbc753cdd78ff')
+            'key' => $this->resolvePaystackPublicKey()
         ];
 
         return response()->json([
@@ -964,7 +964,7 @@ class GuardianDashboardController extends Controller
             'guardian_id' => $guardian->id,
             'payment_type' => 'add_training_course',
             'billing_cycle' => $cycle,
-            'key' => config('services.paystack.public_key') ?: env('PAYSTACK_PUBLIC_KEY', 'pk_test_d810e0935d60a336bea860384aabbc753cdd78ff')
+            'key' => $this->resolvePaystackPublicKey()
         ];
 
         return response()->json([
@@ -1068,4 +1068,22 @@ class GuardianDashboardController extends Controller
             ]
         ]);
     }
+
+    /**
+     * Resolve Paystack Public Key based on environment and configuration.
+     * Defaults to test key in local/development and live key in production.
+     */
+    private function resolvePaystackPublicKey(): string
+    {
+        $configuredKey = config('services.paystack.public_key') ?: env('PAYSTACK_PUBLIC_KEY');
+        if (!empty($configuredKey)) {
+            return $configuredKey;
+        }
+
+        $isProduction = app()->environment('production') || config('app.env') === 'production';
+        return $isProduction
+            ? 'pk_live_f1017d3c645e69b33b1f8cc538b306088b655244'
+            : 'pk_test_d810e0935d60a336bea860384aabbc753cdd78ff';
+    }
+
 }

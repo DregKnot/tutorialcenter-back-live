@@ -98,6 +98,7 @@ class ZoomService
         $exp = $iat + 7200;
 
         $payload = json_encode([
+            'sdkKey' => $sdkKey,
             'appKey' => $sdkKey,
             'mn' => (int) $meetingNumber,
             'role' => (int) $role,

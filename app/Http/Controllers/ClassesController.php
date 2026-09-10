@@ -45,7 +45,7 @@ class ClassesController extends Controller
         try {
             $staff = $request->user() ?: auth('staff')->user();
 
-            $classes = Classes::with(['subject', 'staffs', 'schedules.sessions.attendances.student'])
+            $classes = Classes::with(['subject.courses', 'staffs', 'schedules.sessions.attendances.student'])
                 ->whereHas('subject', fn($q) => $q->where('status', 'active'))
                 ->where('status', 'active')
                 ->get();
@@ -381,21 +381,36 @@ class ClassesController extends Controller
             }
             if ($request->has('class_link')) {
                 $updateData['class_link'] = $request->class_link;
+                if (!empty($request->class_link) && preg_match('/zoom\.(?:us|com)\/(?:j|s|wc\/join)\/(\d+)/i', $request->class_link, $matches)) {
+                    $updateData['zoom_meeting_id'] = $matches[1];
+                    $parsedUrl = parse_url($request->class_link);
+                    if (!empty($parsedUrl['query'])) {
+                        parse_str($parsedUrl['query'], $queryParams);
+                        if (!empty($queryParams['pwd'])) {
+                            $updateData['zoom_meeting_password'] = $queryParams['pwd'];
+                        }
+                    }
+                    $updateData['zoom_join_url'] = $request->class_link;
+                }
             }
 
             if (!empty($updateData)) {
                 $class->update($updateData);
             }
 
-            // Sync assigned staff
-            if ($request->has('staffs')) {
+            // Sync assigned staff (only if non-empty staffs list is provided, preserving existing staff otherwise)
+            if ($request->has('staffs') && is_array($request->staffs) && count($request->staffs) > 0) {
                 $staffData = [];
                 foreach ($request->staffs as $staff) {
-                    $staffData[$staff['staff_id']] = [
-                        'role' => $staff['role'] ?? 'tutor'
-                    ];
+                    if (!empty($staff['staff_id'])) {
+                        $staffData[$staff['staff_id']] = [
+                            'role' => $staff['role'] ?? 'tutor'
+                        ];
+                    }
                 }
-                $class->staffs()->sync($staffData);
+                if (!empty($staffData)) {
+                    $class->staffs()->sync($staffData);
+                }
             }
 
             // If schedules or dates are provided, alter future sessions while preserving past attendance
@@ -525,7 +540,148 @@ class ClassesController extends Controller
      * (tutor) Get tutor schedule with assigned classes - unified with center master schedule
     **/
     public function tutorClassesSchedule(Request $request){
-        return $this->allClassesSchedule($request);
+        try {
+            $staff = $request->user() ?: auth('staff')->user();
+
+            if (!$staff) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized tutor'
+                ], 401);
+            }
+
+            // If explicitly requesting all center classes (e.g. from calendar view ?all=true or scope=all), return center-wide schedule
+            if ($request->boolean('all') || $request->input('scope') === 'all') {
+                return $this->allClassesSchedule($request);
+            }
+
+            // 1. Query only classes where this tutor is assigned in class_staff
+            $classes = Classes::with(['subject.courses', 'staffs', 'schedules.sessions.attendances.student'])
+                ->whereHas('subject', fn($q) => $q->where('status', 'active'))
+                ->where('status', 'active')
+                ->whereHas('staffs', fn($q) => $q->where('staffs.id', $staff->id))
+                ->get();
+
+            $classes->each(function ($class) {
+                $enrolledStudents = $this->getEnrolledStudentsForSubject($class->subject_id);
+                $class->enrolled_students = $enrolledStudents;
+                $class->enrolled_count = $enrolledStudents->count();
+
+                if ($class->schedules) {
+                    foreach ($class->schedules as $schedule) {
+                        if ($schedule->sessions) {
+                            foreach ($schedule->sessions as $session) {
+                                $session->enrolled_students = $enrolledStudents;
+                                $session->enrolled_count = $enrolledStudents->count();
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 2. Base Session Query for timeline views (only sessions belonging to tutor's classes)
+            $sessionQuery = ClassSession::with([
+                'class.subject',
+                'class.staffs',
+                'attendances.student'
+            ])
+            ->whereHas('class', function ($q) use ($staff) {
+                $q->where('status', 'active')
+                  ->whereHas('staffs', fn($qs) => $qs->where('staffs.id', $staff->id));
+            });
+
+            // Smart Next Up session ordering: future dates or today where class is still upcoming
+            $nowTime = now()->format('H:i:s');
+            $todayDate = today()->toDateString();
+
+            $nextClass = (clone $sessionQuery)
+                ->where(function ($q) use ($todayDate, $nowTime) {
+                    $q->whereDate('session_date', '>', $todayDate)
+                      ->orWhere(function ($q2) use ($todayDate, $nowTime) {
+                          $q2->whereDate('session_date', $todayDate)
+                             ->where(function ($q3) use ($nowTime) {
+                                 $q3->where('ends_at', '>=', $nowTime)
+                                    ->orWhere(function ($q4) use ($nowTime) {
+                                        $q4->whereNull('ends_at')
+                                           ->where('starts_at', '>=', $nowTime);
+                                    });
+                             });
+                      });
+                })
+                ->whereNotIn('status', ['completed', 'cancelled'])
+                ->orderBy('session_date', 'asc')
+                ->orderBy('starts_at', 'asc')
+                ->first();
+
+            // Fallback if no upcoming session found today or future
+            if (!$nextClass) {
+                $nextClass = (clone $sessionQuery)
+                    ->whereDate('session_date', '>=', $todayDate)
+                    ->whereNotIn('status', ['cancelled'])
+                    ->orderBy('session_date', 'asc')
+                    ->orderBy('starts_at', 'asc')
+                    ->first();
+            }
+
+            $todayClasses = (clone $sessionQuery)
+                ->whereDate('session_date', today())
+                ->orderBy('starts_at')
+                ->get();
+
+            $weekSchedule = (clone $sessionQuery)
+                ->whereBetween('session_date', [
+                    now()->startOfWeek(),
+                    now()->endOfWeek()
+                ])
+                ->orderBy('session_date')
+                ->orderBy('starts_at')
+                ->get()
+                ->groupBy('session_date');
+
+            $upcomingSessions = (clone $sessionQuery)
+                ->whereDate('session_date', '>=', now())
+                ->orderBy('session_date')
+                ->orderBy('starts_at')
+                ->limit(20)
+                ->get();
+
+            $page = max(1, (int) $request->input('page', 1));
+            $perPage = max(1, min(100, (int) $request->input('per_page', 50)));
+
+            $totalSessions = (clone $sessionQuery)->count();
+            $lastPage = $perPage > 0 ? (int) ceil($totalSessions / $perPage) : 1;
+
+            $offset = ($page - 1) * $perPage;
+            $allSessions = (clone $sessionQuery)
+                ->orderBy('session_date', 'desc')
+                ->orderBy('starts_at', 'desc')
+                ->offset($offset)
+                ->limit($perPage)
+                ->get();
+
+            $formatted = $this->formatStaffScheduleResponse($staff, $nextClass, $todayClasses, $weekSchedule, $upcomingSessions, $allSessions);
+            $formatted['classes'] = $classes;
+            $formatted['pagination'] = [
+                'current_page' => $page,
+                'per_page' => $perPage,
+                'total' => $totalSessions,
+                'last_page' => $lastPage,
+                'has_more' => $page < $lastPage,
+            ];
+            $formatted['current_page'] = $page;
+            $formatted['per_page'] = $perPage;
+            $formatted['total'] = $totalSessions;
+            $formatted['last_page'] = $lastPage;
+            $formatted['has_more'] = $page < $lastPage;
+
+            return response()->json($formatted);
+
+        } catch (\Throwable $e) {
+            return response()->json([
+                'message' => 'Failed to fetch tutor classes schedule',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
     }
 
     /**
@@ -602,11 +758,49 @@ class ClassesController extends Controller
 
                 $tutor = null;
                 if ($class && $class->staffs && $class->staffs->isNotEmpty()) {
-                    $leadStaff = $class->staffs->first(fn($s) => $s->role === 'lead') ?: $class->staffs->first();
-                    $tutor = $leadStaff->staff ?: $leadStaff;
+                    $leadStaff = $class->staffs->first(function($s) {
+                        $role = strtolower($s->pivot->role ?? $s->role ?? '');
+                        return $role === 'lead' || $role === 'tutor';
+                    }) ?: $class->staffs->first();
+                    $tutor = $leadStaff;
                 }
 
                 $myAttendance = $session->attendances ? $session->attendances->first() : null;
+
+                $tutorData = $tutor ? [
+                    'id' => $tutor->id,
+                    'firstname' => $tutor->firstname ?? '',
+                    'surname' => $tutor->surname ?? '',
+                    'name' => trim(($tutor->firstname ?? '') . ' ' . ($tutor->surname ?? '')),
+                    'email' => $tutor->email ?? '',
+                    'avatar' => $tutor->profile_picture ?? null,
+                    'profile_picture' => $tutor->profile_picture ?? null,
+                    'role' => $tutor->pivot->role ?? $tutor->role ?? 'tutor',
+                ] : [
+                    'id' => null,
+                    'firstname' => 'Tutorial Center',
+                    'surname' => 'Tutor',
+                    'name' => 'Tutorial Center Tutor',
+                    'email' => '',
+                    'avatar' => null,
+                    'profile_picture' => null,
+                    'role' => 'tutor',
+                ];
+
+                $tutorName = $tutor ? trim(($tutor->firstname ?? '') . ' ' . ($tutor->surname ?? '')) : 'Tutorial Center Tutor';
+
+                $classStaffs = ($class && $class->staffs) ? $class->staffs->map(function($st) {
+                    return [
+                        'id' => $st->id,
+                        'firstname' => $st->firstname ?? '',
+                        'surname' => $st->surname ?? '',
+                        'name' => trim(($st->firstname ?? '') . ' ' . ($st->surname ?? '')),
+                        'email' => $st->email ?? '',
+                        'profile_picture' => $st->profile_picture ?? null,
+                        'avatar' => $st->profile_picture ?? null,
+                        'role' => $st->pivot->role ?? $st->role ?? 'tutor',
+                    ];
+                })->values()->all() : [];
 
                 return [
                     'id' => $session->id,
@@ -615,20 +809,21 @@ class ClassesController extends Controller
                     'topic' => $session->title ?: ($class ? $class->title : 'Master Class'),
                     'subject_name' => $class && $class->subject ? $class->subject->name : 'General',
                     'subject' => $class ? $class->subject : null,
+                    'class' => $class ? [
+                        'id' => $class->id,
+                        'title' => $class->title,
+                        'description' => $class->description ?? null,
+                        'status' => $class->status ?? 'active',
+                        'subject_id' => $class->subject_id ?? null,
+                        'staffs' => $classStaffs,
+                    ] : null,
                     'session_date' => $session->session_date ? \Carbon\Carbon::parse($session->session_date)->toDateString() : null,
                     'starts_at' => $session->starts_at ? substr($session->starts_at, 0, 5) : '10:00',
                     'ends_at' => $session->ends_at ? substr($session->ends_at, 0, 5) : '11:30',
                     'class_link' => $session->class_link ?: ($class ? ($class->zoom_join_url ?: $class->class_link) : null),
                     'recording_link' => $session->recording_link,
-                    'tutor' => $tutor ? [
-                        'id' => $tutor->id,
-                        'name' => trim(($tutor->firstname ?? '') . ' ' . ($tutor->surname ?? '')),
-                        'email' => $tutor->email ?? '',
-                        'avatar' => $tutor->profile_picture ?? null,
-                    ] : [
-                        'name' => 'Tutorial Center Tutor',
-                    ],
-                    'tutor_name' => $tutor ? trim(($tutor->firstname ?? '') . ' ' . ($tutor->surname ?? '')) : 'Tutorial Center Tutor',
+                    'tutor' => $tutorData,
+                    'tutor_name' => $tutorName,
                     'status' => $session->status ?? 'scheduled',
                     'my_attendance' => $myAttendance ? [
                         'status' => $myAttendance->status,
@@ -637,11 +832,45 @@ class ClassesController extends Controller
                 ];
             };
 
-            $nextClassRaw = (clone $sessionQuery)
-                ->whereDate('session_date', '>=', today())
-                ->orderBy('session_date')
-                ->orderBy('starts_at')
-                ->first();
+            $nowTime = now()->format('H:i:s');
+            $todayDate = today()->toDateString();
+
+            // Next active/upcoming sessions:
+            // 1. Must be on a future date, OR today where ends_at is in the future (or starts_at if ends_at is null)
+            // 2. Status not in ('completed', 'cancelled')
+            // 3. Strictly ordered by session_date ASC, then starts_at ASC (sooner classes come first)
+            $nextClassesRaw = (clone $sessionQuery)
+                ->where(function ($q) use ($todayDate, $nowTime) {
+                    $q->whereDate('session_date', '>', $todayDate)
+                      ->orWhere(function ($q2) use ($todayDate, $nowTime) {
+                          $q2->whereDate('session_date', $todayDate)
+                             ->where(function ($q3) use ($nowTime) {
+                                 $q3->where('ends_at', '>=', $nowTime)
+                                    ->orWhere(function ($q4) use ($nowTime) {
+                                        $q4->whereNull('ends_at')
+                                           ->where('starts_at', '>=', $nowTime);
+                                    });
+                             });
+                      });
+                })
+                ->whereNotIn('status', ['completed', 'cancelled'])
+                ->orderBy('session_date', 'asc')
+                ->orderBy('starts_at', 'asc')
+                ->take(2)
+                ->get();
+
+            // If no future sessions today/beyond, fallback to today onwards
+            if ($nextClassesRaw->isEmpty()) {
+                $nextClassesRaw = (clone $sessionQuery)
+                    ->whereDate('session_date', '>=', $todayDate)
+                    ->whereNotIn('status', ['cancelled'])
+                    ->orderBy('session_date', 'asc')
+                    ->orderBy('starts_at', 'asc')
+                    ->take(2)
+                    ->get();
+            }
+
+            $nextClassRaw = $nextClassesRaw->first();
 
             $todayClassesRaw = (clone $sessionQuery)
                 ->whereDate('session_date', today())
@@ -701,7 +930,8 @@ class ClassesController extends Controller
 
             return response()->json([
                 'success' => true,
-                'next_class' => $transformStudentSession($nextClassRaw),
+                'next_class' => $nextClassRaw ? $transformStudentSession($nextClassRaw) : null,
+                'next_classes' => $nextClassesRaw->map($transformStudentSession)->values(),
                 'today_classes' => $todayClassesRaw->map($transformStudentSession),
                 'week_schedule' => $weekScheduleGrouped,
                 'upcoming_sessions' => $upcomingSessionsRaw->map($transformStudentSession),
