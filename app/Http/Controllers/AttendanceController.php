@@ -2,12 +2,13 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
 use App\Models\ClassAttendance;
 use App\Models\ClassSession;
+use App\Models\Student;
 use App\Services\StudentNotificationService;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class AttendanceController extends Controller
 {
@@ -25,7 +26,7 @@ class AttendanceController extends Controller
         $sessionId = (int) $validated['class_session_id'];
 
         $session = ClassSession::with(['class.subject', 'class.staffs'])->find($sessionId);
-        if (!$session) {
+        if (! $session) {
             return response()->json(['message' => 'Class session not found.'], 404);
         }
 
@@ -54,35 +55,63 @@ class AttendanceController extends Controller
         if ($now->gt($closeWindowEnd)) {
             return response()->json([
                 'success' => false,
-                'message' => "The allocated time for this class session has ended. Attendance is closed.",
+                'message' => 'The allocated time for this class session has ended. Attendance is closed.',
                 'is_open' => false,
             ], 422);
         }
 
-        // Multi-join handling: find existing or create initial attendance record
-        $attendance = ClassAttendance::where('class_session_id', $sessionId)
-            ->where('student_id', $student->id)
-            ->first();
+        if (StudentNotificationService::enabled()) {
+            $attendance = DB::transaction(function () use ($student, $sessionId, $scheduledStart, $now) {
+                // Serialize first joins too: there may not yet be an attendance row to lock.
+                Student::whereKey($student->id)->lockForUpdate()->firstOrFail();
+                $attendance = ClassAttendance::where('class_session_id', $sessionId)
+                    ->where('student_id', $student->id)->lockForUpdate()->first();
+                $status = $now->gt($scheduledStart->copy()->addMinutes(15)) ? 'late' : 'present';
+                if (! $attendance) {
+                    $attendance = ClassAttendance::create([
+                        'class_session_id' => $sessionId, 'student_id' => $student->id,
+                        'joined_at' => $now, 'left_at' => $now, 'status' => $status,
+                    ]);
+                }
+                $attendance->closeStaleVisit();
+                if ($attendance->connection_state !== 'active') {
+                    if ($attendance->status === 'absent') {
+                        $attendance->update(['status' => $status]);
+                    }
+                    $attendance->beginVisit();
+                } else {
+                    $attendance->observeConnection();
+                }
 
-        $isLate = $now->gt($scheduledStart->copy()->addMinutes(15));
-        $status = $isLate ? 'late' : 'present';
-
-        if (!$attendance) {
-            $attendance = ClassAttendance::create([
-                'class_session_id' => $sessionId,
-                'student_id' => $student->id,
-                'joined_at' => $now,
-                'left_at' => $now,
-                'status' => $status,
-            ]);
-
-// Silent attendance tracking (post-class reports only)
+                return $attendance;
+            });
         } else {
-            // Student re-joining: keep original joined_at and update left_at timestamp
-            $attendance->update([
-                'left_at' => $now,
-                'status' => $attendance->status === 'absent' ? $status : $attendance->status,
-            ]);
+            // Multi-join handling: find existing or create initial attendance record
+            $attendance = ClassAttendance::where('class_session_id', $sessionId)
+                ->where('student_id', $student->id)
+                ->first();
+
+            $isLate = $now->gt($scheduledStart->copy()->addMinutes(15));
+            $status = $isLate ? 'late' : 'present';
+
+            if (! $attendance) {
+                $attendance = ClassAttendance::create([
+                    'class_session_id' => $sessionId,
+                    'student_id' => $student->id,
+                    'joined_at' => $now,
+                    'left_at' => $now,
+                    'status' => $status,
+                ]);
+
+                // Silent attendance tracking (post-class reports only)
+            } else {
+                // Student re-joining: keep original joined_at and update left_at timestamp
+                $attendance->update([
+                    'left_at' => $now,
+                    'status' => $attendance->status === 'absent' ? $status : $attendance->status,
+                ]);
+            }
+
         }
 
         return response()->json([
@@ -110,16 +139,33 @@ class AttendanceController extends Controller
             ->where('student_id', $student->id)
             ->first();
 
-        if (!$attendance) {
+        if (! $attendance) {
             return response()->json(['message' => 'No active attendance record found.'], 404);
         }
 
         $now = now();
-        $attendance->update([
-            'left_at' => $now,
-        ]);
+        if (StudentNotificationService::enabled()) {
+            $attendance = DB::transaction(function () use ($attendance) {
+                $attendance = ClassAttendance::whereKey($attendance->id)->lockForUpdate()->firstOrFail();
+                $attendance->closeStaleVisit();
+                if ($attendance->connection_state === 'disconnected' && (! $attendance->scheduledEnd() || $attendance->scheduledEnd()->isFuture())) {
+                    $attendance->beginVisit();
+                } elseif ($attendance->connection_state === 'active') {
+                    $attendance->observeConnection();
+                } elseif ($attendance->connection_state === null) {
+                    // An old attendance record is not opted into abandonment tracking by a heartbeat.
+                    $attendance->update(['left_at' => now()]);
+                }
 
-        $durationMinutes = $attendance->joined_at ? max(1, (int) $attendance->joined_at->diffInMinutes($now)) : 1;
+                return $attendance;
+            });
+        } else {
+            $attendance->update(['left_at' => $now]);
+        }
+
+        $durationMinutes = StudentNotificationService::enabled() && $attendance->connection_state !== null
+            ? (int) floor($attendance->connected_seconds / 60)
+            : ($attendance->joined_at ? max(1, (int) $attendance->joined_at->diffInMinutes($now)) : 1);
 
         return response()->json([
             'success' => true,
@@ -147,11 +193,27 @@ class AttendanceController extends Controller
 
         if ($attendance) {
             $now = now();
-            $attendance->update([
-                'left_at' => $now,
-            ]);
+            if (StudentNotificationService::enabled()) {
+                $attendance = DB::transaction(function () use ($attendance) {
+                    $attendance = ClassAttendance::whereKey($attendance->id)->lockForUpdate()->firstOrFail();
+                    $attendance->closeStaleVisit();
+                    if (in_array($attendance->connection_state, ['active', 'ended'], true)) {
+                        $attendance->observeConnection();
+                        $attendance->update(['connection_state' => 'left']);
+                        $attendance->activity('class_left');
+                    } elseif ($attendance->connection_state === null) {
+                        $attendance->update(['left_at' => now()]);
+                    }
 
-            $durationMinutes = $attendance->joined_at ? max(1, (int) $attendance->joined_at->diffInMinutes($now)) : 1;
+                    return $attendance;
+                });
+            } else {
+                $attendance->update(['left_at' => $now]);
+            }
+
+            $durationMinutes = StudentNotificationService::enabled() && $attendance->connection_state !== null
+            ? (int) floor($attendance->connected_seconds / 60)
+            : ($attendance->joined_at ? max(1, (int) $attendance->joined_at->diffInMinutes($now)) : 1);
 
             return response()->json([
                 'success' => true,

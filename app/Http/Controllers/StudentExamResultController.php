@@ -53,7 +53,9 @@ class StudentExamResultController extends Controller
         $timeResult = $this->timeInvestmentAchievementService->evaluate($attempt->student);
         $newAchievements = array_merge($newAchievements, $timeResult['awards']);
 
-        StudentNotificationService::notify($attempt->student, 'Exam Submitted', ["You have submitted the exam: {$attempt->examYear->examBody->name} - {$attempt->examYear->subject->name}. Your score is: {$attempt->score}"]);
+        if (! StudentNotificationService::enabled()) {
+            StudentNotificationService::notify($attempt->student, 'Exam Submitted', ["You have submitted the exam: {$attempt->examYear->examBody->name} - {$attempt->examYear->subject->name}. Your score is: {$attempt->score}"]);
+        }
 
         return response()->json([
             'success' => true,

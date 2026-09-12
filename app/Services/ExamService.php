@@ -34,6 +34,8 @@ class ExamService
         |------------------------------------------
         */
 
+            Student::whereKey($student->id)->lockForUpdate()->firstOrFail();
+
             $existingAttempt = ExamAttempt::lockForUpdate()
                 ->where(
                     'student_id',
@@ -74,6 +76,8 @@ class ExamService
             ]);
 
             $this->subjectTrialService->recordStarted($attempt);
+
+            StudentNotificationService::exam($attempt, 'exam_started');
 
             return $attempt;
         });
@@ -117,53 +121,58 @@ class ExamService
 
     public function finalizeAttempt(ExamAttempt $attempt)
     {
-        if (
-            $attempt->status !== ExamAttempt::IN_PROGRESS
-        ) {
+        return DB::transaction(function () use ($attempt) {
+            $attempt = ExamAttempt::whereKey($attempt->id)->lockForUpdate()->firstOrFail();
+            if (
+                $attempt->status !== ExamAttempt::IN_PROGRESS
+            ) {
+                return $attempt;
+            }
+
+            $answers = $attempt->answers()
+                ->with('option:id,is_correct')
+                ->get();
+
+            $correct = $answers
+                ->filter(fn ($answer) => $answer->is_correct)
+                ->count();
+
+            $wrong = $answers
+                ->filter(fn ($answer) => ! $answer->is_correct)
+                ->count();
+
+            $total = $attempt->total_questions;
+
+            $unanswered = $total - ($correct + $wrong);
+
+            $percentage = $total > 0
+                ? ($correct / $total) * 100
+                : 0;
+
+            $attempt->update([
+                'correct_answers' => $correct,
+                'wrong_answers' => $wrong,
+                'unanswered' => $unanswered,
+                'score' => $correct,
+                'percentage' => round($percentage, 2),
+                'submitted_at' => now(),
+                'status' => ExamAttempt::COMPLETED,
+            ]);
+
+            $this->subjectTrialService->recordEnded(
+                $attempt,
+                StudentSubjectTrial::COMPLETED
+            );
+
+            $this->examActivityService->endOpenSessionsForAttempt(
+                $attempt,
+                'submitted'
+            );
+
+            StudentNotificationService::exam($attempt, 'exam_completed');
+
             return $attempt;
-        }
-
-        $answers = $attempt->answers()
-            ->with('option:id,is_correct')
-            ->get();
-
-        $correct = $answers
-            ->filter(fn ($answer) => $answer->is_correct)
-            ->count();
-
-        $wrong = $answers
-            ->filter(fn ($answer) => ! $answer->is_correct)
-            ->count();
-
-        $total = $attempt->total_questions;
-
-        $unanswered = $total - ($correct + $wrong);
-
-        $percentage = $total > 0
-            ? ($correct / $total) * 100
-            : 0;
-
-        $attempt->update([
-            'correct_answers' => $correct,
-            'wrong_answers' => $wrong,
-            'unanswered' => $unanswered,
-            'score' => $correct,
-            'percentage' => round($percentage, 2),
-            'submitted_at' => now(),
-            'status' => ExamAttempt::COMPLETED,
-        ]);
-
-        $this->subjectTrialService->recordEnded(
-            $attempt,
-            StudentSubjectTrial::COMPLETED
-        );
-
-        $this->examActivityService->endOpenSessionsForAttempt(
-            $attempt,
-            'submitted'
-        );
-
-        return $attempt;
+        });
     }
 
     public function reviewAttempt(

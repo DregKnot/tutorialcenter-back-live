@@ -4,7 +4,6 @@ namespace App\Services;
 
 use App\Models\Assessment;
 use App\Models\AssessmentAnswer;
-use App\Models\AssessmentAnswerFile;
 use App\Models\AssessmentQuestion;
 use App\Models\AssessmentQuestionOption;
 use App\Models\AssessmentSubmission;
@@ -14,6 +13,7 @@ use App\Models\Staff;
 use App\Models\Student;
 use App\Models\SubjectsEnrollment;
 use App\Notifications\AssessmentNotification;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
@@ -102,32 +102,57 @@ class AssessmentService
             throw ValidationException::withMessages(['assessment' => 'Closed assessments cannot be republished.']);
         }
 
-        $assessment->update([
-            'status' => Assessment::PUBLISHED,
-            'opens_at' => $opensAt ?: now(),
-            'due_at' => $dueAt,
-        ]);
+        return DB::transaction(function () use ($assessment, $opensAt, $dueAt) {
+            $assessment = Assessment::whereKey($assessment->id)->lockForUpdate()->firstOrFail();
+            if ($assessment->status === Assessment::CLOSED) {
+                throw ValidationException::withMessages(['assessment' => 'Closed assessments cannot be republished.']);
+            }
+            $wasPublished = $assessment->status === Assessment::PUBLISHED;
+            $assessment->update([
+                'status' => Assessment::PUBLISHED,
+                'opens_at' => $opensAt ?: now(),
+                'due_at' => $dueAt,
+            ]);
 
-        $students = SubjectsEnrollment::where('subject_id', $assessment->subject_id)
-            ->whereNull('deleted_at')
-            ->with('student')
-            ->get()
-            ->pluck('student')
-            ->filter();
+            $students = SubjectsEnrollment::where('subject_id', $assessment->subject_id)
+                ->whereNull('deleted_at')
+                ->with('student')
+                ->get()
+                ->pluck('student')
+                ->filter();
 
-        if ($students->isNotEmpty()) {
-            Notification::send($students, new AssessmentNotification(
-                'assessment_published',
-                'New assessment: ' . $assessment->title,
-                [
-                    'assessment_id' => $assessment->id,
-                    'title' => $assessment->title,
-                    'due_at' => $assessment->due_at?->toISOString(),
-                ]
-            ));
-        }
+            $students = $students->unique('id');
+            if (StudentNotificationService::enabled()) {
+                if (! $wasPublished) {
+                    foreach ($students as $student) {
+                        $data = [
+                            'assessment_id' => $assessment->id,
+                            'title' => $assessment->title,
+                            'subject_id' => $assessment->subject_id,
+                            'opens_at' => $assessment->opens_at?->toISOString(),
+                            'due_at' => $assessment->due_at?->toISOString(),
+                            'occurred_at' => now()->toISOString(),
+                        ];
+                        StudentNotificationService::activity(
+                            $student, 'assessment_assigned', 'assessment:'.$assessment->id, $data, true,
+                            new AssessmentNotification('assessment_published', 'New assessment: '.$assessment->title, $data)
+                        );
+                    }
+                }
+            } elseif ($students->isNotEmpty()) {
+                Notification::send($students, new AssessmentNotification(
+                    'assessment_published',
+                    'New assessment: '.$assessment->title,
+                    [
+                        'assessment_id' => $assessment->id,
+                        'title' => $assessment->title,
+                        'due_at' => $assessment->due_at?->toISOString(),
+                    ]
+                ));
+            }
 
-        return $assessment->fresh('questions.options');
+            return $assessment->fresh('questions.options');
+        });
     }
 
     /**
@@ -191,8 +216,8 @@ class AssessmentService
             $submission = $this->submissionFor($student, $a);
 
             $isMissed = false;
-            if ($a->due_at && \Carbon\Carbon::parse($a->due_at)->isPast()) {
-                if (!$submission || !in_array($submission->status, [AssessmentSubmission::SUBMITTED, AssessmentSubmission::GRADED], true)) {
+            if ($a->due_at && Carbon::parse($a->due_at)->isPast()) {
+                if (! $submission || ! in_array($submission->status, [AssessmentSubmission::SUBMITTED, AssessmentSubmission::GRADED], true)) {
                     $isMissed = true;
                 }
             } elseif ($submission && $submission->status === AssessmentSubmission::ABSENT) {
@@ -233,6 +258,7 @@ class AssessmentService
                     if ($submittedOrGraded) {
                         $option['is_correct'] = $o->is_correct;
                     }
+
                     return $option;
                 });
             } elseif (! $submittedOrGraded) {
@@ -245,7 +271,7 @@ class AssessmentService
         });
 
         $isMissed = false;
-        if ($assessment->due_at && \Carbon\Carbon::parse($assessment->due_at)->isPast() && !$submittedOrGraded) {
+        if ($assessment->due_at && Carbon::parse($assessment->due_at)->isPast() && ! $submittedOrGraded) {
             $isMissed = true;
         } elseif ($submission && $submission->status === AssessmentSubmission::ABSENT) {
             $isMissed = true;
@@ -366,7 +392,7 @@ class AssessmentService
             if ($assessment->creator) {
                 Notification::send($assessment->creator, new AssessmentNotification(
                     'assessment_submitted',
-                    $student->firstname . ' ' . $student->surname . ' submitted ' . $assessment->title,
+                    $student->firstname.' '.$student->surname.' submitted '.$assessment->title,
                     ['assessment_id' => $assessment->id, 'submission_id' => $submission->id]
                 ));
             }
@@ -399,6 +425,7 @@ class AssessmentService
     public function submissionDetail(Staff $tutor, AssessmentSubmission $submission): AssessmentSubmission
     {
         $this->ensureTutorCanManage($tutor, $submission->assessment);
+
         return $submission->load(['student', 'answers.question', 'answers.option', 'answers.files']);
     }
 
@@ -426,6 +453,7 @@ class AssessmentService
                     if ($answer->marks_awarded !== null) {
                         $score += (float) $answer->marks_awarded;
                     }
+
                     continue;
                 }
 
@@ -457,7 +485,7 @@ class AssessmentService
             if ($submission->student) {
                 Notification::send($submission->student, new AssessmentNotification(
                     'assessment_graded',
-                    'Your assessment "' . $submission->assessment->title . '" has been graded.',
+                    'Your assessment "'.$submission->assessment->title.'" has been graded.',
                     [
                         'assessment_id' => $submission->assessment_id,
                         'title' => $submission->assessment->title,
@@ -517,8 +545,8 @@ class AssessmentService
      * Store uploaded assessment images on the private local disk.
      *
      * @param  string  $ownerFolder  Folder key, e.g. student-12 or staff-3.
-     * @param  array   $files        UploadedFile instances.
-     * @return array  Stored relative paths.
+     * @param  array  $files  UploadedFile instances.
+     * @return array Stored relative paths.
      */
     public function storeUploads(string $ownerFolder, array $files): array
     {
@@ -529,8 +557,8 @@ class AssessmentService
             $extension = $extension ?: 'img';
 
             $stored[] = $file->storeAs(
-                'assessment-uploads/' . $ownerFolder,
-                Str::uuid() . '.' . $extension,
+                'assessment-uploads/'.$ownerFolder,
+                Str::uuid().'.'.$extension,
                 'local'
             );
         }
@@ -646,7 +674,7 @@ class AssessmentService
     {
         foreach (array_values($questions) as $index => $qdata) {
             if (! empty($qdata['model_image'])) {
-                $prefix = 'assessment-uploads/staff-' . $assessment->created_by . '/';
+                $prefix = 'assessment-uploads/staff-'.$assessment->created_by.'/';
 
                 if (! str_starts_with((string) $qdata['model_image'], $prefix)
                     || ! Storage::disk('local')->exists($qdata['model_image'])) {
@@ -727,7 +755,7 @@ class AssessmentService
      */
     private function validateStudentOwnedPaths(Student $student, array $paths): void
     {
-        $prefix = 'assessment-uploads/student-' . $student->id . '/';
+        $prefix = 'assessment-uploads/student-'.$student->id.'/';
 
         foreach ($paths as $path) {
             if (! str_starts_with((string) $path, $prefix) || ! Storage::disk('local')->exists($path)) {
