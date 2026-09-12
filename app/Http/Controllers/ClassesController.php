@@ -38,6 +38,253 @@ class ClassesController extends Controller
             ->get(['id', 'firstname', 'surname', 'email', 'tel', 'profile_picture']);
     }
 
+        /**
+     * (admin) create a new class, class schedule, assign staff to class and class sessions
+     **/
+    public function store(Request $request, ZoomService $zoomService)
+    {
+        $validator = Validator::make($request->all(), [
+            'subject_id' => 'required|exists:subjects,id',
+            'title' => 'nullable|string|max:255',
+            'description' => 'nullable|string',
+            'status' => 'nullable|in:active,inactive',
+
+            'staffs' => 'nullable|array',
+            'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
+            'staffs.*.role' => 'nullable|string|max:100',
+
+            'start_date' => 'nullable|date',
+            'end_date' => 'nullable|date|after_or_equal:start_date',
+
+            'class_link' => 'nullable|url',
+
+            'schedules' => 'required|array|min:1',
+            'schedules.*.day_of_week' => 'required|string|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
+            'schedules.*.start_time' => 'required',
+            'schedules.*.duration_minutes' => 'nullable|integer|min:1',
+            'schedules.*.end_time' => 'nullable',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        DB::beginTransaction();
+
+        try {
+            /*
+            |--------------------------------------------------------------------------
+            | 1. Generate Class Title If Missing
+            |--------------------------------------------------------------------------
+            */
+            $title = trim((string) $request->input('title', ''));
+            if (empty($title)) {
+                $subject = Subject::find($request->subject_id);
+                $course = $subject ? Course::find($subject->course_id[0] ?? null) : null;
+
+                if ($subject && $course) {
+                    $title = $course->title . ' ' . $subject->name . ' Class';
+                } elseif ($subject) {
+                    $title = $subject->name . ' Class';
+                } else {
+                    $title = 'Master Class';
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 2. Zoom Integration & Class Link
+            |--------------------------------------------------------------------------
+            */
+            $classLink = $request->input('class_link');
+            $zoomMeetingId = null;
+            $zoomMeetingPassword = null;
+            $zoomJoinUrl = null;
+            $zoomStartUrl = null;
+
+            if (!empty($classLink)) {
+                if (preg_match('/zoom\.(?:us|com)\/(?:j|s|wc\/join)\/(\d+)/i', $classLink, $matches)) {
+                    $zoomMeetingId = $matches[1];
+                    $parsedUrl = parse_url($classLink);
+                    if (!empty($parsedUrl['query'])) {
+                        parse_str($parsedUrl['query'], $queryParams);
+                        if (!empty($queryParams['pwd'])) {
+                            $zoomMeetingPassword = $queryParams['pwd'];
+                        }
+                    }
+                    $zoomJoinUrl = $classLink;
+                }
+            } else {
+                try {
+                    $subject = Subject::find($request->subject_id);
+                    $topic = ($subject ? $subject->name : 'Class') . ': ' . $title;
+
+                    $zoomMeeting = $zoomService->createMeeting($topic);
+
+                    $zoomMeetingId = (string) ($zoomMeeting['id'] ?? '');
+                    $zoomMeetingPassword = $zoomMeeting['password'] ?? null;
+                    $zoomJoinUrl = $zoomMeeting['join_url'] ?? null;
+                    $zoomStartUrl = $zoomMeeting['start_url'] ?? null;
+
+                    $classLink = $zoomJoinUrl;
+                } catch (\Throwable $ze) {
+                    \Log::warning("Zoom meeting auto-creation during class store failed: " . $ze->getMessage());
+                }
+            }
+
+            $status = $request->input('status', 'active') ?: 'active';
+
+            /*
+            |--------------------------------------------------------------------------
+            | 3. Prevent Duplicate Class or Create
+            |--------------------------------------------------------------------------
+            */
+            $class = Classes::where('subject_id', $request->subject_id)
+                ->where('title', $title)
+                ->first();
+
+            if (!$class) {
+                $class = Classes::create([
+                    'subject_id' => $request->subject_id,
+                    'title' => $title,
+                    'description' => $request->description,
+                    'status' => $status,
+                    'zoom_meeting_id' => $zoomMeetingId,
+                    'zoom_meeting_password' => $zoomMeetingPassword,
+                    'zoom_join_url' => $zoomJoinUrl,
+                    'zoom_start_url' => $zoomStartUrl,
+                ]);
+            } else {
+                $class->update([
+                    'description' => $request->description ?? $class->description,
+                    'status' => $status,
+                    'zoom_meeting_id' => $zoomMeetingId ?? $class->zoom_meeting_id,
+                    'zoom_meeting_password' => $zoomMeetingPassword ?? $class->zoom_meeting_password,
+                    'zoom_join_url' => $zoomJoinUrl ?? $class->zoom_join_url,
+                    'zoom_start_url' => $zoomStartUrl ?? $class->zoom_start_url,
+                ]);
+                if (empty($classLink)) {
+                    $classLink = $class->zoom_join_url;
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 4. Assign Staff
+            |--------------------------------------------------------------------------
+            */
+            if ($request->has('staffs') && is_array($request->staffs) && count($request->staffs) > 0) {
+                $staffData = [];
+                foreach ($request->staffs as $staff) {
+                    if (!empty($staff['staff_id'])) {
+                        $staffData[$staff['staff_id']] = [
+                            'role' => $staff['role'] ?? 'tutor'
+                        ];
+                    }
+                }
+                if (!empty($staffData)) {
+                    $class->staffs()->syncWithoutDetaching($staffData);
+                }
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | 5. Create Schedules + Sessions
+            |--------------------------------------------------------------------------
+            */
+            $startDate = $request->filled('start_date')
+                ? Carbon::parse($request->start_date)->startOfDay()
+                : now()->startOfDay();
+
+            $endDate = $request->filled('end_date')
+                ? Carbon::parse($request->end_date)->endOfDay()
+                : $startDate->copy()->addMonths(3)->endOfDay();
+
+            $sessionsCreated = 0;
+
+            foreach ($request->schedules as $scheduleData) {
+                $parsedStart = Carbon::parse($scheduleData['start_time']);
+                $startTime = $parsedStart->format('H:i');
+                $duration = (int) ($scheduleData['duration_minutes'] ?? 60);
+                $endTime = !empty($scheduleData['end_time'])
+                    ? Carbon::parse($scheduleData['end_time'])->format('H:i')
+                    : $parsedStart->copy()->addMinutes($duration)->format('H:i');
+
+                $dayOfWeek = strtolower(trim($scheduleData['day_of_week']));
+
+                $schedule = ClassSchedule::firstOrCreate(
+                    [
+                        'class_id' => $class->id,
+                        'day_of_week' => $dayOfWeek,
+                        'start_time' => $startTime
+                    ],
+                    [
+                        'end_time' => $endTime,
+                        'start_date' => $startDate->toDateString(),
+                        'end_date' => $endDate->toDateString()
+                    ]
+                );
+
+                $current = $startDate->copy();
+                if (strtolower($current->format('l')) !== $dayOfWeek) {
+                    $current->next($dayOfWeek);
+                }
+
+                while ($current->lte($endDate)) {
+                    $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
+
+                    if (!$isHoliday) {
+                        $session = ClassSession::firstOrCreate(
+                            [
+                                'class_id' => $class->id,
+                                'class_schedule_id' => $schedule->id,
+                                'session_date' => $current->toDateString()
+                            ],
+                            [
+                                'starts_at' => $startTime,
+                                'ends_at' => $endTime,
+                                'class_link' => $classLink,
+                                'status' => 'scheduled'
+                            ]
+                        );
+
+                        if ($session->wasRecentlyCreated) {
+                            $sessionsCreated++;
+                        }
+                    }
+
+                    $current->addWeek();
+                }
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Class created successfully',
+                'sessions_created' => $sessionsCreated,
+                'class' => $class->load([
+                    'subject',
+                    'staffs',
+                    'schedules.sessions'
+                ])
+            ], 201);
+
+        } catch (\Throwable $e) {
+            DB::rollBack();
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Class creation failed',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
     /**
      * (admin) Get classes schdule for all subjects 
     **/
