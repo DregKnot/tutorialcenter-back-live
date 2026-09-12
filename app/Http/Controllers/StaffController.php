@@ -604,20 +604,68 @@ class StaffController extends Controller
     /**
      * Verify staff email.
      */
+    /**
+     * Verify staff email.
+     */
     public function verifyEmail(Request $request)
     {
         try {
-            $request->validate([
-                'token' => 'required|string',
-            ]);
+            $rawToken = $request->token ?? $request->otp ?? '';
+            $cleanToken = trim(preg_replace('/[^0-9]/', '', (string)$rawToken));
+            $emailInput = trim(strtolower($request->email ?? ''));
 
-            $record = EmailVerification::where('token', $request->token)
-                ->where('expires_at', '>', now())
-                ->first();
+            // 1. If email is provided, check if the staff is ALREADY verified
+            if ($emailInput) {
+                $staffByEmail = Staff::whereRaw('LOWER(email) = ?', [$emailInput])->first();
+                if ($staffByEmail && $staffByEmail->email_verified_at) {
+                    return response()->json([
+                        'message' => 'Email is already verified. You can proceed to login.',
+                        'already_verified' => true,
+                    ], 200);
+                }
+            }
+
+            if (empty($cleanToken)) {
+                return response()->json([
+                    'message' => 'Verification code is required.',
+                ], 422);
+            }
+
+            // 2. Query the verification record by clean numeric token
+            $record = EmailVerification::where('token', $cleanToken)->first();
+
+            // Fallback: If not found by raw token, also try scoped to staff if email is provided
+            if (!$record && $emailInput) {
+                $staff = Staff::whereRaw('LOWER(email) = ?', [$emailInput])->first();
+                if ($staff) {
+                    $record = EmailVerification::where('verifiable_type', Staff::class)
+                        ->where('verifiable_id', $staff->id)
+                        ->where('token', $cleanToken)
+                        ->first();
+                }
+            }
 
             if (!$record) {
+                // Check if staff was already verified (e.g. token deleted upon first successful verification)
+                if ($emailInput) {
+                    $staff = Staff::whereRaw('LOWER(email) = ?', [$emailInput])->first();
+                    if ($staff && $staff->email_verified_at) {
+                        return response()->json([
+                            'message' => 'Email is already verified. You can proceed to login.',
+                            'already_verified' => true,
+                        ], 200);
+                    }
+                }
+
                 return response()->json([
-                    'message' => 'Invalid or expired verification link.',
+                    'message' => 'Invalid verification code. Please check your latest email or request a new code.',
+                ], 400);
+            }
+
+            // 3. Check expiration
+            if (Carbon::parse($record->expires_at)->isPast()) {
+                return response()->json([
+                    'message' => 'Verification code has expired. Please click "Resend Code" to receive a new one.',
                 ], 400);
             }
 
@@ -625,7 +673,7 @@ class StaffController extends Controller
 
             if (!$staff) {
                 return response()->json([
-                    'message' => 'Staff not found.',
+                    'message' => 'Staff account not found.',
                 ], 404);
             }
 
@@ -637,7 +685,7 @@ class StaffController extends Controller
 
             return response()->json([
                 'message' => 'Email verified successfully.',
-            ]);
+            ], 200);
         } catch (\Throwable $e) {
             return response()->json([
                 'message' => 'Email verification failed.',
