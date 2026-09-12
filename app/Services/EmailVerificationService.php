@@ -26,7 +26,7 @@ class EmailVerificationService
             'verifiable_type' => get_class($user),
             'verifiable_id' => $user->id,
             'token' => $token,
-            'expires_at' => now()->addMinutes(30),
+            'expires_at' => now()->addMinutes(60),
         ]);
 
         try {
