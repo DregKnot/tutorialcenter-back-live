@@ -16,6 +16,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use App\Services\ZoomService;
+use App\Services\StaffNotificationService;
 
 class ClassesController extends Controller
 {
@@ -51,7 +52,7 @@ class ClassesController extends Controller
 
             'staffs' => 'nullable|array',
             'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
-            'staffs.*.role' => 'nullable|string|max:100',
+            'staffs.*.role' => 'nullable|in:lead,assistant',
 
             'start_date' => 'nullable|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
@@ -76,6 +77,9 @@ class ClassesController extends Controller
         DB::beginTransaction();
 
         try {
+            // Serialize creation/assignment retries for the same subject.
+            Subject::whereKey($request->subject_id)->lockForUpdate()->firstOrFail();
+            $newStaffIds = [];
             /*
             |--------------------------------------------------------------------------
             | 1. Generate Class Title If Missing
@@ -182,12 +186,13 @@ class ClassesController extends Controller
                 foreach ($request->staffs as $staff) {
                     if (!empty($staff['staff_id'])) {
                         $staffData[$staff['staff_id']] = [
-                            'role' => $staff['role'] ?? 'tutor'
+                            'role' => $staff['role'] ?? 'lead'
                         ];
                     }
                 }
                 if (!empty($staffData)) {
-                    $class->staffs()->syncWithoutDetaching($staffData);
+                    $assignmentChanges = $class->staffs()->syncWithoutDetaching($staffData);
+                    $newStaffIds = $assignmentChanges['attached'];
                 }
             }
 
@@ -261,18 +266,8 @@ class ClassesController extends Controller
                 }
             }
 
+            $class->load(['subject', 'staffs', 'schedules.sessions']);
             DB::commit();
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Class created successfully',
-                'sessions_created' => $sessionsCreated,
-                'class' => $class->load([
-                    'subject',
-                    'staffs',
-                    'schedules.sessions'
-                ])
-            ], 201);
 
         } catch (\Throwable $e) {
             DB::rollBack();
@@ -283,6 +278,22 @@ class ClassesController extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
+        // External delivery is deliberately outside the class transaction/error handler.
+        try {
+            StaffNotificationService::classAssigned($class, $newStaffIds);
+        } catch (\Throwable $exception) {
+            \Illuminate\Support\Facades\Log::warning('Class assignment notification preparation failed', [
+                'class_id' => $class->id,
+                'exception' => get_class($exception),
+            ]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Class created successfully',
+            'sessions_created' => $sessionsCreated,
+            'class' => $class,
+        ], 201);
     }
 
     /**
