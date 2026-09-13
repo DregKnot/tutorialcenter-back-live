@@ -36,3 +36,5 @@ Schedule::command('achievements:evaluate-leaderboard')
 Schedule::command('achievements:evaluate-special-events')
     ->hourlyAt(10)
     ->withoutOverlapping(120);
+
+Schedule::command('attendance:mark-abandoned')->everyMinute()->withoutOverlapping(5);

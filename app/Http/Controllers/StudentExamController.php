@@ -59,7 +59,9 @@ class StudentExamController extends Controller
             $attempt
         );
 
-        StudentNotificationService::notify($student, 'Started Exam', ["You have started the exam: {$examYear->examBody->name} - {$examYear->subject->name}"]);
+        if (! StudentNotificationService::enabled()) {
+            StudentNotificationService::notify($student, 'Started Exam', ["You have started the exam: {$examYear->examBody->name} - {$examYear->subject->name}"]);
+        }
 
         return response()->json([
             'success' => true,

@@ -35,10 +35,11 @@ class AchievementAwardService
         try {
             return DB::transaction(function () use (
                 $identity,
+                $student,
                 $achievement,
                 $context
             ) {
-                return StudentAchievement::firstOrCreate(
+                $award = StudentAchievement::firstOrCreate(
                     $identity,
                     [
                         'exam_attempt_id' => $context['exam_attempt_id'] ?? null,
@@ -52,6 +53,17 @@ class AchievementAwardService
                         'awarded_at' => $context['awarded_at'] ?? now(),
                     ]
                 );
+                if ($award->wasRecentlyCreated) {
+                    StudentNotificationService::activity($student, 'achievement_awarded', 'award:'.$award->id, [
+                        'student_achievement_id' => $award->id,
+                        'achievement_id' => $achievement->id,
+                        'award_name' => $achievement->name,
+                        'tier' => $award->tier,
+                        'occurred_at' => $award->awarded_at?->toISOString(),
+                    ]);
+                }
+
+                return $award;
             });
         } catch (UniqueConstraintViolationException) {
             return StudentAchievement::where($identity)->firstOrFail();

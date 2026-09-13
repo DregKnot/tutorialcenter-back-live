@@ -66,6 +66,10 @@ return [
     | Set ASSESSMENT_EMAIL_ENABLED=false in your .env to disable assessment
     | emails (publish/grade). Database notifications always remain on.
     */
+    'student_activity' => [
+        'class_timeout_minutes' => env('CLASS_ATTENDANCE_TIMEOUT_MINUTES', 10),
+    ],
+
     'assessments' => [
         'send_email' => env('ASSESSMENT_EMAIL_ENABLED', true),
     ],

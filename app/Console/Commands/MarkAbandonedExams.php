@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Models\ExamAttempt;
 use App\Models\StudentSubjectTrial;
 use App\Services\ExamActivityService;
+use App\Services\StudentNotificationService;
 use App\Services\SubjectTrialService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -54,6 +55,8 @@ class MarkAbandonedExams extends Command
                         $lockedAttempt->update([
                             'status' => ExamAttempt::ABANDONED,
                         ]);
+
+                        StudentNotificationService::exam($lockedAttempt, 'exam_abandoned');
 
                         $subjectTrialService->recordEnded(
                             $lockedAttempt,
