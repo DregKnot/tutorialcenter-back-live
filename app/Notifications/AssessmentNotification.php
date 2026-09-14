@@ -28,13 +28,13 @@ class AssessmentNotification extends Notification
     }
 
     /**
-     * Choose channels: email only for publish/grade when the mail toggle is on.
+     * Publication/reminders include email for valid addresses; grading retains its existing toggle.
      */
     public function via(object $notifiable): array
     {
-        $emailTypes = ['assessment_published', 'assessment_graded'];
-
-        if (config('services.assessments.send_email', true) && in_array($this->type, $emailTypes, true)) {
+        $sendEmail = in_array($this->type, ['assessment_published', 'assessment_deadline_reminder'], true)
+            || ($this->type === 'assessment_graded' && config('services.assessments.send_email', true));
+        if ($sendEmail && filter_var(trim((string) $notifiable->email), FILTER_VALIDATE_EMAIL)) {
             return ['database', 'mail'];
         }
 
@@ -48,7 +48,9 @@ class AssessmentNotification extends Notification
     {
         return [
             'type' => $this->type,
-            'message' => $this->message,
+            'message' => $this->type === 'assessment_deadline_reminder' && ! empty($this->data['due_at'])
+                ? $this->message.' Deadline: '.$this->formatDate($this->data['due_at']).'.'
+                : $this->message,
             'data' => $this->data,
             'time' => now(),
         ];
@@ -68,7 +70,7 @@ class AssessmentNotification extends Notification
             ->greeting('Hello ' . ($name ?: 'there') . '!')
             ->line($this->message);
 
-        if ($this->type === 'assessment_published' && ! empty($this->data['due_at'])) {
+        if (in_array($this->type, ['assessment_published', 'assessment_deadline_reminder'], true) && ! empty($this->data['due_at'])) {
             $mail->line('This assessment is due by: ' . $this->formatDate($this->data['due_at']));
         }
 
@@ -107,6 +109,7 @@ class AssessmentNotification extends Notification
         return match ($this->type) {
             'assessment_published' => 'New assessment: ' . ($this->data['title'] ?? ''),
             'assessment_graded' => 'Your assessment has been graded',
+            'assessment_deadline_reminder' => 'Assessment closing soon: '.($this->data['title'] ?? ''),
             default => 'Assessment update',
         };
     }
@@ -117,9 +120,9 @@ class AssessmentNotification extends Notification
     protected function assessmentUrl(): string
     {
         $id = $this->data['assessment_id'] ?? null;
-        $base = rtrim((string) config('app.url'), '/');
+        $base = 'https://www.tutorialcenter.africa/student/assessments';
 
-        return $id ? $base . '/assessments/' . $id : $base;
+        return $id ? $base.'/'.rawurlencode((string) $id) : $base;
     }
 
     /**
@@ -132,7 +135,7 @@ class AssessmentNotification extends Notification
         }
 
         try {
-            return Carbon::parse($value)->format('D, j M Y g:i A');
+            return Carbon::parse($value)->timezone(config('app.timezone', 'UTC'))->format('D, j M Y g:i A T');
         } catch (\Throwable $e) {
             return (string) $value;
         }
