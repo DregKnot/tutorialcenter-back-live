@@ -476,6 +476,11 @@ class ClassesController extends Controller
                 ], 403);
             }
 
+            $endsAt = \App\Services\StudentNotificationService::sessionTime($session, 'ends_at');
+            if (! $endsAt || ! $endsAt->isPast()) {
+                return response()->json(['success' => false, 'message' => 'Recordings can only be added after the session has ended.'], 422);
+            }
+
             // Update the recording link
             $session->update([
                 'recording_link' => $request->recording_link,
