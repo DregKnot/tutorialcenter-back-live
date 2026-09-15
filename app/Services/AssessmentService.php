@@ -110,16 +110,11 @@ class AssessmentService
             $wasPublished = $assessment->status === Assessment::PUBLISHED;
             $assessment->update([
                 'status' => Assessment::PUBLISHED,
-                'opens_at' => $opensAt ?: now(),
+                'opens_at' => $opensAt ?: ($wasPublished ? $assessment->opens_at : now()),
                 'due_at' => $dueAt,
             ]);
 
-            $students = SubjectsEnrollment::where('subject_id', $assessment->subject_id)
-                ->whereNull('deleted_at')
-                ->with('student')
-                ->get()
-                ->pluck('student')
-                ->filter();
+            $students = StudentNotificationService::enrolledStudents($assessment->subject_id)->get();
 
             $students = $students->unique('id');
             if (StudentNotificationService::enabled()) {

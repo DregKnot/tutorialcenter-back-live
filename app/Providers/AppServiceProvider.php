@@ -13,7 +13,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->scoped('student.session_announcements', fn () => new \ArrayObject());
     }
 
     /**
@@ -22,5 +22,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Payment::observe(PaymentObserver::class);
+        \App\Models\ClassSession::observe(\App\Observers\ClassSessionObserver::class);
+        \App\Models\CoursesEnrollment::observe(\App\Observers\CoursesEnrollmentObserver::class);
     }
 }
