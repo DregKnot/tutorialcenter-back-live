@@ -681,7 +681,7 @@ class AssessmentService
 
             $question = AssessmentQuestion::create([
                 'assessment_id' => $assessment->id,
-                'type' => $qdata['type'],
+                'type' => ($qdata['type'] === 'theory') ? 'essay' : $qdata['type'],
                 'question' => $qdata['question'],
                 'marks' => $qdata['marks'] ?? 1,
                 'order' => $index,
