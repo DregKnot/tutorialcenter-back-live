@@ -12,6 +12,8 @@ use App\Models\ClassSession;
 use Illuminate\Http\Request;
 use App\Models\ClassSchedule;
 use App\Models\ClassAttendance;
+use App\Models\ClassSessionView;
+use App\Models\Student;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -303,7 +305,12 @@ class ClassesController extends Controller
         try {
             $staff = $request->user() ?: auth('staff')->user();
 
-            $classes = Classes::with(['subject.courses', 'staffs', 'schedules.sessions.attendances.student'])
+            $classes = Classes::with([
+                    'subject.courses',
+                    'staffs',
+                    'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
+                    'schedules.sessions.attendances.student',
+                ])
                 ->whereHas('subject', fn($q) => $q->where('status', 'active'))
                 ->where('status', 'active')
                 ->get();
@@ -331,6 +338,7 @@ class ClassesController extends Controller
                 'class.staffs',
                 'attendances.student'
             ])
+            ->withCount(['views as views'])
             ->whereHas('class', fn($q) => $q->where('status', 'active'));
 
             $nextClass = (clone $sessionQuery)
@@ -508,22 +516,29 @@ class ClassesController extends Controller
     {
         try {
             $user = $request->user();
-            
+            $studentId = $user instanceof Student ? $user->id : null;
+
             // Base query for class sessions that are past and have a recording link
             $query = ClassSession::with(['class.staffs', 'class.subject'])
+                ->withCount('views')
                 ->whereNotNull('recording_link')
                 ->where('recording_link', '!=', '')
-                ->where('ends_at', '<', now());
+                ->where(function ($q) {
+                    $q->whereDate('session_date', '<', today())
+                        ->orWhere(function ($q2) {
+                            $q2->whereDate('session_date', today())
+                                ->where('ends_at', '<', now()->format('H:i:s'));
+                        });
+                });
 
-            // If it's a student, filter classes they are enrolled in
-            if ($user && method_exists($user, 'classes')) {
-                // Assuming students belong to classes
-                // If they don't, we might just return all for now or filter by student's course
+            // Load this student's own view rows so we can return their rewatch count.
+            if ($studentId) {
+                $query->with(['views' => fn ($q) => $q->where('student_id', $studentId)]);
             }
 
             $sessions = $query->orderBy('starts_at', 'desc')->get();
 
-            $recordedClasses = $sessions->map(function ($session) {
+            $recordedClasses = $sessions->map(function ($session) use ($studentId) {
                 $class = $session->class;
                 
                 // Get tutor name
@@ -562,6 +577,8 @@ class ClassesController extends Controller
                     $videoId = $match[1];
                 }
 
+                $myView = $studentId ? $session->views->first() : null;
+
                 return [
                     'id' => $session->id,
                     'title' => $formattedTitle,
@@ -572,6 +589,8 @@ class ClassesController extends Controller
                     'duration' => $duration,
                     'videoUrl' => $url,
                     'videoId' => $videoId,
+                    'views' => (int) $session->views_count,
+                    'view_count' => $myView ? (int) $myView->view_count : 0,
                     'color' => 'from-blue-600 to-indigo-600' // Default color for UI
                 ];
             });
@@ -586,6 +605,89 @@ class ClassesController extends Controller
                 'success' => false,
                 'message' => 'Failed to fetch recorded classes',
                 'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
+
+    /**
+     * Student: record a view of a class recording.
+     *
+     * Stores one row per (class session, student). The first play creates the
+     * row; later plays only bump the student's personal rewatch counter, so the
+     * distinct-viewer count ("views") never inflates on refreshes.
+     */
+    public function recordRecordingView(Request $request, ClassSession $classSession): JsonResponse
+    {
+        try {
+            $student = $request->user();
+
+            if (! $student instanceof Student) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Only students can record video views.',
+                ], 403);
+            }
+
+            if (blank($classSession->recording_link)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This class has no recording available.',
+                ], 422);
+            }
+
+            // Recordings only become available after the session has ended.
+            if ($classSession->session_date && $classSession->ends_at) {
+                $sessionEnd = Carbon::parse($classSession->session_date->toDateString().' '.$classSession->ends_at);
+                if ($sessionEnd->isFuture()) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'This recording is not available yet.',
+                    ], 422);
+                }
+            }
+
+            $subjectId = $classSession->class?->subject_id;
+            if ($subjectId && ! $student->enrolledInSubject($subjectId)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'You are not enrolled in this class.',
+                ], 403);
+            }
+
+            $view = ClassSessionView::firstOrNew([
+                'class_session_id' => $classSession->id,
+                'student_id' => $student->id,
+            ]);
+
+            $debounceMinutes = (int) config('services.recording_views.debounce_minutes', 30);
+            $withinDebounce = $view->last_viewed_at
+                && $view->last_viewed_at->gt(now()->subMinutes($debounceMinutes));
+
+            if (! $view->exists) {
+                $view->view_count = 1;
+                $view->first_viewed_at = now();
+                $view->last_viewed_at = now();
+                $view->save();
+            } elseif (! $withinDebounce) {
+                $view->view_count = (int) $view->view_count + 1;
+                $view->last_viewed_at = now();
+                $view->save();
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'View recorded.',
+                'data' => [
+                    'class_session_id' => $classSession->id,
+                    'views' => $classSession->views()->count(),
+                    'view_count' => (int) $view->view_count,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to record view',
+                'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
     }
@@ -819,7 +921,12 @@ class ClassesController extends Controller
             }
 
             // 1. Query only classes where this tutor is assigned in class_staff
-            $classes = Classes::with(['subject.courses', 'staffs', 'schedules.sessions.attendances.student'])
+            $classes = Classes::with([
+                    'subject.courses',
+                    'staffs',
+                    'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
+                    'schedules.sessions.attendances.student',
+                ])
                 ->whereHas('subject', fn($q) => $q->where('status', 'active'))
                 ->where('status', 'active')
                 ->whereHas('staffs', fn($q) => $q->where('staffs.id', $staff->id))
@@ -848,6 +955,7 @@ class ClassesController extends Controller
                 'class.staffs',
                 'attendances.student'
             ])
+            ->withCount(['views as views'])
             ->whereHas('class', function ($q) use ($staff) {
                 $q->where('status', 'active')
                   ->whereHas('staffs', fn($qs) => $qs->where('staffs.id', $staff->id));
