@@ -70,6 +70,17 @@ return [
         'class_timeout_minutes' => env('CLASS_ATTENDANCE_TIMEOUT_MINUTES', 10),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Class Recording Views
+    |--------------------------------------------------------------------------
+    | Repeated plays by the same student within this window are treated as the
+    | same view and do not inflate their personal rewatch count.
+    */
+    'recording_views' => [
+        'debounce_minutes' => env('RECORDING_VIEW_DEBOUNCE_MINUTES', 30),
+    ],
+
     'assessments' => [
         'send_email' => env('ASSESSMENT_EMAIL_ENABLED', true),
     ],
