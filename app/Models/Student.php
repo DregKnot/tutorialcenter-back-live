@@ -74,6 +74,12 @@ class Student extends Model
         return $this->hasMany(ClassAttendance::class, 'student_id');
     }
 
+    // Each student can have many class recording views
+    public function recordingViews()
+    {
+        return $this->hasMany(ClassSessionView::class, 'student_id');
+    }
+
     public function advisors()
     {
         return $this->belongsToMany(Staff::class, 'student_advisors')

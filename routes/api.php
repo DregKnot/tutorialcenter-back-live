@@ -162,6 +162,7 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
 
     // Recorded Classes
     Route::get('/recorded-classes', [ClassesController::class, 'getRecordedClasses']);
+    Route::post('/recorded-classes/{classSession}/view', [ClassesController::class, 'recordRecordingView']); // Record a student's view of a class recording
 
     // Feedback Routes
     Route::prefix('feedback')->group(function () {
