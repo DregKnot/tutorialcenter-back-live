@@ -53,6 +53,12 @@ class ClassSession extends Model
         return $this->hasMany(ClassAttendance::class, 'class_session_id');
     }
 
+    // Distinct student viewers of this session's recording (one row per student)
+    public function views()
+    {
+        return $this->hasMany(ClassSessionView::class, 'class_session_id');
+    }
+
     public function feedbacks()
     {
         return $this->morphMany(
