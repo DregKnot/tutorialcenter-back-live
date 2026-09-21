@@ -536,7 +536,7 @@ class ClassesController extends Controller
                 $query->with(['views' => fn ($q) => $q->where('student_id', $studentId)]);
             }
 
-            $sessions = $query->orderBy('starts_at', 'desc')->get();
+            $sessions = $query->orderBy('updated_at', 'desc')->get();
 
             $recordedClasses = $sessions->map(function ($session) use ($studentId) {
                 $class = $session->class;
@@ -579,16 +579,26 @@ class ClassesController extends Controller
 
                 $myView = $studentId ? $session->views->first() : null;
 
+                // Check the date the recorded link was saved to the backend (updated_at)
+                // Fall back to session_date or created_at
+                $savedDate = $session->updated_at ?: ($session->session_date ?: $session->created_at);
+                $formattedDate = $savedDate 
+                    ? \Carbon\Carbon::parse($savedDate)->format('M j, Y') 
+                    : ($session->session_date ? \Carbon\Carbon::parse($session->session_date)->format('M j, Y') : now()->format('M j, Y'));
+
                 return [
                     'id' => $session->id,
                     'title' => $formattedTitle,
                     'topic' => $topic,
                     'subject' => $subject,
                     'tutor' => $tutorName,
-                    'date' => \Carbon\Carbon::parse($session->starts_at)->format('M j, Y'),
+                    'date' => $formattedDate,
+                    'saved_at' => $session->updated_at ? $session->updated_at->toISOString() : null,
+                    'session_date' => $session->session_date ? \Carbon\Carbon::parse($session->session_date)->toDateString() : null,
                     'duration' => $duration,
                     'videoUrl' => $url,
                     'videoId' => $videoId,
+                    'thumbnail' => $videoId ? "https://img.youtube.com/vi/{$videoId}/hqdefault.jpg" : null,
                     'views' => (int) $session->views_count,
                     'view_count' => $myView ? (int) $myView->view_count : 0,
                     'color' => 'from-blue-600 to-indigo-600' // Default color for UI
