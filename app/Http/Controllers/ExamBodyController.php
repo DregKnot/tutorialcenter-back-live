@@ -92,7 +92,7 @@ class ExamBodyController extends Controller
     public function show(ExamBody $examBody)
     {
         try {
-            $examBody->load('exams'); // Load related exams if needed
+            $examBody->load(['course', 'examYears']); // Load related course and exam years
             return response()->json($examBody);
         } catch (\Exception $e) {
             return response()->json([
