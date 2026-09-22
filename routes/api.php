@@ -320,7 +320,7 @@ Route::prefix('staffs')->group(function () {
 /*
  * Admin Only Protected Routes (enforced in controller)
  */
-Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo'])->group(function () {
+Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:admin,moderator,coo,csa,customer support'])->group(function () {
     // Enrollment Analytics & Subject Rosters
     Route::prefix('enrollments')->group(function () {
         Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
