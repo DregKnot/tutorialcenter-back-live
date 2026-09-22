@@ -250,6 +250,7 @@ Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 
 
 Route::prefix('staffs')->group(function () {
     Route::post('/classes/tutor-report', [\App\Http\Controllers\FeedbackController::class, 'storeTutorReport']);
+    Route::post('/classes/advisor-report', [\App\Http\Controllers\FeedbackController::class, 'storeAdvisorReport']);
 
     Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
         Route::get('/leaderboard/students/{id}', [AdminDashboardAnalyticsController::class, 'studentLeaderboardDetail']); // Student Subject & Daily Leaderboard Detail
@@ -560,7 +561,8 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
     });
 
     Route::prefix('classes')->group(function () {
-        Route::get('/schedule', [ClassesController::class, 'advisorClassesSchedule']); // Get advisor schedule with attendance status
+        Route::get('/schedule', [ClassesController::class, 'advisorClassesSchedule']);
+        Route::post('/classes/report', [\App\Http\Controllers\FeedbackController::class, 'storeAdvisorReport']); // Get advisor schedule with attendance status
     });
 
     // Advisor Dashboard
