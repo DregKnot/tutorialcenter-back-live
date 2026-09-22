@@ -113,19 +113,16 @@ class PaystackService
         }
 
         return DB::transaction(function () use ($data, $reference, $fallbackContext) {
-            // 1. Check if this reference was already processed successfully
-            $existingPayment = Payment::where('gateway_reference', $reference)
+            // 1. Idempotency is keyed on (reference, enrollment), because one
+            //    Paystack reference may cover several courses. Looking up a
+            //    single row here previously short-circuited the whole call and
+            //    left every course after the first one unactivated.
+            $existingPayments = Payment::where('gateway_reference', $reference)
                 ->where('status', 'successful')
                 ->lockForUpdate()
-                ->first();
+                ->get();
 
-            if ($existingPayment) {
-                Log::info('Payment already processed for reference', ['reference' => $reference]);
-                return [
-                    'already_processed' => true,
-                    'payments' => [$existingPayment],
-                ];
-            }
+            $hadSuccessfulPayments = $existingPayments->isNotEmpty();
 
             $amountPaid = isset($data['amount']) ? ((float) $data['amount']) / 100 : ((float) ($fallbackContext['amount'] ?? 0));
             $paidAt = isset($data['paid_at']) ? new \DateTime($data['paid_at']) : now();
@@ -145,10 +142,21 @@ class PaystackService
                 // Guardian paying for multiple wards
                 foreach ($metadata['students'] as $studentItem) {
                     $studentId = $studentItem['student_id'] ?? null;
-                    if (!$studentId) continue;
+                    if (!$studentId) {
+                        Log::warning('Guardian payment entry has no student_id; skipping', [
+                            'reference' => $reference,
+                        ]);
+                        continue;
+                    }
 
                     $student = Student::find($studentId);
-                    if (!$student) continue;
+                    if (!$student) {
+                        Log::warning('Guardian payment references an unknown student; skipping', [
+                            'reference' => $reference,
+                            'student_id' => $studentId,
+                        ]);
+                        continue;
+                    }
 
                     foreach ($studentItem['courses'] ?? [] as $courseItem) {
                         $payment = $this->enrollStudentInCourse(
@@ -219,13 +227,35 @@ class PaystackService
 
             // 3. Process referral if present
             $referralCode = $metadata['referral_code'] ?? ($fallbackContext['referral_code'] ?? null);
-            if ($referralCode && $amountPaid > 0) {
+            // Only on a genuinely new payment: a retried verification or webhook
+            // replay must not credit the affiliate bonus twice.
+            if ($referralCode && $amountPaid > 0 && !empty($processedPayments)) {
                 $this->notifyAffiliateSystem($student ?? null, $referralCode, $amountPaid);
             }
 
+            // A successful charge that records nothing is the worst outcome:
+            // the caller reports success while the student stays unregistered.
+            // Fail loudly so verify-paystack returns an error (and the Paystack
+            // webhook returns 500 so Paystack retries) instead of silently
+            // pretending the courses were activated.
+            if (empty($processedPayments) && !$hadSuccessfulPayments) {
+                Log::error('Paystack payment resolved no enrollments; nothing recorded', [
+                    'reference' => $reference,
+                    'type' => $type,
+                    'email' => $customerEmail,
+                    'metadata' => $metadata,
+                ]);
+
+                throw new \RuntimeException(
+                    "No course or student could be processed for payment reference {$reference}."
+                );
+            }
+
             return [
-                'already_processed' => false,
-                'payments' => $processedPayments,
+                'already_processed' => $hadSuccessfulPayments && empty($processedPayments),
+                'payments' => empty($processedPayments) && $hadSuccessfulPayments
+                    ? $existingPayments->all()
+                    : $processedPayments,
             ];
         });
     }
@@ -242,10 +272,24 @@ class PaystackService
         array $rawPaystackData
     ): ?Payment {
         $courseId = (int) ($courseItem['course_id'] ?? 0);
-        if (!$courseId) return null;
+        if (!$courseId) {
+            Log::warning('Paystack course entry has no course_id; skipping', [
+                'reference' => $reference,
+                'course_item' => $courseItem,
+            ]);
+
+            return null;
+        }
 
         $course = Course::find($courseId);
-        if (!$course) return null;
+        if (!$course) {
+            Log::warning('Paystack payment references an unknown course; skipping', [
+                'reference' => $reference,
+                'course_id' => $courseId,
+            ]);
+
+            return null;
+        }
 
         $billingCycle = $courseItem['billing_cycle'] ?? 'monthly';
         $months = match ($billingCycle) {
@@ -279,7 +323,26 @@ class PaystackService
         $startDate = now();
         $endDate = now()->addMonths($months);
 
+        $existingPayment = null;
+
         if ($enrollment) {
+            // Reuse the row when this reference was already recorded for this
+            // enrollment. A successful row means the work is done; a pending row
+            // is upgraded below instead of inserting a duplicate that would trip
+            // the (gateway_reference, course_enrollment_id) unique index.
+            $existingPayment = Payment::where('gateway_reference', $reference)
+                ->where('course_enrollment_id', $enrollment->id)
+                ->first();
+
+            if ($existingPayment && $existingPayment->status === 'successful') {
+                Log::info('Payment already recorded for enrollment; skipping duplicate', [
+                    'reference' => $reference,
+                    'enrollment_id' => $enrollment->id,
+                ]);
+
+                return null;
+            }
+
             if ($enrollment->trashed()) {
                 $enrollment->restore();
             }
@@ -344,22 +407,32 @@ class PaystackService
                 ->restore();
         }
 
-        // Create new Payment record
-        $payment = Payment::create([
-            'student_id' => $student->id,
-            'course_enrollment_id' => $enrollment->id,
+        $paymentPayload = [
             'amount' => $suppliedPrice,
             'payment_method' => $channel ?: 'card',
             'billing_cycle' => $billingCycle,
             'gateway' => 'paystack',
             'status' => 'successful',
-            'gateway_reference' => $reference,
             'paid_at' => $paidAt,
             'meta' => [
                 'paystack' => $rawPaystackData,
                 'processed_at' => now()->toIso8601String(),
             ],
-        ]);
+        ];
+
+        if ($existingPayment) {
+            // Upgrade a pending/failed row into the confirmed payment.
+            $existingPayment->update(array_merge($paymentPayload, [
+                'meta' => array_merge($existingPayment->meta ?? [], $paymentPayload['meta']),
+            ]));
+            $payment = $existingPayment->fresh();
+        } else {
+            $payment = Payment::create(array_merge($paymentPayload, [
+                'student_id' => $student->id,
+                'course_enrollment_id' => $enrollment->id,
+                'gateway_reference' => $reference,
+            ]));
+        }
 
         // Evaluate achievements
         try {

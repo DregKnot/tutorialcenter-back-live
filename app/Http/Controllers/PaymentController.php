@@ -10,33 +10,85 @@ use App\Services\ExamPreparationAchievementService;
 use App\Services\PaystackService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class PaymentController extends Controller
 {
     // Public: Store a new payment
     public function store(Request $request)
     {
+        // Validation must run outside the try/catch so a ValidationException
+        // still produces a 422 (not a masked 500) for the client.
+        $validated = $request->validate([
+            'student_id' => 'required|exists:students,id',
+            'course_enrollment_id' => 'required|exists:courses_enrollments,id',
+            'amount' => 'required|numeric|min:0',
+            'payment_method' => 'required|in:card,bank_transfer,ussd,wallet,manual',
+            'billing_cycle' => 'required|in:monthly,quarterly,semi_annual,annual',
+            'gateway' => 'nullable|string',
+            'status' => 'required|in:pending,successful,failed,cancelled,refunded',
+            // A single gateway reference can legitimately cover several enrollments
+            // (one payment, many courses), so uniqueness is per enrollment.
+            'gateway_reference' => [
+                'nullable',
+                'string',
+                Rule::unique('payments', 'gateway_reference')
+                    ->where(fn ($query) => $query->where('course_enrollment_id', $request->input('course_enrollment_id'))),
+            ],
+            'meta' => 'nullable|array',
+            'paid_at' => 'nullable|date',
+        ]);
+
+        $enrollment = CoursesEnrollment::withTrashed()->find($validated['course_enrollment_id']);
+
+        if ((int) $enrollment->student_id !== (int) $validated['student_id']) {
+            return response()->json([
+                'message' => 'The payment does not belong to the enrollment student.',
+            ], 422);
+        }
+
+        // One row per (reference, enrollment). Re-posting an already-confirmed
+        // payment is a no-op; a pending/failed row is upgraded in place below.
+        $existing = !empty($validated['gateway_reference'])
+            ? Payment::where('gateway_reference', $validated['gateway_reference'])
+                ->where('course_enrollment_id', $enrollment->id)
+                ->first()
+            : null;
+
+        if ($existing && $existing->status === 'successful') {
+            return response()->json([
+                'message' => 'Payment already recorded for this enrollment.',
+                'payment' => $existing,
+                'new_achievements' => [],
+            ], 200);
+        }
+
         try {
-            $validated = $request->validate([
-                'student_id' => 'required|exists:students,id',
-                'course_enrollment_id' => 'required|exists:courses_enrollments,id',
-                'amount' => 'required|numeric|min:0',
-                'payment_method' => 'required|in:card,bank_transfer,ussd,wallet,manual',
-                'billing_cycle' => 'required|in:monthly,quarterly,semi_annual,annual',
-                'gateway' => 'nullable|string',
-                'status' => 'required|in:pending,successful,failed,cancelled,refunded',
-                'gateway_reference' => 'nullable|string|unique:payments,gateway_reference',
-                'meta' => 'nullable|array',
-                'paid_at' => 'nullable|date',
-            ]);
+            $payment = DB::transaction(function () use ($validated, $enrollment, $existing) {
+                if ($existing) {
+                    $existing->update(array_merge($validated, [
+                        'meta' => array_merge(
+                            $existing->meta ?? [],
+                            (array) ($validated['meta'] ?? [])
+                        ),
+                    ]));
+                    $payment = $existing->fresh();
+                } else {
+                    $payment = Payment::create($validated);
+                }
 
-            $payment = Payment::create($validated);
+                // Only a confirmed payment may activate the enrollment. A pending
+                // or failed row must never unlock course access.
+                if ($payment->status === 'successful') {
+                    $enrollment->update(['status' => 'active']);
+                }
 
-            CoursesEnrollment::where('id', $validated['course_enrollment_id'])
-                ->update(['status' => 'active']);
+                return $payment;
+            });
 
-            $newAchievements = app(ExamPreparationAchievementService::class)
-                ->evaluatePayment($payment);
+            $newAchievements = $payment->status === 'successful'
+                ? app(ExamPreparationAchievementService::class)->evaluatePayment($payment)
+                : [];
 
             return response()->json([
                 'message' => 'Payment created successfully.',
@@ -59,7 +111,7 @@ class PaymentController extends Controller
         } catch (\Exception $e) {
             return response()->json([
                 'message' => 'Failed to create payment.',
-                'error' => $e->getMessage(),
+                'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
     }
