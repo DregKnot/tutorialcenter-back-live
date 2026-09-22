@@ -325,6 +325,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     Route::prefix('enrollments')->group(function () {
         Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
         Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
+        Route::get('/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
         Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
     });
 
@@ -557,6 +558,7 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
     Route::prefix('enrollments')->group(function () {
         Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
         Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
+        Route::get('/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
         Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
     });
 
@@ -627,3 +629,6 @@ Route::get('/staffs/audit-logs', [\App\Http\Controllers\NotificationController::
 Route::get('/staffs/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
 Route::get('/staffs/enrollments/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
 Route::get('/staffs/enrollments/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
+Route::get('/staffs/enrollments/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
+Route::get('/staffs/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
+Route::get('/admin/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);

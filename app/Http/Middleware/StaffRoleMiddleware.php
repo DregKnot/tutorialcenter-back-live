@@ -45,6 +45,13 @@ class StaffRoleMiddleware
             ], 403);
         }
 
+        // Allow advisors read-only access to exam data endpoints
+        if (in_array($userRole, ['advisor', 'course advisor', 'course_advisor', 'course-advisor']) && ($request->is('api/admin/exam-data*') || $request->is('api/advisor/exam-data*'))) {
+            if ($request->isMethod('get') || $request->isMethod('head') || $request->isMethod('options')) {
+                return $next($request);
+            }
+        }
+
         if (!in_array($userRole, array_map('strtolower', $roles))) {
             return response()->json([
                 'message' => 'Access denied. Unauthorized Personal.',
