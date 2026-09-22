@@ -574,6 +574,34 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
         Route::get('/{assessment}/stats', [AssessmentController::class, 'advisorStats']);
     });
 
+    // Exam Section (read-only for advisor — mirrors the admin exam paths, GET only)
+    Route::prefix('exam-data')->group(function () {
+        Route::get('/bodies', [ExamYearController::class, 'examBodies']);
+        Route::get('/subjects', [ExamYearController::class, 'subjects']);
+        Route::get('/years', [ExamYearController::class, 'years']);
+        Route::get('/questions', [ExamYearController::class, 'questions']);
+    });
+
+    Route::prefix('exam-bodies')->group(function () {
+        Route::get('/all', [ExamBodyController::class, 'index']);
+        Route::get('/{examBody}', [ExamBodyController::class, 'show']);
+    });
+
+    Route::prefix('exam-years')->group(function () {
+        Route::get('/all', [ExamYearController::class, 'index']);
+        Route::get('/{id}', [ExamYearController::class, 'show']);
+    });
+
+    Route::prefix('past-question-groups')->group(function () {
+        Route::get('/all', [PastQuestionGroupController::class, 'index']);
+        Route::get('/{id}', [PastQuestionGroupController::class, 'show']);
+    });
+
+    Route::prefix('past-questions')->group(function () {
+        Route::get('/all', [PastQuestionController::class, 'index']);
+        Route::get('/{pastQuestion}', [PastQuestionController::class, 'show']);
+    });
+
     // Guardians Management
     Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
     Route::get('/advisors/all', [StudentController::class, 'allAdvisors']);
