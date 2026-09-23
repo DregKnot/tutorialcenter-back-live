@@ -27,22 +27,29 @@ class StaffRoleMiddleware
 
         $userRole = strtolower($staff->role);
 
-        // COO & Preview role has full read-only preview access to all admin inspection endpoints
-        if ($userRole === 'coo') {
+        // COO, CSA & Preview roles have full read-only preview access to all admin inspection endpoints
+        if (in_array($userRole, ['coo', 'csa', 'customer support', 'customer_support', 'preview', 'operations'])) {
             // Allow all GET / HEAD / OPTIONS read requests
             if ($request->isMethod('get') || $request->isMethod('head') || $request->isMethod('options')) {
                 return $next($request);
             }
 
-            // Allow COO to write/edit/delete blogs
-            if ($request->is('api/staffs/blogs*') || $request->is('api/blogs*')) {
+            // Allow COO to write/edit/delete blogs (COO only)
+            if ($userRole === 'coo' && ($request->is('api/staffs/blogs*') || $request->is('api/blogs*'))) {
                 return $next($request);
             }
 
-            // Disallow COO from mutating admin resources (students, staff, exams, courses, etc.)
+            // Disallow read-only roles from mutating admin resources (students, staff, exams, courses, etc.)
             return response()->json([
-                'message' => 'The COO role has read-only access to administrative records and cannot modify data.',
+                'message' => 'The ' . strtoupper($userRole) . ' role has read-only access to administrative records and cannot modify data.',
             ], 403);
+        }
+
+        // Allow advisors read-only access to exam data endpoints
+        if (in_array($userRole, ['advisor', 'course advisor', 'course_advisor', 'course-advisor']) && ($request->is('api/admin/exam-data*') || $request->is('api/advisor/exam-data*'))) {
+            if ($request->isMethod('get') || $request->isMethod('head') || $request->isMethod('options')) {
+                return $next($request);
+            }
         }
 
         if (!in_array($userRole, array_map('strtolower', $roles))) {

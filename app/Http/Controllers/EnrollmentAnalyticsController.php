@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Models\Subject;
 use App\Models\SubjectsEnrollment;
 use App\Models\CoursesEnrollment;
+use App\Models\Course;
 use App\Models\Student;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -206,6 +207,186 @@ class EnrollmentAnalyticsController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to load enrollment analytics overview.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+        /**
+     * Get Course-Scoped Subject Hierarchy with Real Student Enrollments.
+     * Grouped by Course (e.g. WAEC, JAMB, GCE), with subjects ordered by most students enrolled.
+     * 
+     * Accessible by Admin, COO, and Course Advisor.
+     */
+    public function courseSubjectHierarchy(Request $request)
+    {
+        try {
+            $courses = Course::whereNull('deleted_at')
+                ->where('status', 'active')
+                ->with([
+                    'subjects' => function ($q) {
+                        $q->whereNull('deleted_at')
+                          ->with([
+                              'classes' => function ($cq) {
+                                  $cq->whereNull('deleted_at')
+                                     ->with(['staffs' => function ($sq) {
+                                         $sq->select('staffs.id', 'staffs.firstname', 'staffs.surname', 'staffs.email', 'staffs.profile_picture', 'staffs.role');
+                                     }]);
+                              }
+                          ]);
+                    }
+                ])
+                ->get();
+
+            $hierarchy = [];
+            $allUniqueStudentIds = [];
+
+            foreach ($courses as $course) {
+                // Fetch all course enrollments for this course
+                $courseEnrollments = CoursesEnrollment::where('course_id', $course->id)
+                    ->whereNull('deleted_at')
+                    ->get(['id', 'student_id', 'status', 'created_at']);
+
+                $courseEnrollmentIds = $courseEnrollments->pluck('id')->toArray();
+                $uniqueStudentIdsInCourse = $courseEnrollments->pluck('student_id')->unique()->filter()->values()->toArray();
+
+                foreach ($uniqueStudentIdsInCourse as $sid) {
+                    $allUniqueStudentIds[$sid] = true;
+                }
+
+                // Retrieve subject enrollments tied strictly to this course's enrollments
+                $subjectEnrollments = SubjectsEnrollment::whereIn('course_enrollment_id', $courseEnrollmentIds)
+                    ->whereNull('deleted_at')
+                    ->with(['student' => function ($sq) {
+                        $sq->select('id', 'firstname', 'surname', 'email', 'profile_picture', 'department');
+                    }])
+                    ->get();
+
+                $enrollmentsBySubject = $subjectEnrollments->groupBy('subject_id');
+
+                $subjectsList = [];
+
+                foreach ($course->subjects as $subject) {
+                    $enrolledList = $enrollmentsBySubject->get($subject->id, collect());
+
+                    $students = [];
+                    $seenStudentIds = [];
+
+                    foreach ($enrolledList as $se) {
+                        $st = $se->student;
+                        if ($st && !in_array($st->id, $seenStudentIds)) {
+                            $seenStudentIds[] = $st->id;
+                            $students[] = [
+                                'id' => $st->id,
+                                'student_id' => $st->id,
+                                'firstname' => $st->firstname,
+                                'surname' => $st->surname,
+                                'fullname' => trim("{$st->firstname} {$st->surname}"),
+                                'email' => $st->email,
+                                'avatar' => $st->profile_picture,
+                                'profile_picture' => $st->profile_picture,
+                                'department' => $st->department,
+                                'enrolled_at' => $se->created_at?->toISOString(),
+                                'progress' => $se->progress ?? 0,
+                            ];
+                        }
+                    }
+
+                    // Extract unique tutors across all classes of this subject
+                    $tutorsMap = [];
+                    foreach ($subject->classes as $cls) {
+                        foreach ($cls->staffs as $staff) {
+                            if (!isset($tutorsMap[$staff->id])) {
+                                $tutorsMap[$staff->id] = [
+                                    'id' => $staff->id,
+                                    'firstname' => $staff->firstname,
+                                    'surname' => $staff->surname,
+                                    'fullname' => trim("{$staff->firstname} {$staff->surname}"),
+                                    'email' => $staff->email,
+                                    'avatar' => $staff->profile_picture,
+                                    'profile_picture' => $staff->profile_picture,
+                                    'role' => $staff->pivot->role ?? $staff->role,
+                                ];
+                            }
+                        }
+                    }
+
+                    // Parse departments safely
+                    $departments = is_array($subject->departments) ? $subject->departments : [];
+                    if (empty($departments) && is_string($subject->departments)) {
+                        $decoded = json_decode($subject->departments, true);
+                        $departments = is_array($decoded) ? $decoded : [$subject->departments];
+                    }
+
+                    $subjectsList[] = [
+                        'id' => $subject->id,
+                        'name' => $subject->name,
+                        'description' => $subject->description,
+                        'banner' => $subject->banner,
+                        'status' => $subject->status,
+                        'departments' => $departments,
+                        'tutors' => array_values($tutorsMap),
+                        'classes_count' => $subject->classes->count(),
+                        'classes' => $subject->classes->map(fn($c) => [
+                            'id' => $c->id,
+                            'title' => $c->title,
+                            'status' => $c->status,
+                        ]),
+                        'enrolled_count' => count($students),
+                        'students' => $students,
+                    ];
+                }
+
+                // Sort subjects by enrolled_count DESC (most students first), tie-breaker by name
+                usort($subjectsList, function ($a, $b) {
+                    if ($b['enrolled_count'] === $a['enrolled_count']) {
+                        return strcmp($a['name'], $b['name']);
+                    }
+                    return $b['enrolled_count'] <=> $a['enrolled_count'];
+                });
+
+                // Assign rank and top flag
+                foreach ($subjectsList as $index => &$item) {
+                    $item['rank'] = $index + 1;
+                    $item['is_top_enrolled'] = ($index === 0 && $item['enrolled_count'] > 0);
+                }
+                unset($item);
+
+                $hierarchy[] = [
+                    'id' => $course->id,
+                    'title' => $course->title,
+                    'name' => $course->title,
+                    'code' => strtoupper($course->slug ?: substr($course->title, 0, 4)),
+                    'slug' => $course->slug,
+                    'description' => $course->description,
+                    'banner' => $course->banner,
+                    'price' => $course->price,
+                    'total_course_enrollments' => count($courseEnrollments),
+                    'total_unique_students' => count($uniqueStudentIdsInCourse),
+                    'total_subjects_count' => count($subjectsList),
+                    'most_enrolled_subject' => !empty($subjectsList) ? [
+                        'id' => $subjectsList[0]['id'],
+                        'name' => $subjectsList[0]['name'],
+                        'enrolled_count' => $subjectsList[0]['enrolled_count'],
+                    ] : null,
+                    'subjects' => $subjectsList,
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Course-subject hierarchy retrieved successfully.',
+                'total_courses' => count($hierarchy),
+                'total_unique_students' => count($allUniqueStudentIds),
+                'courses' => $hierarchy,
+            ], 200);
+
+        } catch (\Throwable $e) {
+            Log::error('EnrollmentAnalyticsController::courseSubjectHierarchy error: ' . $e->getMessage());
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load course-subject hierarchy.',
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }

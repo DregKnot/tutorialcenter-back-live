@@ -563,4 +563,100 @@ class FeedbackController extends Controller
             ], 500);
         }
     }
+
+    /**
+     * Store Course Advisor Post-Class Supervisory Report
+     */
+    public function storeAdvisorReport(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'class_session_id' => 'required',
+            'tutor_overall_performance' => 'required|array',
+            'tutor_overall_performance.rating' => 'required|string',
+            'student_attendance' => 'required|array',
+            'student_attendance.rating' => 'required|string',
+            'student_attendance.number_present' => 'required|integer|min:0',
+            'student_attendance.number_absent' => 'required|integer|min:0',
+            'students_participation_and_engagement' => 'required|array',
+            'students_participation_and_engagement.rating' => 'required|string',
+            'student_understanding' => 'required|array',
+            'student_understanding.rating' => 'required|string',
+            'lesson_materials' => 'required|array',
+            'lesson_materials.rating' => 'required|string',
+            'challenges_and_incidents' => 'required|array',
+            'challenges_and_incidents.category' => 'required|string',
+            'follow_up_action' => 'required|array',
+            'follow_up_action.action_required' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Validation failed. Please complete all required sections of the advisor report.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        try {
+            $staff = $request->user();
+            $sessionId = (int) $request->input('class_session_id');
+            $session = \App\Models\ClassSession::with(['class.subject', 'class.staffs'])->find($sessionId);
+
+            $performanceScore = match ($request->input('tutor_overall_performance.rating')) {
+                'Very Good' => 5,
+                'Good' => 4,
+                'Satisfactory' => 3,
+                'Poor' => 2,
+                default => 4,
+            };
+
+            $reportData = [
+                'session_metadata' => [
+                    'session_id' => $sessionId,
+                    'class_id' => $session ? $session->class_id : $request->input('class_id'),
+                    'subject' => $session?->class?->subject?->name ?? ($request->input('subject') ?? 'Live Masterclass'),
+                    'class_title' => $session?->class?->title ?? ($request->input('session_title') ?? 'Masterclass'),
+                    'date' => $session?->session_date ? $session->session_date->toDateString() : today()->toDateString(),
+                    'advisor_name' => $request->input('advisor_name') ?? trim(($staff->firstname ?? 'Course') . ' ' . ($staff->surname ?? 'Advisor')),
+                    'tutor_name' => $request->input('tutor_name') ?? 'Assigned Tutor',
+                ],
+                'tutor_overall_performance' => $request->input('tutor_overall_performance'),
+                'student_attendance' => $request->input('student_attendance'),
+                'students_participation_and_engagement' => $request->input('students_participation_and_engagement'),
+                'student_understanding' => $request->input('student_understanding'),
+                'lesson_materials' => $request->input('lesson_materials'),
+                'challenges_and_incidents' => $request->input('challenges_and_incidents'),
+                'follow_up_action' => $request->input('follow_up_action'),
+                'submitted_at' => now()->toIso8601String(),
+            ];
+
+            $feedback = \App\Models\Feedback::create([
+                'feedbacker_type' => $staff ? get_class($staff) : \App\Models\Staff::class,
+                'feedbacker_id' => $staff ? $staff->id : ($request->input('staff_id') ?: 1),
+                'feedbackable_type' => \App\Models\Classes::class,
+                'feedbackable_id' => $session ? $session->class_id : ($request->input('class_id') ?: 1),
+                'rating' => $performanceScore,
+                'title' => "Course Advisor Post-Class Report: " . ($session?->class?->title ?? ($request->input('session_title') ?? 'Masterclass')),
+                'comment' => $request->input('follow_up_action.details') ?: ($request->input('challenges_and_incidents.details') ?: 'Advisor Supervisory Review completed.'),
+                'ratings' => $reportData,
+                'would_recommend' => true,
+                'is_anonymous' => false,
+                'status' => 'published',
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Course Advisor Post-Class Report submitted successfully to management.',
+                'data' => $feedback,
+            ], 201);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error('storeAdvisorReport error', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to submit advisor report. ' . $e->getMessage(),
+            ], 500);
+        }
+    }
 }
