@@ -4,12 +4,16 @@ namespace App\Http\Controllers;
 
 use App\Models\CoursesEnrollment;
 use App\Models\Payment;
+use App\Models\Staff;
 use App\Models\Student;
 use App\Services\AdminNotificationService;
 use App\Services\ExamPreparationAchievementService;
 use App\Services\PaystackService;
+use App\Services\StudentNotificationService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class PaymentController extends Controller
@@ -38,6 +42,31 @@ class PaymentController extends Controller
             'meta' => 'nullable|array',
             'paid_at' => 'nullable|date',
         ]);
+
+        // This route is public because registration pays before login, so a
+        // client must never be able to settle its own payment: marking a row
+        // "successful" activates the enrollment for free. Only an authenticated
+        // admin may record a settlement or refund; everyone else may only create
+        // or update a non-settling row.
+        if (in_array($validated['status'], ['successful', 'refunded'], true)) {
+            $actor = auth('sanctum')->user();
+            $isAdmin = $actor instanceof Staff && strtolower((string) $actor->role) === 'admin';
+
+            if (!$isAdmin) {
+                Log::warning('Blocked unprivileged attempt to set a settling payment status', [
+                    'status' => $validated['status'],
+                    'student_id' => $validated['student_id'],
+                    'course_enrollment_id' => $validated['course_enrollment_id'],
+                    'actor_id' => $actor?->id,
+                    'actor_type' => $actor ? get_class($actor) : null,
+                    'ip' => $request->ip(),
+                ]);
+
+                return response()->json([
+                    'message' => 'Only an administrator can record a settled or refunded payment.',
+                ], 403);
+            }
+        }
 
         $enrollment = CoursesEnrollment::withTrashed()->find($validated['course_enrollment_id']);
 
@@ -442,6 +471,464 @@ class PaymentController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Direct Bank Transfer
+    |--------------------------------------------------------------------------
+    | Manual flow: the student transfers to the bank using the short reference,
+    | then taps "I have paid". An admin checks the bank/WhatsApp receipt and
+    | confirms, which activates the enrollment.
+    */
+
+    // Public: Start (or resume) a bank-transfer payment for an enrollment.
+    public function initiateBankTransfer(Request $request)
+    {
+        $validated = $request->validate([
+            'student_id' => 'required|exists:students,id',
+            'course_enrollment_id' => 'required|exists:courses_enrollments,id',
+        ]);
+
+        $enrollment = CoursesEnrollment::withTrashed()->find($validated['course_enrollment_id']);
+
+        if ((int) $enrollment->student_id !== (int) $validated['student_id']) {
+            return response()->json([
+                'message' => 'The enrollment does not belong to this student.',
+            ], 422);
+        }
+
+        // The enrollment cost is authoritative; never trust a client amount.
+        if ((float) $enrollment->cost <= 0) {
+            return response()->json([
+                'message' => 'This enrollment has no payable amount.',
+            ], 422);
+        }
+
+        if (Payment::where('course_enrollment_id', $enrollment->id)->where('status', 'successful')->exists()) {
+            return response()->json([
+                'message' => 'This enrollment is already paid.',
+            ], 409);
+        }
+
+        // Reuse the open transfer (and its token) instead of piling up rows.
+        $payment = Payment::where('course_enrollment_id', $enrollment->id)
+            ->where('payment_method', 'bank_transfer')
+            ->where('gateway', 'bank')
+            ->whereIn('status', ['pending', 'failed'])
+            ->latest()
+            ->first();
+
+        $created = false;
+
+        if ($payment) {
+            $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
+        } else {
+            $accessToken = Str::random(48);
+
+            $payment = Payment::create([
+                'student_id' => $enrollment->student_id,
+                'course_enrollment_id' => $enrollment->id,
+                'amount' => $enrollment->cost,
+                'currency' => 'NGN',
+                'payment_method' => 'bank_transfer',
+                'gateway' => 'bank',
+                'status' => 'pending',
+                'billing_cycle' => $enrollment->billing_cycle,
+                'gateway_reference' => $this->generateBankTransferReference(),
+                'meta' => [
+                    'bank_transfer' => [
+                        'access_token' => $accessToken,
+                        'initiated_at' => now()->toIso8601String(),
+                    ],
+                ],
+            ]);
+
+            $created = true;
+        }
+
+        return response()->json([
+            'message' => $created
+                ? 'Bank transfer initiated. Use the reference as your transfer narration.'
+                : 'An open bank transfer already exists for this enrollment.',
+            'payment_id' => $payment->id,
+            'reference' => $payment->gateway_reference,
+            'access_token' => $accessToken,
+            'amount' => $payment->amount,
+            'currency' => $payment->currency,
+            'state' => $this->bankTransferState($payment),
+        ], $created ? 201 : 200);
+    }
+
+    // Public (reference + token): the student confirms they have paid.
+    public function claimBankTransferPaid(Request $request, string $reference)
+    {
+        $validated = $request->validate([
+            'access_token' => 'required|string',
+            'paid_from_account_name' => 'nullable|string|max:255',
+            'amount_paid' => 'nullable|numeric|min:0',
+            'note' => 'nullable|string|max:1000',
+        ]);
+
+        $payment = $this->findBankTransfer($reference);
+
+        if (!$payment) {
+            return response()->json(['message' => 'Bank transfer payment not found.'], 404);
+        }
+
+        if (!$this->bankTransferTokenMatches($payment, $validated['access_token'])) {
+            return response()->json(['message' => 'Invalid payment token.'], 403);
+        }
+
+        if (in_array($payment->status, ['successful', 'cancelled', 'refunded'], true)) {
+            return response()->json([
+                'message' => "This payment is {$payment->status} and cannot be claimed.",
+            ], 422);
+        }
+
+        $meta = $payment->meta ?? [];
+        $bankTransfer = $meta['bank_transfer'] ?? [];
+
+        $payment->update([
+            // A rejected transfer that is claimed again goes back into the queue.
+            'status' => 'pending',
+            'meta' => array_merge($meta, [
+                'bank_transfer' => array_merge($bankTransfer, [
+                    'paid_from_account_name' => $validated['paid_from_account_name'] ?? null,
+                    'amount_paid' => isset($validated['amount_paid']) ? (float) $validated['amount_paid'] : null,
+                    'note' => $validated['note'] ?? null,
+                    'claimed_paid_at' => now()->toIso8601String(),
+                    'review' => null,
+                ]),
+            ]),
+        ]);
+
+        AdminNotificationService::notify(
+            'bank_transfer_payment_claimed',
+            "Student {$payment->student_id} marked {$payment->gateway_reference} (NGN {$payment->amount}) as paid.",
+            [
+                'payment_id' => $payment->id,
+                'reference' => $payment->gateway_reference,
+                'student_id' => $payment->student_id,
+            ]
+        );
+
+        return response()->json([
+            'message' => 'Payment noted. An admin will confirm it shortly.',
+            'reference' => $payment->gateway_reference,
+            'state' => $this->bankTransferState($payment->fresh()),
+        ]);
+    }
+
+    // Public (reference + token): check the status of a bank transfer.
+    public function bankTransferStatus(Request $request, string $reference)
+    {
+        $payment = $this->findBankTransfer($reference);
+
+        if (!$payment) {
+            return response()->json(['message' => 'Bank transfer payment not found.'], 404);
+        }
+
+        $token = (string) ($request->query('token') ?? $request->header('X-Payment-Token'));
+
+        if (!$this->bankTransferTokenMatches($payment, $token)) {
+            return response()->json(['message' => 'Invalid payment token.'], 403);
+        }
+
+        $bankTransfer = ($payment->meta ?? [])['bank_transfer'] ?? [];
+
+        return response()->json([
+            'reference' => $payment->gateway_reference,
+            'amount' => $payment->amount,
+            'currency' => $payment->currency,
+            'status' => $payment->status,
+            'state' => $this->bankTransferState($payment),
+            'claimed_paid_at' => $bankTransfer['claimed_paid_at'] ?? null,
+            'review' => $bankTransfer['review'] ?? null,
+        ]);
+    }
+
+    // Admin: list bank transfers for review.
+    public function adminBankTransfers(Request $request)
+    {
+        $state = $request->input('state');
+
+        $query = Payment::with(['student', 'enrollment.course'])
+            ->where('payment_method', 'bank_transfer')
+            ->where('gateway', 'bank');
+
+        // Admins arrive here from a WhatsApp message carrying the reference.
+        if ($request->filled('search')) {
+            $search = trim((string) $request->input('search'));
+
+            $query->where(function ($q) use ($search) {
+                $q->where('gateway_reference', 'like', "%{$search}%")
+                    ->orWhereHas('student', function ($studentQuery) use ($search) {
+                        $studentQuery->where('firstname', 'like', "%{$search}%")
+                            ->orWhere('surname', 'like', "%{$search}%")
+                            ->orWhere('email', 'like', "%{$search}%")
+                            ->orWhere('tel', 'like', "%{$search}%");
+                    });
+            });
+        }
+
+        switch ($state) {
+            case 'awaiting_confirmation':
+                $query->where('status', 'pending')->whereNotNull('meta->bank_transfer->claimed_paid_at');
+                break;
+            case 'initiated':
+                $query->where('status', 'pending')->whereNull('meta->bank_transfer->claimed_paid_at');
+                break;
+            case 'approved':
+                $query->where('status', 'successful');
+                break;
+            case 'rejected':
+                $query->where('status', 'failed');
+                break;
+            case 'cancelled':
+                $query->whereIn('status', ['cancelled', 'refunded']);
+                break;
+        }
+
+        $payments = $query->orderBy('created_at')->paginate(20);
+
+        return response()->json([
+            'payments' => $payments,
+            'state' => $state,
+        ]);
+    }
+
+    // Admin: confirm a bank transfer and activate the enrollment.
+    public function approveBankTransfer(Request $request, Payment $payment)
+    {
+        $validated = $request->validate([
+            'confirmed_amount' => 'required|numeric|min:0.01',
+            'bank_reference' => 'nullable|string|max:255',
+            'reason' => 'nullable|string|max:1000',
+            'paid_at' => 'nullable|date',
+        ]);
+
+        if ($payment->payment_method !== 'bank_transfer' || $payment->gateway !== 'bank') {
+            return response()->json(['message' => 'This payment is not a bank transfer.'], 422);
+        }
+
+        try {
+            $result = DB::transaction(function () use ($payment, $validated, $request) {
+                $locked = Payment::lockForUpdate()->findOrFail($payment->id);
+
+                if ($locked->status === 'successful') {
+                    return ['already' => true, 'payment' => $locked->fresh(['student', 'enrollment.course'])];
+                }
+
+                if (in_array($locked->status, ['cancelled', 'refunded'], true)) {
+                    abort(422, "A {$locked->status} payment cannot be approved.");
+                }
+
+                $enrollment = CoursesEnrollment::withTrashed()->lockForUpdate()->findOrFail($locked->course_enrollment_id);
+
+                if ((int) $enrollment->student_id !== (int) $locked->student_id) {
+                    abort(422, 'The payment does not belong to the enrollment student.');
+                }
+
+                // Never create a second settled payment for one enrollment. If the
+                // student already paid via Paystack (or another transfer) while this
+                // one sat in the queue, approving would double-count the money.
+                $conflictingPayment = Payment::where('course_enrollment_id', $locked->course_enrollment_id)
+                    ->where('id', '!=', $locked->id)
+                    ->where('status', 'successful')
+                    ->first();
+
+                if ($conflictingPayment) {
+                    abort(422, sprintf(
+                        'This enrollment is already settled by %s (%s). Reject this transfer instead of approving, and refund if the student also transferred.',
+                        $conflictingPayment->gateway_reference,
+                        $conflictingPayment->payment_method
+                    ));
+                }
+
+                if (abs((float) $locked->amount - (float) $validated['confirmed_amount']) > 0.01) {
+                    abort(422, sprintf(
+                        'Confirmed amount does not match. Expected %.2f, got %.2f.',
+                        (float) $locked->amount,
+                        (float) $validated['confirmed_amount']
+                    ));
+                }
+
+                $meta = $locked->meta ?? [];
+                $bankTransfer = $meta['bank_transfer'] ?? [];
+
+                $paidAt = !empty($validated['paid_at'])
+                    ? \Carbon\Carbon::parse($validated['paid_at'])
+                    : (!empty($bankTransfer['claimed_paid_at'])
+                        ? \Carbon\Carbon::parse($bankTransfer['claimed_paid_at'])
+                        : now());
+
+                $locked->update([
+                    'status' => 'successful',
+                    'paid_at' => $paidAt,
+                    'meta' => array_merge($meta, [
+                        'bank_transfer' => array_merge($bankTransfer, [
+                            'review' => [
+                                'action' => 'approved',
+                                'by_staff_id' => $request->user()->id,
+                                'reason' => $validated['reason'] ?? null,
+                                'confirmed_amount' => (float) $validated['confirmed_amount'],
+                                'bank_reference' => $validated['bank_reference'] ?? null,
+                                'at' => now()->toIso8601String(),
+                            ],
+                        ]),
+                    ]),
+                ]);
+
+                $enrollment->update(['status' => 'active']);
+
+                return ['already' => false, 'payment' => $locked->fresh(['student', 'enrollment.course'])];
+            });
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json([
+                'message' => 'Failed to approve bank transfer.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+
+        if (!$result['already']) {
+            try {
+                app(ExamPreparationAchievementService::class)->evaluatePayment($result['payment']);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+
+            StudentNotificationService::notify($result['payment']->student, 'bank transfer approved', [
+                'reference' => $result['payment']->gateway_reference,
+                'amount' => $result['payment']->amount,
+            ]);
+        }
+
+        return response()->json([
+            'message' => $result['already']
+                ? 'This bank transfer was already approved.'
+                : 'Bank transfer approved and enrollment activated.',
+            'payment' => $result['payment'],
+        ]);
+    }
+
+    // Admin: reject a bank transfer so the student can resubmit.
+    public function rejectBankTransfer(Request $request, Payment $payment)
+    {
+        $validated = $request->validate([
+            'reason' => 'required|string|min:5|max:1000',
+        ]);
+
+        if ($payment->payment_method !== 'bank_transfer' || $payment->gateway !== 'bank') {
+            return response()->json(['message' => 'This payment is not a bank transfer.'], 422);
+        }
+
+        if ($payment->status === 'successful') {
+            return response()->json([
+                'message' => 'This payment is already approved and cannot be rejected.',
+            ], 422);
+        }
+
+        $meta = $payment->meta ?? [];
+        $bankTransfer = $meta['bank_transfer'] ?? [];
+
+        $payment->update([
+            'status' => 'failed',
+            'meta' => array_merge($meta, [
+                'bank_transfer' => array_merge($bankTransfer, [
+                    'review' => [
+                        'action' => 'rejected',
+                        'by_staff_id' => $request->user()->id,
+                        'reason' => $validated['reason'],
+                        'at' => now()->toIso8601String(),
+                    ],
+                ]),
+            ]),
+        ]);
+
+        $payment->loadMissing('student');
+        StudentNotificationService::notify($payment->student, 'bank transfer rejected', [
+            'reference' => $payment->gateway_reference,
+            'reason' => $validated['reason'],
+        ]);
+
+        return response()->json([
+            'message' => 'Bank transfer rejected. The student can upload a new receipt.',
+            'payment' => $payment->fresh(['student', 'enrollment.course']),
+        ]);
+    }
+
+    // Derived queue state for a bank transfer payment.
+    protected function bankTransferState(Payment $payment): string
+    {
+        $bankTransfer = ($payment->meta ?? [])['bank_transfer'] ?? [];
+
+        if ($payment->status === 'successful') {
+            return 'approved';
+        }
+
+        if ($payment->status === 'failed' && ($bankTransfer['review']['action'] ?? null) === 'rejected') {
+            return 'rejected';
+        }
+
+        // A transfer that was abandoned for another method (e.g. the student
+        // completed Paystack) is closed out, never left looking "awaiting".
+        if (in_array($payment->status, ['cancelled', 'refunded'], true)) {
+            return $payment->status;
+        }
+
+        if (!empty($bankTransfer['claimed_paid_at'])) {
+            return 'awaiting_confirmation';
+        }
+
+        return 'initiated';
+    }
+
+    protected function findBankTransfer(string $reference): ?Payment
+    {
+        return Payment::where('gateway_reference', $reference)
+            ->where('payment_method', 'bank_transfer')
+            ->where('gateway', 'bank')
+            ->first();
+    }
+
+    protected function bankTransferTokenMatches(Payment $payment, ?string $token): bool
+    {
+        $stored = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
+
+        if (empty($stored) || empty($token)) {
+            return false;
+        }
+
+        return hash_equals((string) $stored, $token);
+    }
+
+    /**
+     * Short, human-readable, unique, unguessable code used as the transfer
+     * narration and the WhatsApp reference (e.g. TC-7K2M9Q).
+     */
+    protected function generateBankTransferReference(): string
+    {
+        // No 0/O/1/I so the code can be read out or copied without ambiguity.
+        $alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+        for ($attempt = 0; $attempt < 10; $attempt++) {
+            $code = 'TC-';
+
+            for ($i = 0; $i < 6; $i++) {
+                $code .= $alphabet[random_int(0, strlen($alphabet) - 1)];
+            }
+
+            if (!Payment::withTrashed()->where('gateway_reference', $code)->exists()) {
+                return $code;
+            }
+        }
+
+        return 'TC-' . strtoupper((string) Str::ulid());
     }
 
 }

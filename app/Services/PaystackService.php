@@ -201,6 +201,11 @@ class PaystackService
                         'price' => $metadata['price'] ?? $amountPaid,
                         'subjects' => $metadata['subjects'] ?? [],
                     ]];
+                } elseif (empty($coursesList) && !empty($fallbackContext['courses'])) {
+                    // The client sent the whole course list as fallback metadata
+                    // (Paystack returned no metadata for the charge). Honour it
+                    // instead of dropping every course and throwing.
+                    $coursesList = $fallbackContext['courses'];
                 } elseif (empty($coursesList) && !empty($fallbackContext['course_id'])) {
                     $coursesList = [[
                         'course_id' => $fallbackContext['course_id'],
@@ -434,6 +439,11 @@ class PaystackService
             ]));
         }
 
+        // The enrollment is now settled by Paystack. Close any open bank-transfer
+        // attempt for the same enrollment so an admin cannot later approve both
+        // and so the student's "I have paid" claim leaves the review queue.
+        $this->supersedeOpenBankTransfers($enrollment, $reference);
+
         // Evaluate achievements
         try {
             app(ExamPreparationAchievementService::class)->evaluatePayment($payment);
@@ -442,6 +452,45 @@ class PaystackService
         }
 
         return $payment;
+    }
+
+    /**
+     * Close open direct-bank-transfer rows once the enrollment is paid by
+     * another method, recording why so the trail is auditable (the money may
+     * still have reached the bank account and need a refund).
+     */
+    protected function supersedeOpenBankTransfers(CoursesEnrollment $enrollment, string $reference): void
+    {
+        $openTransfers = Payment::where('course_enrollment_id', $enrollment->id)
+            ->where('payment_method', 'bank_transfer')
+            ->where('gateway', 'bank')
+            ->whereIn('status', ['pending', 'failed'])
+            ->get();
+
+        foreach ($openTransfers as $transfer) {
+            $meta = $transfer->meta ?? [];
+
+            $transfer->update([
+                'status' => 'cancelled',
+                'meta' => array_merge($meta, [
+                    'bank_transfer' => array_merge($meta['bank_transfer'] ?? [], [
+                        'review' => [
+                            'action' => 'superseded',
+                            'by' => 'paystack',
+                            'reason' => "Enrollment settled by payment {$reference}.",
+                            'at' => now()->toIso8601String(),
+                        ],
+                    ]),
+                ]),
+            ]);
+
+            Log::info('Closed superseded bank transfer after Paystack settlement', [
+                'bank_reference' => $transfer->gateway_reference,
+                'paystack_reference' => $reference,
+                'enrollment_id' => $enrollment->id,
+                'was_claimed' => !empty(($meta['bank_transfer'] ?? [])['claimed_paid_at']),
+            ]);
+        }
     }
 
     /**
