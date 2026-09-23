@@ -78,7 +78,7 @@ return [
     | same view and do not inflate their personal rewatch count.
     */
     'recording_views' => [
-        'debounce_minutes' => env('RECORDING_VIEW_DEBOUNCE_MINUTES', 30),
+        'debounce_minutes' => env('RECORDING_VIEW_DEBOUNCE_MINUTES', 10),
     ],
 
     'assessments' => [

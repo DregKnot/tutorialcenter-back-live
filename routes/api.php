@@ -55,6 +55,13 @@ Route::post('payments', [PaymentController::class, 'store']);
 Route::post('payments/verify-paystack', [PaymentController::class, 'verifyPaystackPayment']);
 Route::post('paystack/webhook', [PaystackWebhookController::class, 'handle']);
 
+// Direct bank transfer (student claims paid, admin confirms)
+Route::post('payments/bank-transfer', [PaymentController::class, 'initiateBankTransfer']);
+Route::post('payments/bank-transfer/{reference}/claim', [PaymentController::class, 'claimBankTransferPaid'])
+    ->middleware('throttle:20,1');
+Route::get('payments/bank-transfer/{reference}', [PaymentController::class, 'bankTransferStatus'])
+    ->middleware('throttle:60,1');
+
 // Blog Public Routes
 Route::get('/blogs', [BlogController::class, 'index']);
 Route::get('/blogs/categories', [BlogController::class, 'categories']);
@@ -476,6 +483,12 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     // Payment Management
     Route::prefix('payments')->group(function () {
         Route::get('/all', [PaymentController::class, 'index']); // List all payments with filters
+        // Direct bank transfers awaiting admin confirmation
+        Route::get('/bank-transfers', [PaymentController::class, 'adminBankTransfers']);
+        Route::post('/{payment}/bank-transfer/approve', [PaymentController::class, 'approveBankTransfer'])
+            ->middleware('staff.role:admin');
+        Route::post('/{payment}/bank-transfer/reject', [PaymentController::class, 'rejectBankTransfer'])
+            ->middleware('staff.role:admin');
         Route::get('/registration-recovery/search', [PaymentController::class, 'searchRegistrationRecovery']);
         Route::post('/{payment}/registration-recovery', [PaymentController::class, 'completeRegistrationRecovery'])
             ->middleware('staff.role:admin');
@@ -632,3 +645,5 @@ Route::get('/staffs/enrollments/subjects/popular', [\App\Http\Controllers\Enroll
 Route::get('/staffs/enrollments/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
 Route::get('/staffs/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
 Route::get('/admin/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
+Route::get('/staffs/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);
+Route::get('/admin/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);
