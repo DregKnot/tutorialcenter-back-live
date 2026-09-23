@@ -14,6 +14,7 @@ use App\Models\ClassSchedule;
 use App\Models\ClassAttendance;
 use App\Models\ClassSessionView;
 use App\Models\Student;
+use App\Models\CoursesEnrollment;
 use App\Models\Staff;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -523,7 +524,7 @@ class ClassesController extends Controller
             // Base query for class sessions that are past and have a recording link
             $query = ClassSession::with([
                 'class.staffs', 
-                'class.subject',
+                'class.subject.courses',
                 'views.student' => function ($sq) {
                     $sq->select('id', 'firstname', 'surname', 'profile_picture');
                 }
@@ -539,6 +540,66 @@ class ClassesController extends Controller
             });
 
             $sessions = $query->orderBy('updated_at', 'desc')->get();
+
+            // Enrollment & Course-level isolation
+            if ($user instanceof Student) {
+                $activeEnrollments = CoursesEnrollment::with('course')
+                    ->where('student_id', $user->id)
+                    ->where('status', 'active')
+                    ->get();
+
+                if ($activeEnrollments->isEmpty()) {
+                    return response()->json([
+                        'success' => true,
+                        'data' => [],
+                        'message' => 'No active course enrollments found.',
+                    ]);
+                }
+
+                $enrolledCourseIds = $activeEnrollments->pluck('course_id')->filter()->toArray();
+                $enrolledCourseTitles = $activeEnrollments->map(function ($e) {
+                    return strtoupper(trim($e->course?->title ?? ''));
+                })->filter()->values()->toArray();
+                $enrolledCourseCodes = $activeEnrollments->map(function ($e) {
+                    return strtoupper(trim($e->course?->slug ?? ''));
+                })->filter()->values()->toArray();
+                $enrolledCourseTerms = array_values(array_unique(array_filter(array_merge($enrolledCourseTitles, $enrolledCourseCodes))));
+
+                $sessions = $sessions->filter(function ($session) use ($enrolledCourseTerms, $enrolledCourseIds) {
+                    $classTitle = strtoupper($session->class?->title ?? '');
+                    $sessionTitle = strtoupper($session->title ?? '');
+
+                    // Layer 1: Title matching (Primary - system guarantees "GCE - ...", "JAMB - ...")
+                    foreach ($enrolledCourseTerms as $term) {
+                        if (!empty($term) && (str_contains($classTitle, $term) || str_contains($sessionTitle, $term))) {
+                            return true;
+                        }
+                    }
+
+                    // Layer 2: Subject-to-Course relational safety net (Ultimate Fallback)
+                    $subjectCourseIds = $session->class?->subject?->courses->pluck('id')->toArray() ?? [];
+                    if (!empty(array_intersect($enrolledCourseIds, $subjectCourseIds))) {
+                        return true;
+                    }
+
+                    return false;
+                });
+            } elseif ($isStaff && $request->filled('course_id')) {
+                $filterCourseId = (int) $request->query('course_id');
+                $filterCourse = Course::find($filterCourseId);
+                $filterTitle = $filterCourse ? strtoupper(trim($filterCourse->title)) : null;
+
+                $sessions = $sessions->filter(function ($session) use ($filterCourseId, $filterTitle) {
+                    $classTitle = strtoupper($session->class?->title ?? '');
+                    $sessionTitle = strtoupper($session->title ?? '');
+
+                    if ($filterTitle && (str_contains($classTitle, $filterTitle) || str_contains($sessionTitle, $filterTitle))) {
+                        return true;
+                    }
+                    $subjectCourseIds = $session->class?->subject?->courses->pluck('id')->toArray() ?? [];
+                    return in_array($filterCourseId, $subjectCourseIds);
+                });
+            }
 
             $recordedClasses = $sessions->map(function ($session) use ($studentId, $isStaff) {
                 $class = $session->class;
@@ -556,6 +617,26 @@ class ClassesController extends Controller
                 // Format clean title without repeating tutor and subject
                 $topic = $session->title ?: ($class ? $class->title : "$subject Class");
                 $formattedTitle = $topic;
+
+                // Determine course info for badge display
+                $courseInfo = null;
+                $linkedCourse = $class?->subject?->courses?->first();
+                if ($linkedCourse) {
+                    $courseInfo = [
+                        'id' => $linkedCourse->id,
+                        'title' => $linkedCourse->title,
+                        'name' => $linkedCourse->title,
+                    ];
+                } else {
+                    $rawTitle = $class?->title ?? $session->title ?? '';
+                    if (preg_match('/^(JAMB|WAEC|NECO|GCE)/i', trim($rawTitle), $m)) {
+                        $courseInfo = [
+                            'id' => null,
+                            'title' => strtoupper($m[1]),
+                            'name' => strtoupper($m[1]),
+                        ];
+                    }
+                }
 
                 // Calculate duration
                 $duration = "1h";
@@ -603,8 +684,6 @@ class ClassesController extends Controller
                     })->sortByDesc('view_count')->values()->all();
                 }
 
-                // Check the date the recorded link was saved to the backend (updated_at)
-                // Fall back to session_date or created_at
                 $savedDate = $session->updated_at ?: ($session->session_date ?: $session->created_at);
                 $formattedDate = $savedDate 
                     ? \Carbon\Carbon::parse($savedDate)->format('M j, Y') 
@@ -615,6 +694,8 @@ class ClassesController extends Controller
                     'title' => $formattedTitle,
                     'topic' => $topic,
                     'subject' => $subject,
+                    'course' => $courseInfo,
+                    'course_name' => $courseInfo ? $courseInfo['title'] : null,
                     'tutor' => $tutorName,
                     'date' => $formattedDate,
                     'saved_at' => $session->updated_at ? $session->updated_at->toISOString() : null,
@@ -623,15 +704,15 @@ class ClassesController extends Controller
                     'videoUrl' => $url,
                     'videoId' => $videoId,
                     'thumbnail' => $videoId ? "https://img.youtube.com/vi/{$videoId}/hqdefault.jpg" : null,
-                    'views' => $totalViews, // YouTube-style total cumulative views across all students
+                    'views' => $totalViews,
                     'total_views' => $totalViews,
                     'unique_viewers' => $uniqueViewers,
                     'my_views' => $myView ? (int) $myView->view_count : 0,
                     'view_count' => $myView ? (int) $myView->view_count : 0,
                     'viewers' => $viewersList,
-                    'color' => 'from-blue-600 to-indigo-600' // Default color for UI
+                    'color' => 'from-blue-600 to-indigo-600'
                 ];
-            });
+            })->values();
 
             return response()->json([
                 'success' => true,
@@ -647,10 +728,6 @@ class ClassesController extends Controller
         }
     }
 
-    /**
-     * Student: record a view of a class recording.
-     * Rewatch debounce is set to 10 minutes.
-     */
     public function recordRecordingView(Request $request, ClassSession $classSession): JsonResponse
     {
         try {

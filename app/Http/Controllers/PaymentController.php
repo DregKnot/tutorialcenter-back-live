@@ -7,6 +7,7 @@ use App\Models\Payment;
 use App\Models\Staff;
 use App\Models\Student;
 use App\Services\AdminNotificationService;
+use App\Services\BankTransferNotificationService;
 use App\Services\ExamPreparationAchievementService;
 use App\Services\PaystackService;
 use App\Services\StudentNotificationService;
@@ -570,54 +571,64 @@ class PaymentController extends Controller
             'note' => 'nullable|string|max:1000',
         ]);
 
-        $payment = $this->findBankTransfer($reference);
+        return DB::transaction(function () use ($reference, $validated) {
+            $payment = Payment::where('gateway_reference', $reference)
+                ->where('payment_method', 'bank_transfer')->where('gateway', 'bank')
+                ->lockForUpdate()->first();
 
-        if (!$payment) {
-            return response()->json(['message' => 'Bank transfer payment not found.'], 404);
-        }
+            if (!$payment) {
+                return response()->json(['message' => 'Bank transfer payment not found.'], 404);
+            }
 
-        if (!$this->bankTransferTokenMatches($payment, $validated['access_token'])) {
-            return response()->json(['message' => 'Invalid payment token.'], 403);
-        }
+            if (!$this->bankTransferTokenMatches($payment, $validated['access_token'])) {
+                return response()->json(['message' => 'Invalid payment token.'], 403);
+            }
 
-        if (in_array($payment->status, ['successful', 'cancelled', 'refunded'], true)) {
-            return response()->json([
-                'message' => "This payment is {$payment->status} and cannot be claimed.",
-            ], 422);
-        }
+            if (in_array($payment->status, ['successful', 'cancelled', 'refunded'], true)) {
+                return response()->json([
+                    'message' => "This payment is {$payment->status} and cannot be claimed.",
+                ], 422);
+            }
 
-        $meta = $payment->meta ?? [];
-        $bankTransfer = $meta['bank_transfer'] ?? [];
+            if ($this->bankTransferState($payment) === 'awaiting_confirmation') {
+                return response()->json(['message' => 'Your claim is already awaiting confirmation.', 'reference' => $payment->gateway_reference, 'state' => 'awaiting_confirmation']);
+            }
 
-        $payment->update([
-            // A rejected transfer that is claimed again goes back into the queue.
-            'status' => 'pending',
-            'meta' => array_merge($meta, [
-                'bank_transfer' => array_merge($bankTransfer, [
-                    'paid_from_account_name' => $validated['paid_from_account_name'] ?? null,
-                    'amount_paid' => isset($validated['amount_paid']) ? (float) $validated['amount_paid'] : null,
-                    'note' => $validated['note'] ?? null,
-                    'claimed_paid_at' => now()->toIso8601String(),
-                    'review' => null,
+            $meta = $payment->meta ?? [];
+            $bankTransfer = $meta['bank_transfer'] ?? [];
+
+            $payment->update([
+                // A rejected transfer that is claimed again goes back into the queue.
+                'status' => 'pending',
+                'meta' => array_merge($meta, [
+                    'bank_transfer' => array_merge($bankTransfer, [
+                        'paid_from_account_name' => $validated['paid_from_account_name'] ?? null,
+                        'amount_paid' => isset($validated['amount_paid']) ? (float) $validated['amount_paid'] : null,
+                        'note' => $validated['note'] ?? null,
+                        'claimed_paid_at' => now()->toIso8601String(),
+                        'review' => null,
+                    ]),
                 ]),
-            ]),
-        ]);
+            ]);
 
-        AdminNotificationService::notify(
-            'bank_transfer_payment_claimed',
-            "Student {$payment->student_id} marked {$payment->gateway_reference} (NGN {$payment->amount}) as paid.",
-            [
-                'payment_id' => $payment->id,
+            app(BankTransferNotificationService::class)->send($payment, 'claimed');
+
+            AdminNotificationService::notify(
+                'bank_transfer_payment_claimed',
+                "Student {$payment->student_id} marked {$payment->gateway_reference} (NGN {$payment->amount}) as paid.",
+                [
+                    'payment_id' => $payment->id,
+                    'reference' => $payment->gateway_reference,
+                    'student_id' => $payment->student_id,
+                ]
+            );
+
+            return response()->json([
+                'message' => 'Payment noted. An admin will confirm it shortly.',
                 'reference' => $payment->gateway_reference,
-                'student_id' => $payment->student_id,
-            ]
-        );
-
-        return response()->json([
-            'message' => 'Payment noted. An admin will confirm it shortly.',
-            'reference' => $payment->gateway_reference,
-            'state' => $this->bankTransferState($payment->fresh()),
-        ]);
+                'state' => $this->bankTransferState($payment->fresh()),
+            ]);
+        });
     }
 
     // Public (reference + token): check the status of a bank transfer.
@@ -781,6 +792,7 @@ class PaymentController extends Controller
                 ]);
 
                 $enrollment->update(['status' => 'active']);
+                app(BankTransferNotificationService::class)->send($locked, 'approved');
 
                 return ['already' => false, 'payment' => $locked->fresh(['student', 'enrollment.course'])];
             });
@@ -827,39 +839,62 @@ class PaymentController extends Controller
             return response()->json(['message' => 'This payment is not a bank transfer.'], 422);
         }
 
-        if ($payment->status === 'successful') {
-            return response()->json([
-                'message' => 'This payment is already approved and cannot be rejected.',
-            ], 422);
-        }
+        return DB::transaction(function () use ($payment, $request, $validated) {
+            $payment = Payment::lockForUpdate()->findOrFail($payment->id);
+            if (in_array($payment->status, ['successful', 'cancelled', 'refunded'], true)) {
+                return response()->json([
+                    'message' => 'This payment is already settled or closed and cannot be rejected.',
+                ], 422);
+            }
 
-        $meta = $payment->meta ?? [];
-        $bankTransfer = $meta['bank_transfer'] ?? [];
+            if ($this->bankTransferState($payment) === 'rejected') {
+                return response()->json(['message' => 'This bank transfer was already rejected.', 'payment' => $payment]);
+            }
 
-        $payment->update([
-            'status' => 'failed',
-            'meta' => array_merge($meta, [
-                'bank_transfer' => array_merge($bankTransfer, [
-                    'review' => [
-                        'action' => 'rejected',
-                        'by_staff_id' => $request->user()->id,
-                        'reason' => $validated['reason'],
-                        'at' => now()->toIso8601String(),
-                    ],
+            $meta = $payment->meta ?? [];
+            $bankTransfer = $meta['bank_transfer'] ?? [];
+
+            $payment->update([
+                'status' => 'failed',
+                'meta' => array_merge($meta, [
+                    'bank_transfer' => array_merge($bankTransfer, [
+                        'review' => [
+                            'action' => 'rejected',
+                            'by_staff_id' => $request->user()->id,
+                            'reason' => $validated['reason'],
+                            'at' => now()->toIso8601String(),
+                        ],
+                    ]),
                 ]),
-            ]),
-        ]);
+            ]);
 
-        $payment->loadMissing('student');
-        StudentNotificationService::notify($payment->student, 'bank transfer rejected', [
-            'reference' => $payment->gateway_reference,
-            'reason' => $validated['reason'],
-        ]);
+            app(BankTransferNotificationService::class)->send($payment, 'rejected');
+            $payment->loadMissing('student');
+            StudentNotificationService::notify($payment->student, 'bank transfer rejected', [
+                'reference' => $payment->gateway_reference,
+                'reason' => $validated['reason'],
+            ]);
 
-        return response()->json([
-            'message' => 'Bank transfer rejected. The student can upload a new receipt.',
-            'payment' => $payment->fresh(['student', 'enrollment.course']),
-        ]);
+            return response()->json([
+                'message' => 'Bank transfer rejected. The student can upload a new receipt.',
+                'payment' => $payment->fresh(['student', 'enrollment.course']),
+            ]);
+        });
+    }
+
+    public function resendBankTransferReceipt(Request $request, Payment $payment)
+    {
+        return DB::transaction(function () use ($payment) {
+            $payment = Payment::lockForUpdate()->findOrFail($payment->id);
+            if ($payment->payment_method !== 'bank_transfer' || $payment->gateway !== 'bank' || $payment->status !== 'successful') {
+                return response()->json(['message' => 'Only approved bank transfers have receipts.'], 422);
+            }
+            if (! filter_var($payment->student?->email, FILTER_VALIDATE_EMAIL)) {
+                return response()->json(['message' => 'The student does not have a valid email address.'], 422);
+            }
+            app(BankTransferNotificationService::class)->send($payment, 'approved');
+            return response()->json(['message' => 'Receipt email sent.']);
+        });
     }
 
     // Derived queue state for a bank transfer payment.

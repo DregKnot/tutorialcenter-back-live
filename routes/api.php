@@ -487,6 +487,8 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::get('/bank-transfers', [PaymentController::class, 'adminBankTransfers']);
         Route::post('/{payment}/bank-transfer/approve', [PaymentController::class, 'approveBankTransfer'])
             ->middleware('staff.role:admin');
+        Route::post('/{payment}/bank-transfer/resend-receipt', [PaymentController::class, 'resendBankTransferReceipt'])
+            ->middleware(['staff.role:admin', 'throttle:6,1']);
         Route::post('/{payment}/bank-transfer/reject', [PaymentController::class, 'rejectBankTransfer'])
             ->middleware('staff.role:admin');
         Route::get('/registration-recovery/search', [PaymentController::class, 'searchRegistrationRecovery']);
