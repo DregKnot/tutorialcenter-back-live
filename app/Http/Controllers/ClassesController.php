@@ -14,6 +14,7 @@ use App\Models\ClassSchedule;
 use App\Models\ClassAttendance;
 use App\Models\ClassSessionView;
 use App\Models\Student;
+use App\Models\Staff;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -516,29 +517,30 @@ class ClassesController extends Controller
     {
         try {
             $user = $request->user();
+            $isStaff = $user instanceof Staff;
             $studentId = $user instanceof Student ? $user->id : null;
 
             // Base query for class sessions that are past and have a recording link
-            $query = ClassSession::with(['class.staffs', 'class.subject'])
-                ->withCount('views')
-                ->whereNotNull('recording_link')
-                ->where('recording_link', '!=', '')
-                ->where(function ($q) {
-                    $q->whereDate('session_date', '<', today())
-                        ->orWhere(function ($q2) {
-                            $q2->whereDate('session_date', today())
-                                ->where('ends_at', '<', now()->format('H:i:s'));
-                        });
-                });
-
-            // Load this student's own view rows so we can return their rewatch count.
-            if ($studentId) {
-                $query->with(['views' => fn ($q) => $q->where('student_id', $studentId)]);
-            }
+            $query = ClassSession::with([
+                'class.staffs', 
+                'class.subject',
+                'views.student' => function ($sq) {
+                    $sq->select('id', 'firstname', 'surname', 'profile_picture');
+                }
+            ])
+            ->whereNotNull('recording_link')
+            ->where('recording_link', '!=', '')
+            ->where(function ($q) {
+                $q->whereDate('session_date', '<', today())
+                    ->orWhere(function ($q2) {
+                        $q2->whereDate('session_date', today())
+                            ->where('ends_at', '<', now()->format('H:i:s'));
+                    });
+            });
 
             $sessions = $query->orderBy('updated_at', 'desc')->get();
 
-            $recordedClasses = $sessions->map(function ($session) use ($studentId) {
+            $recordedClasses = $sessions->map(function ($session) use ($studentId, $isStaff) {
                 $class = $session->class;
                 
                 // Get tutor name
@@ -577,7 +579,29 @@ class ClassesController extends Controller
                     $videoId = $match[1];
                 }
 
-                $myView = $studentId ? $session->views->first() : null;
+                // Cumulative view metrics across all students
+                $totalViews = (int) $session->views->sum('view_count');
+                $uniqueViewers = (int) $session->views->count();
+                $myView = $studentId ? $session->views->firstWhere('student_id', $studentId) : null;
+
+                // Viewers breakdown roster (ONLY accessible to Staff/Admin; stripped for Students)
+                $viewersList = [];
+                if ($isStaff) {
+                    $viewersList = $session->views->map(function ($v) {
+                        $st = $v->student;
+                        return [
+                            'student_id' => $v->student_id,
+                            'name' => $st ? trim("{$st->firstname} {$st->surname}") : 'Student',
+                            'firstname' => $st?->firstname ?? '',
+                            'surname' => $st?->surname ?? '',
+                            'avatar' => $st?->profile_picture,
+                            'view_count' => (int) $v->view_count,
+                            'is_repeat_viewer' => $v->view_count > 1,
+                            'first_viewed_at' => $v->first_viewed_at ? $v->first_viewed_at->toISOString() : null,
+                            'last_viewed_at' => $v->last_viewed_at ? $v->last_viewed_at->toISOString() : null,
+                        ];
+                    })->sortByDesc('view_count')->values()->all();
+                }
 
                 // Check the date the recorded link was saved to the backend (updated_at)
                 // Fall back to session_date or created_at
@@ -599,8 +623,12 @@ class ClassesController extends Controller
                     'videoUrl' => $url,
                     'videoId' => $videoId,
                     'thumbnail' => $videoId ? "https://img.youtube.com/vi/{$videoId}/hqdefault.jpg" : null,
-                    'views' => (int) $session->views_count,
+                    'views' => $totalViews, // YouTube-style total cumulative views across all students
+                    'total_views' => $totalViews,
+                    'unique_viewers' => $uniqueViewers,
+                    'my_views' => $myView ? (int) $myView->view_count : 0,
                     'view_count' => $myView ? (int) $myView->view_count : 0,
+                    'viewers' => $viewersList,
                     'color' => 'from-blue-600 to-indigo-600' // Default color for UI
                 ];
             });
@@ -621,10 +649,7 @@ class ClassesController extends Controller
 
     /**
      * Student: record a view of a class recording.
-     *
-     * Stores one row per (class session, student). The first play creates the
-     * row; later plays only bump the student's personal rewatch counter, so the
-     * distinct-viewer count ("views") never inflates on refreshes.
+     * Rewatch debounce is set to 10 minutes.
      */
     public function recordRecordingView(Request $request, ClassSession $classSession): JsonResponse
     {
@@ -645,31 +670,13 @@ class ClassesController extends Controller
                 ], 422);
             }
 
-            // Recordings only become available after the session has ended.
-            if ($classSession->session_date && $classSession->ends_at) {
-                $sessionEnd = Carbon::parse($classSession->session_date->toDateString().' '.$classSession->ends_at);
-                if ($sessionEnd->isFuture()) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'This recording is not available yet.',
-                    ], 422);
-                }
-            }
-
-            $subjectId = $classSession->class?->subject_id;
-            if ($subjectId && ! $student->enrolledInSubject($subjectId)) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'You are not enrolled in this class.',
-                ], 403);
-            }
-
             $view = ClassSessionView::firstOrNew([
                 'class_session_id' => $classSession->id,
                 'student_id' => $student->id,
             ]);
 
-            $debounceMinutes = (int) config('services.recording_views.debounce_minutes', 30);
+            // Debounce requirement: rewatch must be at least 10 minutes watch time
+            $debounceMinutes = (int) config('services.recording_views.debounce_minutes', 10);
             $withinDebounce = $view->last_viewed_at
                 && $view->last_viewed_at->gt(now()->subMinutes($debounceMinutes));
 
@@ -684,13 +691,20 @@ class ClassesController extends Controller
                 $view->save();
             }
 
+            // Total views across all students for this session
+            $totalViews = (int) ClassSessionView::where('class_session_id', $classSession->id)->sum('view_count');
+            $uniqueViewers = (int) ClassSessionView::where('class_session_id', $classSession->id)->count();
+
             return response()->json([
                 'success' => true,
                 'message' => 'View recorded.',
                 'data' => [
                     'class_session_id' => $classSession->id,
-                    'views' => $classSession->views()->count(),
+                    'views' => $totalViews,
+                    'total_views' => $totalViews,
+                    'unique_viewers' => $uniqueViewers,
                     'view_count' => (int) $view->view_count,
+                    'my_views' => (int) $view->view_count,
                 ],
             ]);
         } catch (\Throwable $e) {
@@ -702,10 +716,59 @@ class ClassesController extends Controller
         }
     }
 
-    
     /**
-     * (admin) update an existing class, its assigned staff, and schedule/sessions
-    **/
+     * Admin/Staff: get full viewer engagement roster for a recorded class session.
+     */
+    public function getSessionViewers(Request $request, ClassSession $classSession): JsonResponse
+    {
+        try {
+            $classSession->load([
+                'views.student' => function ($sq) {
+                    $sq->select('id', 'firstname', 'surname', 'profile_picture');
+                },
+                'class.subject',
+            ]);
+
+            $totalViews = (int) $classSession->views->sum('view_count');
+            $uniqueViewers = (int) $classSession->views->count();
+            $repeatViewers = (int) $classSession->views->filter(fn($v) => $v->view_count > 1)->count();
+
+            $viewers = $classSession->views->map(function ($v) {
+                $st = $v->student;
+                return [
+                    'student_id' => $v->student_id,
+                    'name' => $st ? trim("{$st->firstname} {$st->surname}") : 'Student',
+                    'firstname' => $st?->firstname ?? '',
+                    'surname' => $st?->surname ?? '',
+                    'avatar' => $st?->profile_picture,
+                    'view_count' => (int) $v->view_count,
+                    'is_repeat_viewer' => $v->view_count > 1,
+                    'first_viewed_at' => $v->first_viewed_at ? $v->first_viewed_at->toISOString() : null,
+                    'last_viewed_at' => $v->last_viewed_at ? $v->last_viewed_at->toISOString() : null,
+                ];
+            })->sortByDesc('view_count')->values()->all();
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'class_session_id' => $classSession->id,
+                    'session_title' => $classSession->title ?: ($classSession->class?->title ?? 'Recorded Class'),
+                    'subject' => $classSession->class?->subject?->name ?? 'General',
+                    'total_views' => $totalViews,
+                    'unique_viewers' => $uniqueViewers,
+                    'repeat_viewers' => $repeatViewers,
+                    'viewers' => $viewers,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to load session viewers',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
     public function update(Request $request, $id, ZoomService $zoomService){
         $validator = Validator::make($request->all(), [
             'subject_id' => 'nullable|exists:subjects,id',
