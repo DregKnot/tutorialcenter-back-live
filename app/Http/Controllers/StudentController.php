@@ -1450,6 +1450,8 @@ class StudentController extends Controller
                 'guardians',
                 'advisors',
             ])
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id', 'desc')
             ->get();
 
         $formatted = $students->map(function ($student) {
