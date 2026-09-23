@@ -24,13 +24,15 @@ class StaffController extends Controller
      */
     public function login(Request $request)
     {
-        try {
-            // 1. Validate input
-            $request->validate([
-                'login' => 'required|string',
-                'password' => 'required|string',
-            ]);
+        // Validation must run outside the try/catch, otherwise the
+        // ValidationException is swallowed and the client sees a masked 500
+        // instead of a 422 telling it which field is missing.
+        $request->validate([
+            'login' => 'required|string',
+            'password' => 'required|string',
+        ]);
 
+        try {
             // 2. Create unique throttle key
             $throttleKey = Str::lower($request->input('login')) . '|' . $request->ip();
 
@@ -89,6 +91,9 @@ class StaffController extends Controller
                 'staff' => $staff,
                 'role' => $staff->role,
             ], 200);
+        } catch (ValidationException $e) {
+            // Bad credentials: surface the field error as a 422, not a 500.
+            throw $e;
         } catch (\Throwable $e) {
             return response()->json([
                 'message' => 'Login failed.',
