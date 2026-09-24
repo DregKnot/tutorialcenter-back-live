@@ -465,6 +465,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
 
     // Past Question Management
     Route::prefix('past-questions')->group(function () {
+        Route::post('/upload-image', [PastQuestionController::class, 'uploadImage']);
         Route::post('/', [PastQuestionController::class, 'store']); // Create new past question
         Route::get('/all', [PastQuestionController::class, 'index']); // List all past questions (including inactive)
         Route::get('/{id}', [PastQuestionController::class, 'show']); // Show past question details

@@ -1564,6 +1564,17 @@ class StudentController extends Controller
         $validated = $request->validate([
             'student_id' => 'nullable|integer|exists:students,id',
             'payment_id' => 'nullable|integer|exists:payments,id',
+            'payment_type' => 'nullable|in:paid,free',
+            'amount_paid' => 'required_if:payment_type,paid|nullable|numeric|min:0',
+            'reference_code' => [
+                'required_if:payment_type,paid',
+                'nullable',
+                'string',
+                'min:3',
+                'max:191',
+                Rule::unique('payments', 'gateway_reference'),
+            ],
+            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd',
             'firstname' => 'required|string|max:50',
             'surname' => 'required|string|max:50',
             'email' => [
@@ -1657,6 +1668,12 @@ class StudentController extends Controller
                     'annual' => 12,
                 };
 
+                $isPaid = ($validated['payment_type'] ?? 'free') === 'paid';
+                $amountPaid = $isPaid ? (float) ($validated['amount_paid'] ?? 0) : 0.00;
+                $referenceCode = $isPaid ? trim($validated['reference_code']) : ('FREE-' . Str::uuid());
+                $paymentMethod = $validated['payment_method'] ?? ($isPaid ? 'bank_transfer' : 'manual');
+                $gateway = $isPaid ? 'manual_entry' : 'complimentary';
+
                 $existingEnrollment = CoursesEnrollment::where('student_id', $student->id)
                     ->where('course_id', $course->id)
                     ->first();
@@ -1666,7 +1683,7 @@ class StudentController extends Controller
                         'start_date' => now(),
                         'end_date' => now()->addMonths($months),
                         'billing_cycle' => $validated['billing_cycle'],
-                        'cost' => 0,
+                        'cost' => $amountPaid,
                         'status' => 'active',
                     ]);
                     $enrollment = $existingEnrollment;
@@ -1677,7 +1694,7 @@ class StudentController extends Controller
                         'start_date' => now(),
                         'end_date' => now()->addMonths($months),
                         'billing_cycle' => $validated['billing_cycle'],
-                        'cost' => 0,
+                        'cost' => $amountPaid,
                         'status' => 'active',
                     ]);
                 }
@@ -1712,18 +1729,19 @@ class StudentController extends Controller
                     $payment = Payment::create([
                         'student_id' => $student->id,
                         'course_enrollment_id' => $enrollment->id,
-                        'amount' => 0,
+                        'amount' => $amountPaid,
                         'currency' => 'NGN',
-                        'payment_method' => 'manual',
-                        'gateway' => 'complimentary',
-                        'gateway_reference' => 'FREE-' . Str::uuid(),
+                        'payment_method' => $paymentMethod,
+                        'gateway' => $gateway,
+                        'gateway_reference' => $referenceCode,
                         'status' => 'successful',
                         'billing_cycle' => $validated['billing_cycle'],
                         'paid_at' => now(),
                         'meta' => [
-                            'type' => 'complimentary',
+                            'type' => $isPaid ? 'admin_paid_registration' : 'complimentary',
                             'reason' => $validated['reason'],
                             'created_by_staff_id' => $request->user()->id,
+                            'reference_code' => $referenceCode,
                         ],
                     ]);
                 }
@@ -1791,7 +1809,9 @@ class StudentController extends Controller
             return response()->json([
                 'message' => !empty($studentId) 
                     ? 'Student registration completed successfully!' 
-                    : 'Student registered with complimentary enrollment. Verification is required before login.',
+                    : ((($validated['payment_type'] ?? 'free') === 'paid')
+                        ? 'Student registered and course enrollment activated with recorded payment!' 
+                        : 'Student registered with complimentary enrollment. Verification is required before login.'),
                 'student' => $result['student']->fresh(),
                 'enrollment' => $result['enrollment'],
                 'payment' => $result['payment'],
@@ -2010,4 +2030,157 @@ class StudentController extends Controller
             'advisors' => $student->advisors()->get(),
         ], 200);
     }
+
+    /**
+     * Admin: Extend active course enrollment duration for a student
+     */
+    public function extendEnrollment(Request $request, $enrollmentId)
+    {
+        $validated = $request->validate([
+            'months' => 'nullable|integer|min:1|max:24',
+            'days' => 'nullable|integer|min:1|max:365',
+            'custom_end_date' => 'nullable|date|after:today',
+            'reason' => 'required|string|min:5|max:1000',
+        ]);
+
+        try {
+            $result = DB::transaction(function () use ($request, $enrollmentId, $validated) {
+                $enrollment = CoursesEnrollment::withTrashed()
+                    ->with(['course', 'student'])
+                    ->lockForUpdate()
+                    ->findOrFail($enrollmentId);
+
+                if ($enrollment->trashed()) {
+                    $enrollment->restore();
+                }
+
+                // If enrollment end_date is in the future, extend from that end_date; otherwise from now
+                $currentEndDate = $enrollment->end_date ? Carbon::parse($enrollment->end_date) : null;
+                $effectiveBase = ($currentEndDate && $currentEndDate->isFuture()) ? $currentEndDate->copy() : now();
+
+                if (!empty($validated['custom_end_date'])) {
+                    $newEndDate = Carbon::parse($validated['custom_end_date'])->endOfDay();
+                } elseif (!empty($validated['months'])) {
+                    $newEndDate = $effectiveBase->addMonths((int) $validated['months']);
+                } elseif (!empty($validated['days'])) {
+                    $newEndDate = $effectiveBase->addDays((int) $validated['days']);
+                } else {
+                    $newEndDate = $effectiveBase->addMonth(); // default 1 month
+                }
+
+                $enrollment->update([
+                    'end_date' => $newEndDate,
+                    'status' => 'active',
+                ]);
+
+                return $enrollment->fresh(['course', 'student', 'subjects.subject']);
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Course enrollment access extended successfully.',
+                'enrollment' => $result,
+            ], 200);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json([
+                'message' => 'Failed to extend course registration.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Admin: Renew an expired course enrollment with a new payment record
+     */
+    public function renewEnrollment(Request $request, $enrollmentId)
+    {
+        $validated = $request->validate([
+            'billing_cycle' => 'required|in:monthly,quarterly,semi_annual,annual',
+            'amount' => 'required|numeric|min:0',
+            'reference_code' => [
+                'required',
+                'string',
+                'min:3',
+                'max:191',
+                Rule::unique('payments', 'gateway_reference'),
+            ],
+            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd',
+            'reason' => 'required|string|min:5|max:1000',
+        ]);
+
+        try {
+            $result = DB::transaction(function () use ($request, $enrollmentId, $validated) {
+                $enrollment = CoursesEnrollment::withTrashed()
+                    ->with(['course', 'student'])
+                    ->lockForUpdate()
+                    ->findOrFail($enrollmentId);
+
+                if ($enrollment->trashed()) {
+                    $enrollment->restore();
+                }
+
+                $months = match ($validated['billing_cycle']) {
+                    'monthly' => 1,
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                };
+
+                $startDate = now();
+                $endDate = now()->addMonths($months);
+
+                $enrollment->update([
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'billing_cycle' => $validated['billing_cycle'],
+                    'cost' => (float) $validated['amount'],
+                    'status' => 'active',
+                ]);
+
+                // Record brand new payment
+                $payment = Payment::create([
+                    'student_id' => $enrollment->student_id,
+                    'course_enrollment_id' => $enrollment->id,
+                    'amount' => (float) $validated['amount'],
+                    'currency' => 'NGN',
+                    'payment_method' => $validated['payment_method'] ?? 'bank_transfer',
+                    'gateway' => 'manual_entry',
+                    'gateway_reference' => trim($validated['reference_code']),
+                    'status' => 'successful',
+                    'billing_cycle' => $validated['billing_cycle'],
+                    'paid_at' => now(),
+                    'meta' => [
+                        'type' => 'admin_course_renewal',
+                        'reason' => $validated['reason'],
+                        'created_by_staff_id' => $request->user()->id,
+                        'reference_code' => trim($validated['reference_code']),
+                    ],
+                ]);
+
+                return [
+                    'enrollment' => $enrollment->fresh(['course', 'student', 'subjects.subject']),
+                    'payment' => $payment,
+                ];
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Course renewed successfully and payment record initialized.',
+                'enrollment' => $result['enrollment'],
+                'payment' => $result['payment'],
+            ], 200);
+        } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
+            return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json([
+                'message' => 'Failed to renew course enrollment.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
 }

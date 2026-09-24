@@ -6,6 +6,7 @@ use App\Models\PastQuestion;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Facades\Storage;
 use App\Services\AdminNotificationService;
 
 class PastQuestionController extends Controller
@@ -132,10 +133,10 @@ class PastQuestionController extends Controller
                 'exam_year_id' => $request->exam_year_id,
                 'past_question_group_id' => $request->past_question_group_id,
                 'question_number' => $request->question_number,
-                'question' => $request->question,
+                'question' => $this->sanitizeBase64Images($request->question),
                 'question_type' => $request->question_type ?? 'multiple_choice',
                 'marks' => $request->marks ?? 1,
-                'explanation' => $request->explanation,
+                'explanation' => $this->sanitizeBase64Images($request->explanation),
                 'status' => $request->status ?? 'active',
             ]);
 
@@ -143,7 +144,7 @@ class PastQuestionController extends Controller
                 foreach ($request->options as $index => $option) {
                     $question->options()->create([
                         'label' => $option['label'] ?? null,
-                        'option_text' => $option['option_text'],
+                        'option_text' => $this->sanitizeBase64Images($option['option_text']),
                         'is_correct' => $option['is_correct'] ?? false,
                         'sort_order' => $option['sort_order'] ?? $index,
                     ]);
@@ -360,5 +361,55 @@ class PastQuestionController extends Controller
         } catch (\Exception $e) {
             return 'file type detection error: ' . $e->getMessage();
         }
+    }
+
+    /**
+     * Upload an image for past questions, options, or explanations.
+     * Stores the file on public disk and returns a short URL.
+     */
+    public function uploadImage(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'image' => ['required', 'file', 'image', 'mimes:jpeg,png,jpg,webp,gif,svg', 'max:5120'], // Max 5MB
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'message' => 'Image validation failed.',
+                'errors' => $validator->errors(),
+            ], 422);
+        }
+
+        try {
+            $file = $request->file('image');
+            $path = $file->store('exams/images', 'public');
+            $relativeUrl = Storage::url($path);
+            $fullUrl = asset($relativeUrl);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Image uploaded successfully.',
+                'url' => $fullUrl,
+                'relative_url' => $relativeUrl,
+                'path' => $path,
+            ], 201);
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Failed to upload image.',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
+    }
+
+    /**
+     * Strip raw base64 image data URIs to protect database and network payloads.
+     */
+    private function sanitizeBase64Images(?string $content): ?string
+    {
+        if (!$content) {
+            return $content;
+        }
+        // Strips any data:image/...;base64,... strings
+        return preg_replace('/data:image\/[a-zA-Z0-9+\/]+;base64,[^"\'\s>]+/i', '', $content);
     }
 }
