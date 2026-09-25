@@ -50,7 +50,7 @@ class BirthdayNotification extends Notification
             ->greeting("Happy Birthday, {$name}! 🎉")
             ->line($this->messageFor($notifiable));
 
-        $baseUrl = config('app.frontend_url', config('app.url'));
+        $baseUrl = rtrim(config('app.frontend_url', 'https://www.tutorialcenter.africa'), '/');
         if ($this->userRole === 'student') {
             $mail->action('Go to Learning Portal', $baseUrl . '/student/dashboard');
         } elseif ($this->userRole === 'guardian') {

@@ -20,7 +20,8 @@ class StudentEmailVerification extends Notification
 
     public function toMail($notifiable)
     {
-        $verifyUrl = config('app.frontend_url') . "/register/student/email/verify?email=$notifiable->email&token=$this->token";
+        $baseUrl = rtrim(config('app.frontend_url', 'https://www.tutorialcenter.africa'), '/');
+        $verifyUrl = $baseUrl . "/register/student/email/verify?email={$notifiable->email}&token={$this->token}";
             return (new MailMessage)
         ->subject('Verify Your Email Address')
         ->greeting('Hello!')

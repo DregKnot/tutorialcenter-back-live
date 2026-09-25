@@ -53,7 +53,8 @@ class BankTransferNotification extends Notification
             return $url ? $mail->action('Review bank transfers', $url) : $mail->line('Open the admin bank-transfer review queue and search for the payment reference.');
         }
 
-        return $mail->action('Open student portal', config('app.frontend_url'));
+        $baseUrl = rtrim(config('app.frontend_url', 'https://www.tutorialcenter.africa'), '/');
+        return $mail->action('Open student portal', $baseUrl);
     }
 
     private function safe(string $value): string
