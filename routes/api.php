@@ -334,6 +334,10 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
         Route::get('/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
         Route::get('/analytics/overview', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'overviewAnalytics']);
+        Route::post('/{id}/extend', [\App\Http\Controllers\StudentController::class, 'extendEnrollment'])
+            ->middleware('staff.role:admin');
+        Route::post('/{id}/renew', [\App\Http\Controllers\StudentController::class, 'renewEnrollment'])
+            ->middleware('staff.role:admin');
     });
 
     Route::get('/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
@@ -465,6 +469,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
 
     // Past Question Management
     Route::prefix('past-questions')->group(function () {
+        Route::post('/upload-image', [PastQuestionController::class, 'uploadImage']);
         Route::post('/', [PastQuestionController::class, 'store']); // Create new past question
         Route::get('/all', [PastQuestionController::class, 'index']); // List all past questions (including inactive)
         Route::get('/{id}', [PastQuestionController::class, 'show']); // Show past question details
