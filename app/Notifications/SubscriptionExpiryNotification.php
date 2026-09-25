@@ -79,8 +79,12 @@ class SubscriptionExpiryNotification extends Notification
         }
 
         $mail->line('Please renew promptly to ensure uninterrupted access to live classes, assessments, and study materials.');
-        $renewalUrl = rtrim(config('app.frontend_url', 'https://www.tutorialcenter.africa'), '/') . '/courses';
-        $mail->action('Renew Subscription Now', $renewalUrl);
+        $baseUrl = rtrim(config('app.frontend_url', 'https://www.tutorialcenter.africa'), '/');
+        $dashboardUrl = $notifiable instanceof Guardian
+            ? $baseUrl . '/guardian/dashboard'
+            : $baseUrl . '/student/dashboard';
+
+        $mail->action('Go to Dashboard', $dashboardUrl);
 
         return $mail;
     }
