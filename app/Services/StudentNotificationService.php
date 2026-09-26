@@ -152,36 +152,103 @@ class StudentNotificationService
     public static function subscriptionReminder(int $enrollmentId): void
     {
         DB::transaction(function () use ($enrollmentId) {
-            $enrollment = \App\Models\CoursesEnrollment::with(['student', 'course'])->lockForUpdate()->find($enrollmentId);
-            if (! $enrollment || ! $enrollment->student || $enrollment->status !== 'active'
-                || ! $enrollment->end_date || $enrollment->end_date->lte(now())
-                || $enrollment->start_date?->isFuture()) {
+            $enrollment = \App\Models\CoursesEnrollment::with(['student.guardians', 'course'])->lockForUpdate()->find($enrollmentId);
+            if (! $enrollment || ! $enrollment->student || ! in_array($enrollment->status, ['active', 'expired'], true)
+                || ! $enrollment->end_date || $enrollment->start_date?->isFuture()) {
                 return;
             }
+
+            $tz = config('app.timezone', 'Africa/Lagos');
+            $today = now()->timezone($tz)->startOfDay();
+            $expiryDay = $enrollment->end_date->copy()->timezone($tz)->startOfDay();
+            $diffDays = (int) $today->diffInDays($expiryDay, false);
+
+            // Determine if today is an eligible milestone
+            // Pre-expiry: 7 (a week before), 3 (3 days before), 0 (the day it expires)
+            // Post-expiry: every 3 days after it expires for 1 month (-3, -6, -9, -12, -15, -18, -21, -24, -27, -30)
+            $isEligibleMilestone = false;
+            if ($diffDays === 7 || $diffDays === 3 || $diffDays === 0) {
+                $isEligibleMilestone = true;
+            } elseif ($diffDays < 0) {
+                $daysAfter = abs($diffDays);
+                if ($daysAfter >= 1 && $daysAfter <= 30 && ($daysAfter % 3 === 0)) {
+                    $isEligibleMilestone = true;
+                }
+            }
+
+            if (! $isEligibleMilestone) {
+                return;
+            }
+
+            // Check if covered by a renewal or subsequent active enrollment
             $coveredByRenewal = \App\Models\CoursesEnrollment::where('student_id', $enrollment->student_id)
-                ->where('course_id', $enrollment->course_id)->where('id', '!=', $enrollment->id)->where('status', 'active')
-                ->where(fn ($q) => $q->whereNull('start_date')->orWhere('start_date', '<=', $enrollment->end_date))
-                ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>', $enrollment->end_date))->exists();
+                ->where('course_id', $enrollment->course_id)
+                ->where('id', '!=', $enrollment->id)
+                ->where('status', 'active')
+                ->where(function ($q) use ($enrollment) {
+                    $q->whereNull('end_date')->orWhere('end_date', '>', $enrollment->end_date);
+                })
+                ->exists();
             if ($coveredByRenewal) {
                 return;
             }
-            $seconds = now()->diffInSeconds($enrollment->end_date, false);
-            $window = match (true) {
-                $seconds <= 86400 => 1,
-                $seconds <= 2 * 86400 => 2,
-                $seconds <= 7 * 86400 => 7,
-                default => null,
-            };
-            if ($window === null) {
-                return;
+
+            // If on or past expiry, check if a successful payment was made for this course/enrollment
+            if ($diffDays <= 0) {
+                $hasPaid = \App\Models\Payment::where('student_id', $enrollment->student_id)
+                    ->where('status', 'successful')
+                    ->where(function ($q) use ($enrollment) {
+                        $q->where('course_enrollment_id', $enrollment->id)
+                            ->orWhereHas('enrollment', fn ($sq) => $sq->where('course_id', $enrollment->course_id));
+                    })
+                    ->where('created_at', '>=', $enrollment->end_date->copy()->subHours(24))
+                    ->exists();
+                if ($hasPaid) {
+                    return;
+                }
             }
-            // Including the current expiry makes renewal a fresh reminder cycle.
-            $expiry = $enrollment->end_date->toISOString();
-            self::learning($enrollment->student, 'subscription_expiring', $enrollment->id.'|'.$expiry.'|'.$window,
-                new \App\Notifications\StudentLearningNotification('subscription_expiring',
-                    'Your '.($enrollment->course?->title ?? 'course').' subscription expires soon. Renew to continue learning.',
-                    ['course_enrollment_id' => $enrollment->id, 'course_id' => $enrollment->course_id,
-                        'reminder_days' => $window, 'expires_at' => $expiry]));
+
+            $student = $enrollment->student;
+            $recipients = collect([$student])
+                ->concat($student->guardians)
+                ->unique(fn ($r) => $r->getMorphClass() . ':' . $r->getKey());
+
+            $expiryIso = $enrollment->end_date->toISOString();
+            $notification = new \App\Notifications\SubscriptionExpiryNotification($enrollment, $diffDays, $student);
+
+            foreach ($recipients as $recipient) {
+                $deliveryKey = hash('sha256', "sub_reminder|{$enrollment->id}|{$student->id}|{$expiryIso}|{$diffDays}|" . $recipient->getMorphClass() . '|' . $recipient->getKey());
+
+                $claimed = (bool) DB::table('student_activity_deliveries')->insertOrIgnore([
+                    'delivery_key' => $deliveryKey,
+                    'student_id' => $student->id,
+                    'event_type' => $diffDays <= 0 ? 'subscription_expired' : 'subscription_expiring',
+                    'recipient_type' => $recipient->getMorphClass(),
+                    'recipient_id' => $recipient->getKey(),
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+
+                if (! $claimed) {
+                    continue;
+                }
+
+                // In-app database notification
+                $recipient->notifyNow($notification, ['database']);
+
+                // Mail delivery after commit
+                if (in_array('mail', $notification->via($recipient), true)) {
+                    DB::afterCommit(function () use ($recipient, $notification) {
+                        try {
+                            $mailRecipient = clone $recipient;
+                            $mailRecipient->email = trim((string) $mailRecipient->email);
+                            $mailRecipient->notifyNow($notification, ['mail']);
+                        } catch (\Throwable $exception) {
+                            report($exception);
+                        }
+                    });
+                }
+            }
         });
     }
 

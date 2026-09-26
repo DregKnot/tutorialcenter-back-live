@@ -58,5 +58,13 @@ class PaymentObserver implements ShouldHandleEventsAfterCommit
         } catch (Throwable $exception) {
             report($exception);
         }
+
+        if ($payment->course_enrollment_id) {
+            try {
+                \App\Services\StudentNotificationService::subscriptionReminder($payment->course_enrollment_id);
+            } catch (Throwable $exception) {
+                report($exception);
+            }
+        }
     }
 }
