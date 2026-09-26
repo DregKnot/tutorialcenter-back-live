@@ -33,6 +33,28 @@ class ClassAttendance extends Model
         'left_at' => 'datetime',
     ];
 
+    protected $appends = [
+        'rejoin_count',
+        'duration_minutes',
+    ];
+
+    public function getRejoinCountAttribute(): int
+    {
+        return max(0, ((int) $this->visit_number) - 1);
+    }
+
+    public function getDurationMinutesAttribute(): int
+    {
+        if ($this->connected_seconds > 0) {
+            return (int) floor($this->connected_seconds / 60);
+        }
+        if ($this->joined_at && $this->left_at) {
+            return max(1, (int) $this->joined_at->diffInMinutes($this->left_at));
+        }
+        return 0;
+    }
+
+
     public static function timeoutMinutes(): int
     {
         return max(5, (int) config('services.student_activity.class_timeout_minutes', 10));

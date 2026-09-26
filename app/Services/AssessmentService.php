@@ -190,20 +190,32 @@ class AssessmentService
      */
     public function studentAssessments(Student $student): array
     {
-        $subjectIds = SubjectsEnrollment::where('student_id', $student->id)
+        // 1. Direct subject enrollments
+        $directSubjectIds = SubjectsEnrollment::where('student_id', $student->id)
             ->whereNull('deleted_at')
             ->pluck('subject_id');
 
-        $classIds = Classes::whereIn('subject_id', $subjectIds)
+        // 2. Subject enrollments via active course enrollments
+        $enrolledCourseIds = DB::table('courses_enrollments')
+            ->where('student_id', $student->id)
+            ->whereNull('deleted_at')
             ->where('status', 'active')
-            ->pluck('id');
+            ->pluck('course_id');
 
-        $assessments = Assessment::with('class.subject')
-            ->whereIn('class_id', $classIds)
-            ->where('status', Assessment::PUBLISHED)
-            ->where(function ($q) {
-                $q->whereNull('opens_at')->orWhere('opens_at', '<=', now());
+        $courseSubjectIds = DB::table('course_subject')
+            ->whereIn('course_id', $enrolledCourseIds)
+            ->pluck('subject_id');
+
+        $allSubjectIds = $directSubjectIds->concat($courseSubjectIds)->unique()->filter()->values();
+
+        $classIds = Classes::whereIn('subject_id', $allSubjectIds)->pluck('id');
+
+        $assessments = Assessment::with(['class.subject', 'creator'])
+            ->where(function ($q) use ($allSubjectIds, $classIds) {
+                $q->whereIn('subject_id', $allSubjectIds)
+                  ->orWhereIn('class_id', $classIds);
             })
+            ->where('status', Assessment::PUBLISHED)
             ->latest()
             ->get();
 
@@ -798,6 +810,9 @@ class AssessmentService
      */
     private function ensureTutorCanManage(Staff $tutor, Assessment $assessment): void
     {
+        if (in_array(strtolower($tutor->role ?? ""), ['admin', 'super_admin', 'coo'], true)) {
+            return;
+        }
         $assigned = ClassStaff::where('class_id', $assessment->class_id)
             ->where('staff_id', $tutor->id)
             ->exists();
@@ -812,14 +827,41 @@ class AssessmentService
      */
     private function ensureStudentEnrolled(Student $student, Assessment $assessment): void
     {
-        $enrolled = SubjectsEnrollment::where('subject_id', $assessment->subject_id)
+        $directEnrolled = SubjectsEnrollment::where('subject_id', $assessment->subject_id)
             ->where('student_id', $student->id)
             ->whereNull('deleted_at')
             ->exists();
 
-        if (! $enrolled) {
-            throw ValidationException::withMessages(['assessment' => 'You are not enrolled in this assessment.']);
+        if ($directEnrolled) {
+            return;
         }
+
+        $enrolledCourseIds = DB::table('courses_enrollments')
+            ->where('student_id', $student->id)
+            ->whereNull('deleted_at')
+            ->where('status', 'active')
+            ->pluck('course_id');
+
+        $inCourse = DB::table('course_subject')
+            ->whereIn('course_id', $enrolledCourseIds)
+            ->where('subject_id', $assessment->subject_id)
+            ->exists();
+
+        if ($inCourse) {
+            return;
+        }
+
+        if ($assessment->class && $assessment->class->subject_id) {
+            $inClassSubject = DB::table('course_subject')
+                ->whereIn('course_id', $enrolledCourseIds)
+                ->where('subject_id', $assessment->class->subject_id)
+                ->exists();
+            if ($inClassSubject) {
+                return;
+            }
+        }
+
+        throw ValidationException::withMessages(['assessment' => 'You are not enrolled in this assessment.']);
     }
 
     /**
@@ -831,5 +873,21 @@ class AssessmentService
             ->where('student_id', $student->id)
             ->with('answers.files')
             ->first();
+    }
+
+    /**
+     * List all student submissions for an assessment (admin view).
+     */
+    public function adminSubmissionsList(Assessment $assessment): array
+    {
+        return $assessment->submissions()
+            ->with('student')
+            ->latest()
+            ->get()
+            ->map(fn (AssessmentSubmission $s) => array_merge(
+                $s->toArray(),
+                ['questions_answered' => $s->answers()->whereNotNull('marks_awarded')->count()]
+            ))
+            ->all();
     }
 }

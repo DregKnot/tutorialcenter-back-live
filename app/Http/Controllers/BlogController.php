@@ -167,10 +167,37 @@ class BlogController extends Controller
             $validated['blog_category_id'] = $defaultCat->id;
         }
 
-        // Step 3: Handle Featured Image upload to storage disk
+        // Step 3: Handle Multiple Images and Featured Image upload to storage disk
+        $gallery = [];
+        if ($request->hasFile('images')) {
+            foreach ($request->file('images') as $img) {
+                if ($img && $img->isValid()) {
+                    $path = $img->store('blogs/gallery', 'public');
+                    $gallery[] = url(Storage::url($path));
+                }
+            }
+        }
+
+        if ($request->filled('existing_images')) {
+            $rawExisting = is_array($request->existing_images) ? $request->existing_images : json_decode($request->existing_images, true);
+            if (is_array($rawExisting)) {
+                $gallery = array_merge($gallery, $rawExisting);
+            }
+        }
+
         if ($request->hasFile('featured_image')) {
             $path = $request->file('featured_image')->store('blogs', 'public');
-            $validated['featured_image'] = Storage::url($path);
+            $featUrl = url(Storage::url($path));
+            $validated['featured_image'] = $featUrl;
+            if (!in_array($featUrl, $gallery)) {
+                array_unshift($gallery, $featUrl);
+            }
+        } elseif (!empty($gallery)) {
+            $validated['featured_image'] = $gallery[0];
+        }
+
+        if (!empty($gallery)) {
+            $validated['images'] = array_values(array_unique($gallery));
         }
 
         // Step 4: Calculate approximate reading time (200 words/min)
@@ -244,10 +271,39 @@ class BlogController extends Controller
             $validated['blog_category_id'] = $cat->id;
         }
 
-        // Upload new featured image if a new file is attached
+        // Handle Multiple Images and Featured Image updates
+        $gallery = [];
+        if ($request->filled('existing_images')) {
+            $rawExisting = is_array($request->existing_images) ? $request->existing_images : json_decode($request->existing_images, true);
+            if (is_array($rawExisting)) {
+                $gallery = $rawExisting;
+            }
+        } elseif (is_array($blog->images)) {
+            $gallery = $blog->images;
+        }
+
+        if ($request->hasFile('images')) {
+            foreach ($request->file('images') as $img) {
+                if ($img && $img->isValid()) {
+                    $path = $img->store('blogs/gallery', 'public');
+                    $gallery[] = url(Storage::url($path));
+                }
+            }
+        }
+
         if ($request->hasFile('featured_image')) {
             $path = $request->file('featured_image')->store('blogs', 'public');
-            $validated['featured_image'] = Storage::url($path);
+            $featUrl = url(Storage::url($path));
+            $validated['featured_image'] = $featUrl;
+            if (!in_array($featUrl, $gallery)) {
+                array_unshift($gallery, $featUrl);
+            }
+        } elseif (!empty($gallery)) {
+            $validated['featured_image'] = $gallery[0];
+        }
+
+        if (!empty($gallery)) {
+            $validated['images'] = array_values(array_unique($gallery));
         }
 
         // Recalculate reading time if content changed
@@ -317,6 +373,145 @@ class BlogController extends Controller
     }
 
     /**
+     * Create New Blog Category (Staff / Admin Protected)
+     * [HTTP]: POST /api/staffs/blog-categories OR POST /api/staffs/blogs/categories
+     */
+    public function storeCategory(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'name' => 'required|string|max:100',
+            'description' => 'nullable|string|max:500',
+            'icon' => 'nullable|string|max:100',
+            'status' => 'nullable|in:active,inactive',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $name = trim($request->input('name'));
+        $slug = Str::slug($name);
+
+        // Check if category with exact name or slug already exists (including soft-deleted)
+        $existing = BlogCategory::withTrashed()
+            ->where('name', $name)
+            ->orWhere('slug', $slug)
+            ->first();
+
+        if ($existing) {
+            if ($existing->trashed()) {
+                $existing->restore();
+                $existing->update([
+                    'description' => $request->input('description', $existing->description),
+                    'icon' => $request->input('icon', $existing->icon),
+                    'status' => $request->input('status', 'active'),
+                ]);
+                $category = $existing;
+            } else {
+                return response()->json([
+                    'message' => 'A category with this name already exists.',
+                    'data' => $existing,
+                ], 422);
+            }
+        } else {
+            $category = BlogCategory::create([
+                'name' => $name,
+                'slug' => $slug,
+                'description' => $request->input('description'),
+                'icon' => $request->input('icon'),
+                'status' => $request->input('status', 'active'),
+            ]);
+        }
+
+        $category->loadCount(['blogs' => fn($q) => $q->where('status', 'published')]);
+
+        return response()->json([
+            'message' => 'Blog category created successfully.',
+            'data' => $category,
+        ], 201);
+    }
+
+    /**
+     * Update Blog Category (Staff / Admin Protected)
+     * [HTTP]: PUT /api/staffs/blog-categories/{id} OR POST /api/staffs/blog-categories/{id}
+     */
+    public function updateCategory(Request $request, $id)
+    {
+        $category = BlogCategory::findOrFail($id);
+
+        $validator = Validator::make($request->all(), [
+            'name' => 'sometimes|required|string|max:100',
+            'description' => 'nullable|string|max:500',
+            'icon' => 'nullable|string|max:100',
+            'status' => 'nullable|in:active,inactive',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        if ($request->filled('name')) {
+            $name = trim($request->input('name'));
+            $slug = Str::slug($name);
+            $duplicate = BlogCategory::where('id', '!=', $id)
+                ->where(function($q) use ($name, $slug) {
+                    $q->where('name', $name)->orWhere('slug', $slug);
+                })->exists();
+            if ($duplicate) {
+                return response()->json([
+                    'message' => 'Another category with this name already exists.',
+                ], 422);
+            }
+            $category->name = $name;
+            $category->slug = $slug;
+        }
+
+        if ($request->has('description')) {
+            $category->description = $request->input('description');
+        }
+        if ($request->has('icon')) {
+            $category->icon = $request->input('icon');
+        }
+        if ($request->has('status')) {
+            $category->status = $request->input('status');
+        }
+
+        $category->save();
+        $category->loadCount(['blogs' => fn($q) => $q->where('status', 'published')]);
+
+        return response()->json([
+            'message' => 'Blog category updated successfully.',
+            'data' => $category,
+        ]);
+    }
+
+    /**
+     * Delete Blog Category (Staff / Admin Protected)
+     * [HTTP]: DELETE /api/staffs/blog-categories/{id}
+     */
+    public function destroyCategory($id)
+    {
+        $category = BlogCategory::findOrFail($id);
+
+        // Reassign existing blogs to General category if deleting this category
+        $generalCat = BlogCategory::firstOrCreate(
+            ['name' => 'General'],
+            ['slug' => 'general', 'status' => 'active']
+        );
+
+        if ($generalCat->id !== $category->id) {
+            Blog::where('blog_category_id', $category->id)->update(['blog_category_id' => $generalCat->id]);
+        }
+
+        $category->delete();
+
+        return response()->json([
+            'message' => 'Blog category deleted successfully.',
+        ]);
+    }
+
+
+    /**
      * Store Comment on a Blog Post (Students, Staff, or Public Guests)
      * 
      * [HTTP]: POST /api/blogs/{id}/comments
@@ -375,4 +570,58 @@ class BlogController extends Controller
             'data' => $comment,
         ], 201);
     }
+
+    /**
+     * Upload rich media (images, audio, video) for blog articles.
+     * 
+     * [HTTP]: POST /api/staffs/blogs/media/upload
+     */
+    public function uploadMedia(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'file' => 'required|file|max:102400', // 100MB
+            'type' => 'nullable|string|in:image,audio,video,auto',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json(['errors' => $validator->errors()], 422);
+        }
+
+        $file = $request->file('file');
+        $mime = $file->getMimeType() ?: '';
+        $ext = strtolower($file->getClientOriginalExtension() ?: '');
+
+        $type = $request->input('type', 'auto');
+        if ($type === 'auto' || empty($type)) {
+            if (str_starts_with($mime, 'image/') || in_array($ext, ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg'])) {
+                $type = 'image';
+            } elseif (str_starts_with($mime, 'audio/') || in_array($ext, ['mp3', 'wav', 'ogg', 'm4a', 'aac'])) {
+                $type = 'audio';
+            } elseif (str_starts_with($mime, 'video/') || in_array($ext, ['mp4', 'webm', 'mov', 'ogg'])) {
+                $type = 'video';
+            } else {
+                $type = 'file';
+            }
+        }
+
+        $folder = match ($type) {
+            'image' => 'blogs/media/images',
+            'audio' => 'blogs/media/audio',
+            'video' => 'blogs/media/videos',
+            default => 'blogs/media/files',
+        };
+
+        $path = $file->store($folder, 'public');
+        $url = url(Storage::url($path));
+
+        return response()->json([
+            'message' => ucfirst($type) . ' uploaded successfully.',
+            'url' => $url,
+            'type' => $type,
+            'original_name' => $file->getClientOriginalName(),
+            'size' => $file->getSize(),
+            'mime' => $mime,
+        ], 201);
+    }
+
 }

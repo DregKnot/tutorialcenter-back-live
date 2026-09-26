@@ -35,7 +35,7 @@ class StaffRoleMiddleware
             }
 
             // Allow COO to write/edit/delete blogs (COO only)
-            if ($userRole === 'coo' && ($request->is('api/staffs/blogs*') || $request->is('api/blogs*'))) {
+            if ($userRole === 'coo' && ($request->is('api/staffs/blogs*') || $request->is('api/blogs*') || $request->is('api/staffs/blog-categories*'))) {
                 return $next($request);
             }
 
@@ -45,14 +45,23 @@ class StaffRoleMiddleware
             ], 403);
         }
 
+                $advisorRoles = ['advisor', 'course advisor', 'course_advisor', 'course-advisor'];
+
         // Allow advisors read-only access to exam data endpoints
-        if (in_array($userRole, ['advisor', 'course advisor', 'course_advisor', 'course-advisor']) && ($request->is('api/admin/exam-data*') || $request->is('api/advisor/exam-data*'))) {
+        if (in_array($userRole, $advisorRoles) && ($request->is('api/admin/exam-data*') || $request->is('api/advisor/exam-data*'))) {
             if ($request->isMethod('get') || $request->isMethod('head') || $request->isMethod('options')) {
                 return $next($request);
             }
         }
 
-        if (!in_array($userRole, array_map('strtolower', $roles))) {
+        // Normalize roles so any advisor variant satisfies 'advisor' and vice versa
+        $normalizedUserRole = in_array($userRole, $advisorRoles) ? 'advisor' : $userRole;
+        $allowedRoles = array_map(function ($r) use ($advisorRoles) {
+            $lr = strtolower(trim($r));
+            return in_array($lr, $advisorRoles) ? 'advisor' : $lr;
+        }, $roles);
+
+        if (!in_array($normalizedUserRole, $allowedRoles) && !in_array($userRole, array_map('strtolower', $roles))) {
             return response()->json([
                 'message' => 'Access denied. Unauthorized Personal.',
             ], 403);

@@ -338,4 +338,39 @@ class AssessmentController extends Controller
             'stats' => $this->service->aggregateStats($assessment),
         ]);
     }
+
+    /**
+     * Show assessment detail with questions and options (read-only for admin).
+     */
+    public function adminShow(Assessment $assessment): JsonResponse
+    {
+        $assessment->load(['class.subject', 'creator', 'questions.options']);
+        return response()->json([
+            'assessment' => $assessment,
+            'stats' => $this->service->aggregateStats($assessment),
+        ]);
+    }
+
+    /**
+     * List all student submissions for an assessment (read-only for admin).
+     */
+    public function adminSubmissions(Assessment $assessment): JsonResponse
+    {
+        return response()->json([
+            'submissions' => $this->service->adminSubmissionsList($assessment)
+        ]);
+    }
+
+    /**
+     * Show one submission in detail for admin inspection.
+     */
+    public function adminSubmissionDetail(Assessment $assessment, $submissionId): JsonResponse
+    {
+        $submission = AssessmentSubmission::findOrFail($submissionId);
+        abort_unless($submission->assessment_id === (int) $assessment->id, 404);
+
+        return response()->json([
+            'submission' => $submission->load(['student', 'answers.question', 'answers.option', 'answers.files'])
+        ]);
+    }
 }

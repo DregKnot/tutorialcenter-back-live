@@ -317,8 +317,12 @@ class ClassesController extends Controller
                 ->where('status', 'active')
                 ->get();
 
-            $classes->each(function ($class) {
-                $enrolledStudents = $this->getEnrolledStudentsForSubject($class->subject_id);
+            $subjectEnrollmentCache = [];
+            $classes->each(function ($class) use (&$subjectEnrollmentCache) {
+                if (!isset($subjectEnrollmentCache[$class->subject_id])) {
+                    $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id);
+                }
+                $enrolledStudents = $subjectEnrollmentCache[$class->subject_id];
                 $class->enrolled_students = $enrolledStudents;
                 $class->enrolled_count = $enrolledStudents->count();
 
@@ -1082,8 +1086,12 @@ class ClassesController extends Controller
                 ->whereHas('staffs', fn($q) => $q->where('staffs.id', $staff->id))
                 ->get();
 
-            $classes->each(function ($class) {
-                $enrolledStudents = $this->getEnrolledStudentsForSubject($class->subject_id);
+            $subjectEnrollmentCache = [];
+            $classes->each(function ($class) use (&$subjectEnrollmentCache) {
+                if (!isset($subjectEnrollmentCache[$class->subject_id])) {
+                    $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id);
+                }
+                $enrolledStudents = $subjectEnrollmentCache[$class->subject_id];
                 $class->enrolled_students = $enrolledStudents;
                 $class->enrolled_count = $enrolledStudents->count();
 

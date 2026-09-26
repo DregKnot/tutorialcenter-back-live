@@ -312,15 +312,30 @@ Route::prefix('staffs')->group(function () {
             // Route::delete('/{supportTicket}',[SupportController::class, 'destroy']); // Delete a specific support ticket (if needed)
         });
 
+        // Blog Categories Management
+        Route::prefix('blog-categories')->group(function () {
+            Route::get('/', [BlogController::class, 'categories']);
+            Route::post('/', [BlogController::class, 'storeCategory']);
+            Route::put('/{id}', [BlogController::class, 'updateCategory']);
+            Route::post('/{id}', [BlogController::class, 'updateCategory']);
+            Route::delete('/{id}', [BlogController::class, 'destroyCategory']);
+        });
+
         // Blog Management (COO & Admin)
         Route::prefix('blogs')->group(function () {
+            Route::get('/categories', [BlogController::class, 'categories']);
+            Route::post('/categories', [BlogController::class, 'storeCategory']);
+            Route::put('/categories/{id}', [BlogController::class, 'updateCategory']);
+            Route::delete('/categories/{id}', [BlogController::class, 'destroyCategory']);
             Route::get('/', [BlogController::class, 'index']);
+            Route::post('/media/upload', [BlogController::class, 'uploadMedia']);
             Route::post('/', [BlogController::class, 'store']);
             Route::get('/{id}', [BlogController::class, 'show']);
             Route::post('/{id}', [BlogController::class, 'update']);
             Route::delete('/{id}', [BlogController::class, 'destroy']);
         });
         Route::get('/blog-categories', [BlogController::class, 'categories']);
+        Route::post('/blog-categories', [BlogController::class, 'storeCategory']);
     });
 });
 
@@ -366,7 +381,12 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     // Assessment Routes (read-only for admin)
     Route::prefix('assessments')->group(function () {
         Route::get('/', [AssessmentController::class, 'adminIndex']);
+        Route::get('/{assessment}', [AssessmentController::class, 'adminShow']);
         Route::get('/{assessment}/stats', [AssessmentController::class, 'adminStats']);
+        Route::get('/{assessment}/submissions', [AssessmentController::class, 'adminSubmissions']);
+        Route::get('/{assessment}/submissions/{submission}', [AssessmentController::class, 'adminSubmissionDetail']);
+        Route::post('/{assessment}/publish', [AssessmentController::class, 'publish']);
+        Route::delete('/{assessment}', [AssessmentController::class, 'destroy']);
     });
 
     Route::prefix('staffs')->group(function () {
@@ -572,7 +592,7 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
 /*
  * Tutor Only Protected Routes (enforced in controller)
  */
-Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:advisor'])->group(function () {
+Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:advisor,course_advisor,course advisor,admin,moderator,coo'])->group(function () {
     Route::get('/students/all', [StudentController::class, 'index']);
     // Enrollment Analytics & Subject Rosters
     Route::prefix('enrollments')->group(function () {
