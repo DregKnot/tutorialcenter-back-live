@@ -2,8 +2,10 @@
 namespace App\Services;
 
 use App\Models\Student;
+use App\Models\ClassSession;
 use App\Models\ExamAttempt;
 use App\Notifications\AssessmentNotification;
+use App\Notifications\LiveClassReminderNotification;
 use Illuminate\Support\Facades\DB;
 use App\Notifications\StudentActivityNotification;
 use Illuminate\Support\Facades\Notification;
@@ -147,6 +149,72 @@ class StudentNotificationService
                 }
             }
         });
+    }
+
+    public static function sendLiveClassReminder(ClassSession|int $session): void
+    {
+        if (is_int($session)) {
+            $session = ClassSession::with(['class.subject'])->find($session);
+        } else {
+            $session->loadMissing(['class.subject']);
+        }
+
+        if (! $session || ! $session->class || ! $session->class->subject_id || $session->status !== 'scheduled') {
+            return;
+        }
+
+        self::enrolledStudents($session->class->subject_id)
+            ->with(['guardians', 'advisors'])
+            ->chunkById(100, function ($students) use ($session) {
+                foreach ($students as $student) {
+                    try {
+                        DB::transaction(function () use ($student, $session) {
+                            $recipients = collect([$student])
+                                ->concat($student->guardians)
+                                ->concat($student->advisors)
+                                ->unique(fn ($r) => $r->getMorphClass().':'.$r->getKey());
+
+                            $notification = new LiveClassReminderNotification($session, $student);
+
+                            foreach ($recipients as $recipient) {
+                                $deliveryKey = hash('sha256', "class_reminder|{$session->id}|{$student->id}|".$recipient->getMorphClass().'|'.$recipient->getKey());
+
+                                $claimed = (bool) DB::table('student_activity_deliveries')->insertOrIgnore([
+                                    'delivery_key' => $deliveryKey,
+                                    'student_id' => $student->id,
+                                    'event_type' => 'live_class_reminder',
+                                    'recipient_type' => $recipient->getMorphClass(),
+                                    'recipient_id' => $recipient->getKey(),
+                                    'created_at' => now(),
+                                    'updated_at' => now(),
+                                ]);
+
+                                if (! $claimed) {
+                                    continue;
+                                }
+
+                                // In-app database notification
+                                $recipient->notifyNow($notification, ['database']);
+
+                                // Direct mail delivery after commit
+                                if (in_array('mail', $notification->via($recipient), true)) {
+                                    DB::afterCommit(function () use ($recipient, $notification) {
+                                        try {
+                                            $mailRecipient = clone $recipient;
+                                            $mailRecipient->email = trim((string) $mailRecipient->email);
+                                            $mailRecipient->notifyNow($notification, ['mail']);
+                                        } catch (\Throwable $exception) {
+                                            report($exception);
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                    } catch (\Throwable $exception) {
+                        report($exception);
+                    }
+                }
+            });
     }
 
     public static function subscriptionReminder(int $enrollmentId): void
