@@ -158,10 +158,16 @@ class GuardianController extends Controller
     public function resendEmailVerification(Request $request)
     {
         $request->validate([
-            'email' => 'required|email|exists:students,email',
+            'email' => 'required|email|exists:guardians,email',
         ]);
 
         $guardian = Guardian::where('email', $request->email)->first();
+
+        if (!$guardian) {
+            return response()->json([
+                'message' => 'Guardian not found.',
+            ], 404);
+        }
 
         if ($guardian->email_verified_at) {
             return response()->json([
@@ -307,7 +313,7 @@ class GuardianController extends Controller
     {
         try {
             $request->validate([
-                'tel' => 'required|string|exists:students,tel',
+                'tel' => 'required|string|exists:guardians,tel',
             ]);
         } catch (\Throwable $e) {
             return response()->json([

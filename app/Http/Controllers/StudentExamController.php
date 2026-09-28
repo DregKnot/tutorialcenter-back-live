@@ -54,9 +54,14 @@ class StudentExamController extends Controller
                 $examYear->id
             );
 
-        $attempt->update([
-            'timer' => (int) $request->input('timer', 50),
-        ]);
+        try {
+            $attempt->update([
+                'timer' => (int) $request->input('timer', 50),
+            ]);
+        } catch (\Throwable $e) {
+            // Column may not exist on live DB before migration runs
+            \Illuminate\Support\Facades\Log::warning('Could not save timer to exam_attempts: ' . $e->getMessage());
+        }
 
         $award = $this->onboardingAchievementService->firstPracticeStarted(
             $student,

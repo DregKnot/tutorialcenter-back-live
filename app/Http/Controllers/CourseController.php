@@ -387,6 +387,7 @@ class CourseController extends Controller
                         'id' => $enrollment->course->id ?? null,
                         'title' => $enrollment->course->title ?? null,
                         'description' => $enrollment->course->description ?? null,
+                        'banner' => $enrollment->course->banner ?? null,
                     ],
 
                     'subjects' => $enrollment->subjects->map(function ($sub) {
