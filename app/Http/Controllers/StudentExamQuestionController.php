@@ -51,7 +51,14 @@ class StudentExamQuestionController extends Controller
         }
 
         $remainingSeconds = (int) max(0, round(now()->diffInSeconds($expiresAt, false)));
-        $existingAnswers = $attempt->answers()->pluck('option_id', 'question_id')->toArray();
+        $existingAnswers = [];
+        try {
+            $existingAnswers = $attempt->answers()
+                ->pluck('past_question_option_id', 'past_question_id')
+                ->toArray();
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Could not pluck attempt answers: ' . $e->getMessage());
+        }
 
         $questions = $attempt
             ->examYear
