@@ -54,6 +54,10 @@ class StudentExamController extends Controller
                 $examYear->id
             );
 
+        $attempt->update([
+            'timer' => (int) $request->input('timer', 50),
+        ]);
+
         $award = $this->onboardingAchievementService->firstPracticeStarted(
             $student,
             $attempt

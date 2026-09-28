@@ -24,9 +24,35 @@ class StudentExamQuestionController extends Controller
         $this->examService = $examService;
     }
 
-    public function questions(
+        public function questions(
         ExamAttempt $attempt
     ) {
+        if ($attempt->status === ExamAttempt::ABANDONED || $attempt->status === ExamAttempt::COMPLETED) {
+            return response()->json([
+                'success' => false,
+                'message' => 'This exam session has ended or been marked as abandoned and cannot be rejoined.',
+            ], 403);
+        }
+
+        $allocatedMinutes = (int) ($attempt->timer ?: 50);
+        $expiresAt = $attempt->started_at
+            ? $attempt->started_at->copy()->addMinutes($allocatedMinutes)
+            : now()->addMinutes(50);
+
+        if (now()->greaterThanOrEqualTo($expiresAt)) {
+            $attempt->update([
+                'status' => ExamAttempt::ABANDONED,
+                'submitted_at' => now(),
+            ]);
+            return response()->json([
+                'success' => false,
+                'message' => 'The time limit for this exam has expired and the session has ended.',
+            ], 403);
+        }
+
+        $remainingSeconds = (int) max(0, round(now()->diffInSeconds($expiresAt, false)));
+        $existingAnswers = $attempt->answers()->pluck('option_id', 'question_id')->toArray();
+
         $questions = $attempt
             ->examYear
             ->pastQuestions()
@@ -37,7 +63,11 @@ class StudentExamQuestionController extends Controller
 
         return response()->json([
             'success' => true,
+            'attempt' => $attempt->loadMissing(['examYear.subject', 'examYear.examBody']),
             'questions' => $questions,
+            'answers' => $existingAnswers,
+            'remaining_seconds' => $remainingSeconds,
+            'timer' => $allocatedMinutes,
         ]);
     }
 
