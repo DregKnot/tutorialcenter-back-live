@@ -53,14 +53,12 @@ Route::get('/courses/{courseId}/subjects', [SubjectController::class, 'subjectsB
 Route::get('/courses/{courseId}/subjects/{department}', [SubjectController::class, 'subjectsByCourseAndDepartment']); // Public: List subjects by course and department
 Route::post('payments', [PaymentController::class, 'store']);
 Route::post('payments/verify-paystack', [PaymentController::class, 'verifyPaystackPayment']);
-Route::post('paystack/webhook', [PaystackWebhookController::class, 'handle']);
-
-// Direct bank transfer (student claims paid, admin confirms)
 Route::post('payments/bank-transfer', [PaymentController::class, 'initiateBankTransfer']);
 Route::post('payments/bank-transfer/{reference}/claim', [PaymentController::class, 'claimBankTransferPaid'])
-    ->middleware('throttle:20,1');
+    ->where('reference', '[A-Za-z0-9_-]+');
 Route::get('payments/bank-transfer/{reference}', [PaymentController::class, 'bankTransferStatus'])
-    ->middleware('throttle:60,1');
+    ->where('reference', '[A-Za-z0-9_-]+');
+Route::post('paystack/webhook', [PaystackWebhookController::class, 'handle']);
 
 // Blog Public Routes
 Route::get('/blogs', [BlogController::class, 'index']);
@@ -509,12 +507,11 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     // Payment Management
     Route::prefix('payments')->group(function () {
         Route::get('/all', [PaymentController::class, 'index']); // List all payments with filters
-        // Direct bank transfers awaiting admin confirmation
         Route::get('/bank-transfers', [PaymentController::class, 'adminBankTransfers']);
         Route::post('/{payment}/bank-transfer/approve', [PaymentController::class, 'approveBankTransfer'])
             ->middleware('staff.role:admin');
         Route::post('/{payment}/bank-transfer/resend-receipt', [PaymentController::class, 'resendBankTransferReceipt'])
-            ->middleware(['staff.role:admin', 'throttle:6,1']);
+            ->middleware('staff.role:admin');
         Route::post('/{payment}/bank-transfer/reject', [PaymentController::class, 'rejectBankTransfer'])
             ->middleware('staff.role:admin');
         Route::get('/registration-recovery/search', [PaymentController::class, 'searchRegistrationRecovery']);
@@ -619,34 +616,6 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
     Route::prefix('assessments')->group(function () {
         Route::get('/', [AssessmentController::class, 'advisorIndex']);
         Route::get('/{assessment}/stats', [AssessmentController::class, 'advisorStats']);
-    });
-
-    // Exam Section (read-only for advisor — mirrors the admin exam paths, GET only)
-    Route::prefix('exam-data')->group(function () {
-        Route::get('/bodies', [ExamYearController::class, 'examBodies']);
-        Route::get('/subjects', [ExamYearController::class, 'subjects']);
-        Route::get('/years', [ExamYearController::class, 'years']);
-        Route::get('/questions', [ExamYearController::class, 'questions']);
-    });
-
-    Route::prefix('exam-bodies')->group(function () {
-        Route::get('/all', [ExamBodyController::class, 'index']);
-        Route::get('/{examBody}', [ExamBodyController::class, 'show']);
-    });
-
-    Route::prefix('exam-years')->group(function () {
-        Route::get('/all', [ExamYearController::class, 'index']);
-        Route::get('/{id}', [ExamYearController::class, 'show']);
-    });
-
-    Route::prefix('past-question-groups')->group(function () {
-        Route::get('/all', [PastQuestionGroupController::class, 'index']);
-        Route::get('/{id}', [PastQuestionGroupController::class, 'show']);
-    });
-
-    Route::prefix('past-questions')->group(function () {
-        Route::get('/all', [PastQuestionController::class, 'index']);
-        Route::get('/{pastQuestion}', [PastQuestionController::class, 'show']);
     });
 
     // Guardians Management
