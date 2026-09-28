@@ -22,11 +22,13 @@ class ExamAttempt extends Model
         'started_at',
         'submitted_at',
         'status',
+        'timer',
     ];
 
     protected $casts = [
         'id' => 'integer',
         'student_id' => 'integer',
+        'timer' => 'integer',
         'exam_year_id' => 'integer',
         'started_at' => 'datetime',
         'submitted_at' => 'datetime',

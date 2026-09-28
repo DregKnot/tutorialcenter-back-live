@@ -163,6 +163,7 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
         Route::post('/{attempt}/activity/end', [ExamActivityController::class, 'end']);
         Route::post('/{attempt}/answer', [StudentExamQuestionController::class, 'submitAnswer']); // Save/update answer
         Route::post('/{attempt}/submit', [StudentExamResultController::class, 'submit']); // Submit and finish exam
+        Route::post('/{attempt}/abandon', [StudentExamResultController::class, 'abandon']); // Mark exam as abandoned
         Route::get('/results/history', [StudentExamResultController::class, 'history']); // Student attempt history
         Route::get('/{attempt}/review', [StudentExamResultController::class, 'review']); // Review attempt with answers and explanations
     });
@@ -568,7 +569,9 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
 /*
  * Tutor Only Protected Routes (enforced in controller)
  */
-Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tutor'])->group(function () {
+Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tutor,admin,moderator,teacher,advisor,course_advisor,coo'])->group(function () {
+    Route::get('/dashboard/overview', [\App\Http\Controllers\TutorDashboardController::class, 'overview']);
+    Route::post('/classes/sessions/{classSession}/conclude', [\App\Http\Controllers\TutorDashboardController::class, 'concludeSession']);
     Route::prefix('classes')->group(function () {
         Route::get('/schedule', [ClassesController::class, 'tutorClassesSchedule']); // Get tutor schedule with attendance status
     });

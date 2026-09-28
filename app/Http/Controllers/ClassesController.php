@@ -523,6 +523,9 @@ class ClassesController extends Controller
         try {
             $user = $request->user();
             $isStaff = $user instanceof Staff;
+            if ($isStaff && strtolower(trim($user->role ?? '')) === 'tutor') {
+                return response()->json(['success' => false, 'message' => 'Unauthorized. Tutors do not have access to the Video Vault.'], 403);
+            }
             $studentId = $user instanceof Student ? $user->id : null;
 
             // Base query for class sessions that are past and have a recording link
@@ -802,6 +805,10 @@ class ClassesController extends Controller
      */
     public function getSessionViewers(Request $request, ClassSession $classSession): JsonResponse
     {
+        $currentUser = $request->user();
+        if ($currentUser instanceof Staff && strtolower(trim($currentUser->role ?? '')) === 'tutor') {
+            return response()->json(['success' => false, 'message' => 'Unauthorized. Tutors do not have access to Video Vault session viewers.'], 403);
+        }
         try {
             $classSession->load([
                 'views.student' => function ($sq) {
