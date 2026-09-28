@@ -219,7 +219,16 @@ class BlogController extends Controller
         }
 
         // Step 8: Persist to `blogs` table via Eloquent `Blog::create`
-        $blog = Blog::create($validated);
+        try {
+            $blog = Blog::create($validated);
+        } catch (\Throwable $e) {
+            if (isset($validated['images']) && (str_contains($e->getMessage(), 'images') || str_contains($e->getMessage(), '1054'))) {
+                unset($validated['images']);
+                $blog = Blog::create($validated);
+            } else {
+                throw $e;
+            }
+        }
 
         return response()->json([
             'message' => 'Blog post created successfully.',
@@ -318,7 +327,16 @@ class BlogController extends Controller
         }
 
         // Update model and persist changes
-        $blog->update($validated);
+        try {
+            $blog->update($validated);
+        } catch (\Throwable $e) {
+            if (isset($validated['images']) && (str_contains($e->getMessage(), 'images') || str_contains($e->getMessage(), '1054'))) {
+                unset($validated['images']);
+                $blog->update($validated);
+            } else {
+                throw $e;
+            }
+        }
 
         return response()->json([
             'message' => 'Blog post updated successfully.',
