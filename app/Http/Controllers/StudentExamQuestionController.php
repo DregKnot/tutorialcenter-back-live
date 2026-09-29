@@ -24,7 +24,7 @@ class StudentExamQuestionController extends Controller
         $this->examService = $examService;
     }
 
-        public function questions(
+            public function questions(
         ExamAttempt $attempt
     ) {
         if ($attempt->status === ExamAttempt::ABANDONED || $attempt->status === ExamAttempt::COMPLETED) {
@@ -57,19 +57,61 @@ class StudentExamQuestionController extends Controller
                 ->pluck('past_question_option_id', 'past_question_id')
                 ->toArray();
         } catch (\Throwable $e) {
-            \Illuminate\Support\Facades\Log::warning('Could not pluck attempt answers: ' . $e->getMessage());
+            \Illuminate\SupportFacades\Log::warning('Could not pluck attempt answers: ' . $e->getMessage());
         }
 
-        $questions = $attempt
-            ->examYear
-            ->pastQuestions()
-            ->with([
-                'options:id,past_question_id,label,option_text', 'group',
-            ])
-            ->get();
+        $subjects = [];
+        if ($attempt->is_jamb && is_array($attempt->exam_year_ids) && count($attempt->exam_year_ids) > 0) {
+            $questions = PastQuestion::whereIn('exam_year_id', $attempt->exam_year_ids)
+                ->with([
+                    'options:id,past_question_id,label,option_text',
+                    'group',
+                    'examYear.subject',
+                ])
+                ->orderBy('question_number', 'asc')
+                ->orderBy('id', 'asc')
+                ->get()
+                ->sortBy(function ($q) use ($attempt) {
+                    $idx = array_search($q->exam_year_id, $attempt->exam_year_ids);
+                    return $idx === false ? 9999 : $idx;
+                })
+                ->values();
+
+            $examYears = \App\Models\ExamYear::whereIn('id', $attempt->exam_year_ids)
+                ->with('subject')
+                ->get()
+                ->keyBy('id');
+
+            $startIndex = 0;
+            foreach ($attempt->exam_year_ids as $yearId) {
+                $ey = $examYears->get($yearId);
+                $subCount = $questions->where('exam_year_id', $yearId)->count();
+                $subjects[] = [
+                    'exam_year_id' => $yearId,
+                    'subject_id' => $ey?->subject_id,
+                    'name' => $ey?->subject?->name ?? "Subject {$yearId}",
+                    'total_questions' => $subCount,
+                    'start_index' => $startIndex,
+                    'end_index' => max($startIndex, $startIndex + $subCount - 1),
+                ];
+                $startIndex += $subCount;
+            }
+        } else {
+            $questions = $attempt
+                ->examYear
+                ->pastQuestions()
+                ->with([
+                    'options:id,past_question_id,label,option_text', 'group',
+                ])
+                ->get();
+        }
 
         return response()->json([
             'success' => true,
+            'is_jamb' => (bool) $attempt->is_jamb,
+            'subjects' => $subjects,
+            'subject_scores' => $attempt->subject_scores,
+            'jamb_score' => $attempt->jamb_score,
             'attempt' => $attempt->loadMissing(['examYear.subject', 'examYear.examBody']),
             'questions' => $questions,
             'answers' => $existingAnswers,

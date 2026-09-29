@@ -40,6 +40,7 @@ Schedule::command('achievements:evaluate-special-events')
 Schedule::command('attendance:mark-abandoned')->everyMinute()->withoutOverlapping(5);
 
 Schedule::command('assessments:send-deadline-reminders')->everyMinute()->withoutOverlapping(30);
+Schedule::command('classes:send-live-reminders')->everyMinute()->withoutOverlapping(30);
 Schedule::command('subscriptions:send-expiry-reminders')->hourly()->withoutOverlapping(60);
 Schedule::command('users:send-birthday-messages')
     ->dailyAt('08:00')

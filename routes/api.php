@@ -151,6 +151,7 @@ Route::prefix('students')->middleware('auth:sanctum')->group(function () {
     */
     Route::prefix('exams')->group(function () {
         Route::get('/available', [StudentExamController::class, 'available']); // List exams student can access
+        Route::post('/start-jamb', [StudentExamController::class, 'startJamb']);
         Route::post('/start/{examYear}', [StudentExamController::class, 'start']); // Start an exam
         Route::get('/{attempt}/questions', [StudentExamQuestionController::class, 'questions']); // Get questions for an attempt
         Route::post('/{attempt}/questions/{question}/view', [ExamInteractionController::class, 'viewed']);
