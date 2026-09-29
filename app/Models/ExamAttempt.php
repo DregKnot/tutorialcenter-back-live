@@ -23,12 +23,20 @@ class ExamAttempt extends Model
         'submitted_at',
         'status',
         'timer',
+        'is_jamb',
+        'exam_year_ids',
+        'subject_scores',
+        'jamb_score',
     ];
 
     protected $casts = [
         'id' => 'integer',
         'student_id' => 'integer',
         'timer' => 'integer',
+        'is_jamb' => 'boolean',
+        'exam_year_ids' => 'array',
+        'subject_scores' => 'array',
+        'jamb_score' => 'integer',
         'exam_year_id' => 'integer',
         'started_at' => 'datetime',
         'submitted_at' => 'datetime',

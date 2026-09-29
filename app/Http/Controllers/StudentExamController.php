@@ -97,4 +97,35 @@ class StudentExamController extends Controller
             'awarded_at' => $award->awarded_at,
         ];
     }
+
+    public function startJamb(Request $request)
+    {
+        $request->validate([
+            'exam_year_ids' => 'required|array|size:4',
+            'exam_year_ids.*' => 'required|exists:exam_years,id',
+            'timer' => 'nullable|integer|min:1',
+        ]);
+
+        $student = $request->user();
+        $examYearIds = $request->input('exam_year_ids');
+        $timer = (int) $request->input('timer', 120);
+
+        $attempt = $this->examService->startJambExam($student, $examYearIds, $timer);
+
+        $award = $this->onboardingAchievementService->firstPracticeStarted(
+            $student,
+            $attempt
+        );
+
+        if (! StudentNotificationService::enabled()) {
+            StudentNotificationService::notify($student, 'Started JAMB Mock Exam', ["You have started a JAMB practice session."]);
+        }
+
+        return response()->json([
+            'success' => true,
+            'attempt' => $attempt,
+            'new_achievement' => $this->formatAchievement($award),
+        ]);
+    }
+
 }
