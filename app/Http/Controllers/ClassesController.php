@@ -1356,7 +1356,10 @@ class ClassesController extends Controller
                     'session_date' => $session->session_date ? \Carbon\Carbon::parse($session->session_date)->toDateString() : null,
                     'starts_at' => $session->starts_at ? substr($session->starts_at, 0, 5) : '10:00',
                     'ends_at' => $session->ends_at ? substr($session->ends_at, 0, 5) : '11:30',
-                    'class_link' => $session->class_link ?: ($class ? ($class->zoom_join_url ?: $class->class_link) : null),
+                    'class_link' => $class && $class->zoom_join_url ? $class->zoom_join_url : ($session->class_link ?: ($class ? $class->class_link : null)),
+                    'zoom_meeting_id' => $class ? $class->zoom_meeting_id : null,
+                    'zoom_meeting_password' => $class ? $class->zoom_meeting_password : null,
+                    'zoom_join_url' => $class ? $class->zoom_join_url : null,
                     'recording_link' => $session->recording_link,
                     'tutor' => $tutorData,
                     'tutor_name' => $tutorName,
@@ -1519,9 +1522,12 @@ class ClassesController extends Controller
                     $class->enrolled_count = $enrolled->count();
                 }
 
-                if ($class->zoom_start_url && $isAdminOrStaff) {
-                    $session->class_link = $class->zoom_start_url;
-                }
+                // Always prefer the encrypted join_url (which includes ?pwd=...) for joining sessions
+                $joinUrl = ($class->zoom_join_url) ?: ($session->class_link) ?: ($class->class_link);
+                $session->class_link = $joinUrl;
+                $session->zoom_meeting_id = $class->zoom_meeting_id;
+                $session->zoom_meeting_password = $class->zoom_meeting_password;
+                $session->zoom_join_url = $class->zoom_join_url;
             }
             return $session;
         };
