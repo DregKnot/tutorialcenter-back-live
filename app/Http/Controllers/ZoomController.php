@@ -197,6 +197,8 @@ class ZoomController extends Controller
                 'signature' => $signature,
                 'meeting_number' => $class->zoom_meeting_id,
                 'password' => $class->zoom_meeting_password,
+                'join_url' => $class->zoom_join_url ?: $rawMeetingLink,
+                'zoom_join_url' => $class->zoom_join_url ?: $rawMeetingLink,
                 'sdk_key' => config('services.zoom.sdk_key'),
                 'role' => $role,
                 'user_name' => $user->firstname . ' ' . $user->surname,
