@@ -25,9 +25,37 @@ use App\Services\StaffNotificationService;
 class ClassesController extends Controller
 {
 
-        private function getEnrolledStudentsForSubject($subjectId)
+        private function getEnrolledStudentsForSubject($subjectId, $classTitle = null)
     {
         if (!$subjectId) return collect([]);
+        $isOLevel = $classTitle && (str_starts_with($classTitle, 'O-Level') || str_starts_with($classTitle, 'O-LEVEL'));
+
+        if ($isOLevel) {
+            $subject = \App\Models\Subject::find($subjectId);
+            $subjectName = $subject ? explode(' ', strtolower(trim($subject->name)))[0] : null;
+
+            return \App\Models\Student::query()
+                ->whereHas('courseEnrollments', function ($cq) {
+                    $cq->where('status', 'active')->whereIn('course_id', [2, 3, 4]);
+                })
+                ->whereHas('subjectEnrollments', function ($query) use ($subjectId, $subjectName) {
+                    $query->whereNull('deleted_at')
+                          ->whereHas('enrollment', function ($q) {
+                              $q->where('status', 'active')
+                                ->where(function ($subQ) {
+                                    $subQ->whereNull('end_date')
+                                         ->orWhere('end_date', '>=', now());
+                                });
+                          });
+                    if ($subjectName) {
+                        $query->whereHas('subject', function ($sq) use ($subjectName) {
+                            $sq->where('name', 'LIKE', '%' . $subjectName . '%');
+                        });
+                    }
+                })
+                ->get(['id', 'firstname', 'surname', 'email', 'tel', 'profile_picture']);
+        }
+
         return \App\Models\Student::query()
             ->whereHas('subjectEnrollments', function ($query) use ($subjectId) {
                 $query->where('subject_id', $subjectId)
@@ -50,6 +78,9 @@ class ClassesController extends Controller
     {
         $validator = Validator::make($request->all(), [
             'subject_id' => 'required|exists:subjects,id',
+            'is_o_levels' => 'nullable|boolean',
+            'all_subject_ids' => 'nullable|array',
+            'all_subject_ids.*' => 'exists:subjects,id',
             'title' => 'nullable|string|max:255',
             'description' => 'nullable|string',
             'status' => 'nullable|in:active,inactive',
@@ -84,6 +115,22 @@ class ClassesController extends Controller
             // Serialize creation/assignment retries for the same subject.
             Subject::whereKey($request->subject_id)->lockForUpdate()->firstOrFail();
             $newStaffIds = [];
+
+            // If O-Levels class, sync subject(s) to WAEC (2), NECO (3), and GCE (4)
+            $isOLevelsClass = $request->boolean('is_o_levels') || 
+                              str_starts_with(strtolower((string) $request->input('title', '')), 'o-level');
+            if ($isOLevelsClass && !empty($request->subject_id)) {
+                $targetSubjectIds = $request->input('all_subject_ids', [$request->subject_id]);
+                if (!is_array($targetSubjectIds) || empty($targetSubjectIds)) {
+                    $targetSubjectIds = [$request->subject_id];
+                }
+                foreach ($targetSubjectIds as $sid) {
+                    $sObj = Subject::find($sid);
+                    if ($sObj) {
+                        $sObj->courses()->syncWithoutDetaching([2, 3, 4]);
+                    }
+                }
+            }
             /*
             |--------------------------------------------------------------------------
             | 1. Generate Class Title If Missing
@@ -225,18 +272,31 @@ class ClassesController extends Controller
 
                 $dayOfWeek = strtolower(trim($scheduleData['day_of_week']));
 
-                $schedule = ClassSchedule::firstOrCreate(
-                    [
+                $schedule = ClassSchedule::withTrashed()
+                    ->where('class_id', $class->id)
+                    ->where('day_of_week', $dayOfWeek)
+                    ->where('start_time', $startTime)
+                    ->first();
+
+                if (!$schedule) {
+                    $schedule = ClassSchedule::create([
                         'class_id' => $class->id,
                         'day_of_week' => $dayOfWeek,
-                        'start_time' => $startTime
-                    ],
-                    [
+                        'start_time' => $startTime,
                         'end_time' => $endTime,
                         'start_date' => $startDate->toDateString(),
                         'end_date' => $endDate->toDateString()
-                    ]
-                );
+                    ]);
+                } else {
+                    if ($schedule->trashed()) {
+                        $schedule->restore();
+                    }
+                    $schedule->update([
+                        'end_time' => $endTime,
+                        'start_date' => $startDate->toDateString(),
+                        'end_date' => $endDate->toDateString()
+                    ]);
+                }
 
                 $current = $startDate->copy();
                 if (strtolower($current->format('l')) !== $dayOfWeek) {
@@ -247,22 +307,34 @@ class ClassesController extends Controller
                     $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
 
                     if (!$isHoliday) {
-                        $session = ClassSession::firstOrCreate(
-                            [
+                        $sessionDateStr = $current->toDateString();
+                        $session = ClassSession::withTrashed()
+                            ->where('class_id', $class->id)
+                            ->where('class_schedule_id', $schedule->id)
+                            ->whereDate('session_date', $sessionDateStr)
+                            ->first();
+
+                        if (!$session) {
+                            $session = ClassSession::create([
                                 'class_id' => $class->id,
                                 'class_schedule_id' => $schedule->id,
-                                'session_date' => $current->toDateString()
-                            ],
-                            [
+                                'session_date' => $sessionDateStr,
                                 'starts_at' => $startTime,
                                 'ends_at' => $endTime,
                                 'class_link' => $classLink,
                                 'status' => 'scheduled'
-                            ]
-                        );
-
-                        if ($session->wasRecentlyCreated) {
+                            ]);
                             $sessionsCreated++;
+                        } else {
+                            if ($session->trashed()) {
+                                $session->restore();
+                            }
+                            $session->update([
+                                'starts_at' => $startTime,
+                                'ends_at' => $endTime,
+                                'class_link' => $classLink,
+                                'status' => 'scheduled'
+                            ]);
                         }
                     }
 
@@ -320,7 +392,7 @@ class ClassesController extends Controller
             $subjectEnrollmentCache = [];
             $classes->each(function ($class) use (&$subjectEnrollmentCache) {
                 if (!isset($subjectEnrollmentCache[$class->subject_id])) {
-                    $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id);
+                    $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id, $class->title);
                 }
                 $enrolledStudents = $subjectEnrollmentCache[$class->subject_id];
                 $class->enrolled_students = $enrolledStudents;
@@ -991,19 +1063,34 @@ class ClassesController extends Controller
                     while ($current->lte($endDate)) {
                         $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
                         if (!$isHoliday) {
-                            ClassSession::firstOrCreate(
-                                [
+                            $sessionDateStr = $current->toDateString();
+                            $session = ClassSession::withTrashed()
+                                ->where('class_id', $class->id)
+                                ->where('class_schedule_id', $schedule->id)
+                                ->whereDate('session_date', $sessionDateStr)
+                                ->first();
+
+                            if (!$session) {
+                                ClassSession::create([
                                     'class_id' => $class->id,
                                     'class_schedule_id' => $schedule->id,
-                                    'session_date' => $current->toDateString()
-                                ],
-                                [
+                                    'session_date' => $sessionDateStr,
                                     'starts_at' => $startTime,
                                     'ends_at' => $endTime,
                                     'class_link' => $classLink,
                                     'status' => 'scheduled'
-                                ]
-                            );
+                                ]);
+                            } else {
+                                if ($session->trashed()) {
+                                    $session->restore();
+                                }
+                                $session->update([
+                                    'starts_at' => $startTime,
+                                    'ends_at' => $endTime,
+                                    'class_link' => $classLink,
+                                    'status' => 'scheduled'
+                                ]);
+                            }
                         }
                         $current->addWeek();
                     }
@@ -1096,7 +1183,7 @@ class ClassesController extends Controller
             $subjectEnrollmentCache = [];
             $classes->each(function ($class) use (&$subjectEnrollmentCache) {
                 if (!isset($subjectEnrollmentCache[$class->subject_id])) {
-                    $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id);
+                    $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id, $class->title);
                 }
                 $enrolledStudents = $subjectEnrollmentCache[$class->subject_id];
                 $class->enrolled_students = $enrolledStudents;
@@ -1261,6 +1348,12 @@ class ClassesController extends Controller
                 }
             }
 
+            // Check if student has an active enrollment in any O-Level exam (WAEC: 2, NECO: 3, GCE: 4)
+            $isOLevelStudent = $student->courseEnrollments()
+                ->where('status', 'active')
+                ->whereIn('course_id', [2, 3, 4])
+                ->exists();
+
             // 2. Base Query for Class Sessions
             $sessionQuery = ClassSession::with([
                 'class.subject',
@@ -1269,11 +1362,17 @@ class ClassesController extends Controller
                     $q->where('student_id', $student->id);
                 }
             ])
-            ->whereHas('class', function ($q) use ($subjectIds) {
-                if ($subjectIds->isNotEmpty()) {
-                    $q->whereIn('subject_id', $subjectIds);
-                }
+            ->whereHas('class', function ($q) use ($subjectIds, $isOLevelStudent) {
                 $q->where('status', 'active');
+                $q->where(function ($subQ) use ($subjectIds, $isOLevelStudent) {
+                    if ($subjectIds->isNotEmpty()) {
+                        $subQ->whereIn('subject_id', $subjectIds);
+                    }
+                    if ($isOLevelStudent) {
+                        $subQ->orWhere('title', 'LIKE', 'O-Level%')
+                             ->orWhere('title', 'LIKE', 'O-LEVEL%');
+                    }
+                });
             });
 
             // If subjectIds still empty, fallback to active classes so calendar isn't blank
@@ -1515,7 +1614,7 @@ class ClassesController extends Controller
             $class = $session->class;
             if ($class) {
                 if ($class->subject_id) {
-                    $enrolled = $this->getEnrolledStudentsForSubject($class->subject_id);
+                    $enrolled = $this->getEnrolledStudentsForSubject($class->subject_id, $class->title);
                     $session->enrolled_students = $enrolled;
                     $session->enrolled_count = $enrolled->count();
                     $class->enrolled_students = $enrolled;
