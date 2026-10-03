@@ -6,6 +6,8 @@ use App\Models\CoursesEnrollment;
 use App\Models\Payment;
 use App\Models\Staff;
 use App\Models\Student;
+use App\Models\Subject;
+use App\Models\SubjectsEnrollment;
 use App\Services\AdminNotificationService;
 use App\Services\BankTransferNotificationService;
 use App\Services\ExamPreparationAchievementService;
@@ -489,6 +491,9 @@ class PaymentController extends Controller
         $validated = $request->validate([
             'student_id' => 'required|exists:students,id',
             'course_enrollment_id' => 'required|exists:courses_enrollments,id',
+            'subjects' => 'nullable|array',
+            'subjects.*' => 'integer',
+            'exam_track' => 'nullable|string|max:50',
         ]);
 
         $enrollment = CoursesEnrollment::withTrashed()->find($validated['course_enrollment_id']);
@@ -524,6 +529,19 @@ class PaymentController extends Controller
 
         if ($payment) {
             $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
+            if (!empty($validated['subjects']) || !empty($validated['exam_track'])) {
+                $meta = $payment->meta ?? [];
+                $bankTransfer = $meta['bank_transfer'] ?? [];
+                if (!empty($validated['subjects'])) {
+                    $bankTransfer['subjects'] = $validated['subjects'];
+                }
+                if (!empty($validated['exam_track'])) {
+                    $bankTransfer['exam_track'] = $validated['exam_track'];
+                }
+                $payment->update([
+                    'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
+                ]);
+            }
         } else {
             $accessToken = Str::random(48);
 
@@ -541,6 +559,8 @@ class PaymentController extends Controller
                     'bank_transfer' => [
                         'access_token' => $accessToken,
                         'initiated_at' => now()->toIso8601String(),
+                        'subjects' => $validated['subjects'] ?? [],
+                        'exam_track' => $validated['exam_track'] ?? null,
                     ],
                 ],
             ]);
@@ -613,13 +633,16 @@ class PaymentController extends Controller
 
             app(BankTransferNotificationService::class)->send($payment, 'claimed');
 
+            $examTrack = $bankTransfer['exam_track'] ?? null;
+            $trackLabel = $examTrack ? " for {$examTrack}" : "";
             AdminNotificationService::notify(
                 'bank_transfer_payment_claimed',
-                "Student {$payment->student_id} marked {$payment->gateway_reference} (NGN {$payment->amount}) as paid.",
+                "Student {$payment->student_id} marked {$payment->gateway_reference} (NGN {$payment->amount}) as paid{$trackLabel}.",
                 [
                     'payment_id' => $payment->id,
                     'reference' => $payment->gateway_reference,
                     'student_id' => $payment->student_id,
+                    'exam_track' => $examTrack,
                 ]
             );
 
@@ -713,7 +736,10 @@ class PaymentController extends Controller
     public function approveBankTransfer(Request $request, Payment $payment)
     {
         $validated = $request->validate([
-            'confirmed_amount' => 'required|numeric|min:0.01',
+            'confirmed_amount' => 'nullable|numeric|min:0',
+            'is_waived' => 'nullable|boolean',
+            'waiver_type' => 'nullable|string|in:scholarship,test_account,admin_waiver',
+            'waiver_reason' => 'nullable|string|max:1000',
             'bank_reference' => 'nullable|string|max:255',
             'reason' => 'nullable|string|max:1000',
             'paid_at' => 'nullable|date',
@@ -757,12 +783,17 @@ class PaymentController extends Controller
                     ));
                 }
 
-                if (abs((float) $locked->amount - (float) $validated['confirmed_amount']) > 0.01) {
-                    abort(422, sprintf(
-                        'Confirmed amount does not match. Expected %.2f, got %.2f.',
-                        (float) $locked->amount,
-                        (float) $validated['confirmed_amount']
-                    ));
+                $isWaived = (bool) ($validated['is_waived'] ?? false);
+                $confirmedAmount = $isWaived ? 0.00 : (float) ($validated['confirmed_amount'] ?? 0);
+
+                if (!$isWaived) {
+                    if (!isset($validated['confirmed_amount']) || abs((float) $locked->amount - (float) $validated['confirmed_amount']) > 0.01) {
+                        abort(422, sprintf(
+                            'Confirmed amount does not match. Expected %.2f, got %.2f.',
+                            (float) $locked->amount,
+                            (float) ($validated['confirmed_amount'] ?? 0)
+                        ));
+                    }
                 }
 
                 $meta = $locked->meta ?? [];
@@ -782,8 +813,11 @@ class PaymentController extends Controller
                             'review' => [
                                 'action' => 'approved',
                                 'by_staff_id' => $request->user()->id,
-                                'reason' => $validated['reason'] ?? null,
-                                'confirmed_amount' => (float) $validated['confirmed_amount'],
+                                'reason' => $validated['reason'] ?? $validated['waiver_reason'] ?? null,
+                                'confirmed_amount' => $confirmedAmount,
+                                'is_waived' => $isWaived,
+                                'waiver_type' => $validated['waiver_type'] ?? null,
+                                'waiver_reason' => $validated['waiver_reason'] ?? null,
                                 'bank_reference' => $validated['bank_reference'] ?? null,
                                 'at' => now()->toIso8601String(),
                             ],
@@ -792,6 +826,59 @@ class PaymentController extends Controller
                 ]);
 
                 $enrollment->update(['status' => 'active']);
+
+                // Activate/create SubjectsEnrollment rows
+                $savedSubjectIds = $bankTransfer['subjects'] ?? [];
+                if (!empty($savedSubjectIds) && is_array($savedSubjectIds)) {
+                    foreach ($savedSubjectIds as $subjectItem) {
+                        $subId = 0;
+                        if (is_numeric($subjectItem)) {
+                            $subId = (int) $subjectItem;
+                        } elseif (is_array($subjectItem) && !empty($subjectItem['id'])) {
+                            $subId = (int) $subjectItem['id'];
+                        }
+
+                        if ($subId > 0 && Subject::where('id', $subId)->exists()) {
+                            $subEnrollment = SubjectsEnrollment::withTrashed()
+                                ->where('course_enrollment_id', $enrollment->id)
+                                ->where('student_id', $enrollment->student_id)
+                                ->where('subject_id', $subId)
+                                ->first();
+
+                            if ($subEnrollment) {
+                                if ($subEnrollment->trashed()) {
+                                    $subEnrollment->restore();
+                                }
+                            } else {
+                                SubjectsEnrollment::create([
+                                    'course_enrollment_id' => $enrollment->id,
+                                    'student_id' => $enrollment->student_id,
+                                    'subject_id' => $subId,
+                                ]);
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback: restore any previously deleted enrollments
+                    $restoredCount = SubjectsEnrollment::withTrashed()
+                        ->where('course_enrollment_id', $enrollment->id)
+                        ->where('student_id', $enrollment->student_id)
+                        ->restore();
+
+                    // If student still has no subjects, enroll in all active subjects for this course (or O-Levels/Course 4)
+                    if ($restoredCount === 0 && !SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->exists()) {
+                        $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
+                        $defaultSubjects = Subject::where('course_id', $queryCourseId)->where('status', 'active')->get();
+                        foreach ($defaultSubjects as $defSub) {
+                            SubjectsEnrollment::firstOrCreate([
+                                'course_enrollment_id' => $enrollment->id,
+                                'student_id' => $enrollment->student_id,
+                                'subject_id' => $defSub->id,
+                            ]);
+                        }
+                    }
+                }
+
                 app(BankTransferNotificationService::class)->send($locked, 'approved');
 
                 return ['already' => false, 'payment' => $locked->fresh(['student', 'enrollment.course'])];
@@ -833,6 +920,7 @@ class PaymentController extends Controller
     {
         $validated = $request->validate([
             'reason' => 'required|string|min:5|max:1000',
+            'purge_unverified_account' => 'nullable|boolean',
         ]);
 
         if ($payment->payment_method !== 'bank_transfer' || $payment->gateway !== 'bank') {
@@ -868,12 +956,23 @@ class PaymentController extends Controller
                 ]),
             ]);
 
+            $purgeRequested = (bool) ($validated['purge_unverified_account'] ?? false);
+            if ($purgeRequested) {
+                $hasSettled = Payment::where('student_id', $payment->student_id)->where('status', 'successful')->exists();
+                if (!$hasSettled) {
+                    CoursesEnrollment::where('id', $payment->course_enrollment_id)->delete();
+                    Student::where('id', $payment->student_id)->delete();
+                }
+            }
+
             app(BankTransferNotificationService::class)->send($payment, 'rejected');
             $payment->loadMissing('student');
-            StudentNotificationService::notify($payment->student, 'bank transfer rejected', [
-                'reference' => $payment->gateway_reference,
-                'reason' => $validated['reason'],
-            ]);
+            if ($payment->student) {
+                StudentNotificationService::notify($payment->student, 'bank transfer rejected', [
+                    'reference' => $payment->gateway_reference,
+                    'reason' => $validated['reason'],
+                ]);
+            }
 
             return response()->json([
                 'message' => 'Bank transfer rejected. The student can upload a new receipt.',
