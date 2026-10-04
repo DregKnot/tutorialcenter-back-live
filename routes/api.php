@@ -405,7 +405,9 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     Route::prefix('courses')->group(function () {
         Route::post('/', [CourseController::class, 'store']);
         Route::put('/update/{id}', [CourseController::class, 'update']);
+        Route::put('/{id}', [CourseController::class, 'update']);
         Route::delete('/destroy/{id}', [CourseController::class, 'destroy']);
+        Route::delete('/{id}', [CourseController::class, 'destroy']);
         Route::post('/restore/{id}', [CourseController::class, 'restore']);
         Route::get('/disenrollments', [CourseController::class, 'getDisenrolledCourses']); // List all course disenrollments
     });
@@ -415,7 +417,9 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::get('/all', [SubjectController::class, 'allSubjects']); // View all subjects (including inactive)
         Route::post('/', [SubjectController::class, 'store']); // Create new subject
         Route::put('/update/{id}', [SubjectController::class, 'update']); // Update subject
+        Route::put('/{id}', [SubjectController::class, 'update']);
         Route::delete('/destroy/{id}', [SubjectController::class, 'destroy']); // Soft delete subject
+        Route::delete('/{id}', [SubjectController::class, 'destroy']);
         Route::post('/restore/{id}', [SubjectController::class, 'restore']); // Restore soft-deleted subject
     });
 
