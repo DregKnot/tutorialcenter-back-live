@@ -9,6 +9,7 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('users:delete-unverified')->hourly();
+Schedule::command('enrollments:expire-pending')->hourly()->withoutOverlapping(30);
 
 Schedule::command('exam:mark-abandoned')->everyTenMinutes();
 

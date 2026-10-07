@@ -306,11 +306,14 @@ class CourseController extends Controller
                 }
 
                 $existingEnrollment->update([
+                    'enrollment_code' => $existingEnrollment->enrollment_code ?: CoursesEnrollment::generateTemporaryCode(),
                     'start_date' => now(),
                     'end_date' => now()->addMonths($months),
+                    'expires_at' => now()->addHours(48),
                     'billing_cycle' => $request->billing_cycle,
                     'cost' => $cost,
                     'status' => 'pending',
+                    'termination_reason' => null,
                 ]);
 
                 DB::commit();
@@ -321,11 +324,14 @@ class CourseController extends Controller
                 ], 200);
             }
 
+            $tempCode = CoursesEnrollment::generateTemporaryCode();
             $enrollment = CoursesEnrollment::create([
+                'enrollment_code' => $tempCode,
                 'course_id' => $course->id,
                 'student_id' => $student->id,
                 'start_date' => now(),
                 'end_date' => now()->addMonths($months),
+                'expires_at' => now()->addHours(48),
                 'billing_cycle' => $request->billing_cycle,
                 'cost' => $cost,
                 'status' => 'pending',
@@ -402,10 +408,44 @@ class CourseController extends Controller
                 ];
             });
 
+            // Check if student has a pending enrollment awaiting approval
+            $pendingEnrollment = CoursesEnrollment::with(['course', 'payments'])
+                ->where('student_id', $studentId)
+                ->where('status', 'pending')
+                ->latest()
+                ->first();
+
+            $pendingData = null;
+            if ($pendingEnrollment) {
+                $latestPayment = $pendingEnrollment->payments()->latest()->first();
+                $pendingSubjectIds = $latestPayment?->meta['bank_transfer']['subjects'] ?? [];
+                $pendingSubjects = [];
+                if (!empty($pendingSubjectIds)) {
+                    $pIds = collect($pendingSubjectIds)->map(fn($item) => is_array($item) ? ($item['id'] ?? null) : $item)->filter()->toArray();
+                    $pendingSubjects = \App\Models\Subject::whereIn('id', $pIds)->select('id', 'name')->get();
+                }
+
+                $pendingData = [
+                    'id' => $pendingEnrollment->id,
+                    'enrollment_code' => $pendingEnrollment->enrollment_code,
+                    'course_id' => $pendingEnrollment->course_id,
+                    'course_title' => $pendingEnrollment->course->title ?? null,
+                    'status' => $pendingEnrollment->status,
+                    'expires_at' => $pendingEnrollment->expires_at,
+                    'created_at' => $pendingEnrollment->created_at,
+                    'is_expired' => $pendingEnrollment->expires_at ? $pendingEnrollment->expires_at->isPast() : false,
+                    'pending_subjects' => $pendingSubjects,
+                    'payment_reference' => $latestPayment?->gateway_reference,
+                    'payment_method' => $latestPayment?->payment_method,
+                    'payment_status' => $latestPayment?->status,
+                ];
+            }
+
             return response()->json([
                 'success' => true,
                 'message' => 'Active paid courses retrieved successfully.',
-                'courses' => $courses
+                'courses' => $courses,
+                'pending_enrollment' => $pendingData,
             ]);
 
         } catch (\Throwable $e) {

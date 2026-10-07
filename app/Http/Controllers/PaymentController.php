@@ -112,7 +112,14 @@ class PaymentController extends Controller
                 // Only a confirmed payment may activate the enrollment. A pending
                 // or failed row must never unlock course access.
                 if ($payment->status === 'successful') {
-                    $enrollment->update(['status' => 'active']);
+                    $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+                $enrollment->update([
+                    'enrollment_code' => $permanentCode,
+                    'status' => 'active',
+                    'paid_at' => $paidAt,
+                    'expires_at' => null,
+                    'termination_reason' => null,
+                ]);
                 }
 
                 return $payment;
@@ -362,7 +369,14 @@ class PaymentController extends Controller
                         ]),
                     ]);
 
-                    $enrollment->update(['status' => 'active']);
+                    $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+                $enrollment->update([
+                    'enrollment_code' => $permanentCode,
+                    'status' => 'active',
+                    'paid_at' => $paidAt,
+                    'expires_at' => null,
+                    'termination_reason' => null,
+                ]);
                 }
 
                 return [
@@ -527,6 +541,13 @@ class PaymentController extends Controller
 
         $created = false;
 
+        if (empty($enrollment->enrollment_code)) {
+            $enrollment->update([
+                'enrollment_code' => \App\Models\CoursesEnrollment::generateTemporaryCode(),
+                'expires_at' => $enrollment->expires_at ?: now()->addHours(48),
+            ]);
+        }
+
         if ($payment) {
             $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
             if (!empty($validated['subjects']) || !empty($validated['exam_track'])) {
@@ -578,6 +599,8 @@ class PaymentController extends Controller
             'amount' => $payment->amount,
             'currency' => $payment->currency,
             'state' => $this->bankTransferState($payment),
+            'enrollment_code' => $enrollment->fresh()->enrollment_code,
+            'expires_at' => $enrollment->fresh()->expires_at?->toIso8601String(),
         ], $created ? 201 : 200);
     }
 
@@ -825,7 +848,14 @@ class PaymentController extends Controller
                     ]),
                 ]);
 
-                $enrollment->update(['status' => 'active']);
+                $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+                $enrollment->update([
+                    'enrollment_code' => $permanentCode,
+                    'status' => 'active',
+                    'paid_at' => $paidAt,
+                    'expires_at' => null,
+                    'termination_reason' => null,
+                ]);
 
                 // Activate/create SubjectsEnrollment rows
                 $savedSubjectIds = $bankTransfer['subjects'] ?? [];
@@ -1065,4 +1095,217 @@ class PaymentController extends Controller
         return 'TC-' . strtoupper((string) Str::ulid());
     }
 
+
+    public function terminateBankTransfer(Request $request, Payment $payment): JsonResponse
+    {
+        if ($payment->payment_method !== 'bank_transfer' || $payment->gateway !== 'bank') {
+            return response()->json([
+                'message' => 'Only bank transfer payments can be terminated with this endpoint.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'nullable|string|max:500',
+        ]);
+
+        $reason = $validated['reason'] ?? 'Terminated by administrator due to unconfirmed payment within 48 hours.';
+
+        DB::transaction(function () use ($payment, $reason, $request) {
+            $meta = $payment->meta ?? [];
+            $bankTransfer = $meta['bank_transfer'] ?? [];
+            
+            $payment->update([
+                'status' => 'failed',
+                'meta' => array_merge($meta, [
+                    'bank_transfer' => array_merge($bankTransfer, [
+                        'review' => [
+                            'action' => 'terminated',
+                            'by_staff_id' => $request->user()->id,
+                            'reason' => $reason,
+                            'at' => now()->toIso8601String(),
+                        ],
+                    ]),
+                ]),
+            ]);
+
+            if ($payment->enrollment) {
+                $payment->enrollment->update([
+                    'status' => 'terminated',
+                    'termination_reason' => $reason,
+                ]);
+
+                \App\Models\SubjectsEnrollment::where('course_enrollment_id', $payment->enrollment->id)->delete();
+            }
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Enrollment and bank transfer successfully terminated.',
+            'payment' => $payment->fresh(['student', 'enrollment.course']),
+        ]);
+    }
+
+    public function terminateEnrollment(Request $request, int $id): JsonResponse
+    {
+        $enrollment = \App\Models\CoursesEnrollment::with(['payments', 'student'])->find($id);
+        if (!$enrollment) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Enrollment not found.',
+            ], 404);
+        }
+
+        $validated = $request->validate([
+            'reason' => 'nullable|string|max:500',
+        ]);
+
+        $reason = $validated['reason'] ?? 'Terminated by administrator due to unconfirmed payment within 48 hours.';
+
+        DB::transaction(function () use ($enrollment, $reason, $request) {
+            $enrollment->update([
+                'status' => 'terminated',
+                'termination_reason' => $reason,
+            ]);
+
+            $enrollment->payments()->where('status', 'pending')->each(function ($payment) use ($reason, $request) {
+                $meta = $payment->meta ?? [];
+                $bankTransfer = $meta['bank_transfer'] ?? [];
+                $payment->update([
+                    'status' => 'failed',
+                    'meta' => array_merge($meta, [
+                        'bank_transfer' => array_merge($bankTransfer, [
+                            'review' => [
+                                'action' => 'terminated',
+                                'by_staff_id' => $request->user()->id,
+                                'reason' => $reason,
+                                'at' => now()->toIso8601String(),
+                            ],
+                        ]),
+                    ]),
+                ]);
+            });
+
+            \App\Models\SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->delete();
+        });
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Enrollment terminated successfully.',
+            'enrollment' => $enrollment->fresh(['course', 'student', 'payments']),
+        ]);
+    }
+
+    public function approveEnrollment(Request $request, int $id): JsonResponse
+    {
+        $enrollment = \App\Models\CoursesEnrollment::with(['payments', 'student', 'course'])->find($id);
+        if (!$enrollment) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Enrollment not found.',
+            ], 404);
+        }
+
+        try {
+            DB::transaction(function () use ($enrollment, $request) {
+                $now = now();
+                $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+
+                $enrollment->update([
+                    'enrollment_code' => $permanentCode,
+                    'status' => 'active',
+                    'paid_at' => $now,
+                    'expires_at' => null,
+                    'termination_reason' => null,
+                ]);
+
+                // Find pending or bank transfer payment
+                $payment = $enrollment->payments()->whereIn('status', ['pending', 'initiated'])->latest()->first();
+                $savedSubjectIds = [];
+
+                if ($payment) {
+                    $meta = $payment->meta ?? [];
+                    $bankTransfer = $meta['bank_transfer'] ?? [];
+                    $savedSubjectIds = $bankTransfer['subjects'] ?? [];
+
+                    $payment->update([
+                        'status' => 'successful',
+                        'paid_at' => $now,
+                        'meta' => array_merge($meta, [
+                            'bank_transfer' => array_merge($bankTransfer, [
+                                'review' => [
+                                    'action' => 'approved',
+                                    'by_staff_id' => $request->user()->id,
+                                    'reason' => 'Approved by administrator via student profile modal.',
+                                    'at' => $now->toIso8601String(),
+                                ],
+                            ]),
+                        ]),
+                    ]);
+                }
+
+                // Activate/create SubjectsEnrollment
+                if (!empty($savedSubjectIds) && is_array($savedSubjectIds)) {
+                    foreach ($savedSubjectIds as $subjectItem) {
+                        $subId = 0;
+                        if (is_numeric($subjectItem)) {
+                            $subId = (int) $subjectItem;
+                        } elseif (is_array($subjectItem) && !empty($subjectItem['id'])) {
+                            $subId = (int) $subjectItem['id'];
+                        }
+
+                        if ($subId > 0 && \App\Models\Subject::where('id', $subId)->exists()) {
+                            $subEnrollment = \App\Models\SubjectsEnrollment::withTrashed()
+                                ->where('course_enrollment_id', $enrollment->id)
+                                ->where('student_id', $enrollment->student_id)
+                                ->where('subject_id', $subId)
+                                ->first();
+
+                            if ($subEnrollment) {
+                                if ($subEnrollment->trashed()) {
+                                    $subEnrollment->restore();
+                                }
+                            } else {
+                                \App\Models\SubjectsEnrollment::create([
+                                    'course_enrollment_id' => $enrollment->id,
+                                    'student_id' => $enrollment->student_id,
+                                    'subject_id' => $subId,
+                                    'status' => 'active',
+                                ]);
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback: restore or attach default subjects for course
+                    $restoredCount = \App\Models\SubjectsEnrollment::withTrashed()
+                        ->where('course_enrollment_id', $enrollment->id)
+                        ->where('student_id', $enrollment->student_id)
+                        ->restore();
+
+                    if ($restoredCount === 0 && !\App\Models\SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->exists()) {
+                        $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
+                        $defaultSubjects = \App\Models\Subject::where('course_id', $queryCourseId)->where('status', 'active')->get();
+                        foreach ($defaultSubjects as $defSub) {
+                            \App\Models\SubjectsEnrollment::firstOrCreate([
+                                'course_enrollment_id' => $enrollment->id,
+                                'student_id' => $enrollment->student_id,
+                                'subject_id' => $defSub->id,
+                            ]);
+                        }
+                    }
+                }
+            });
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Enrollment approved and student subjects activated successfully.',
+                'enrollment' => $enrollment->fresh(['course', 'student', 'payments', 'subjects.subject']),
+            ]);
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to approve enrollment: ' . $e->getMessage(),
+            ], 500);
+        }
+    }
 }
