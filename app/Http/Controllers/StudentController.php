@@ -1446,7 +1446,9 @@ class StudentController extends Controller
             ->with([
                 'courseEnrollments.course',
                 'courseEnrollments.subjects.subject',
+                'courseEnrollments.payments',
                 'subjectEnrollments.subject',
+                'payments',
                 'guardians',
                 'advisors',
             ])
@@ -1455,7 +1457,23 @@ class StudentController extends Controller
             ->get();
 
         $formatted = $students->map(function ($student) {
+            $activeCourseEnrollments = $student->courseEnrollments
+                ->filter(function ($enrollment) {
+                    return $enrollment->status === 'active'
+                        && (is_null($enrollment->end_date) || $enrollment->end_date->gte(now()));
+                });
+
+            $pendingCourseEnrollments = $student->courseEnrollments
+                ->filter(function ($enrollment) {
+                    return $enrollment->status === 'pending';
+                });
+
+            $hasSuccessfulPayment = $student->payments->contains(function ($payment) {
+                return in_array($payment->status, ['successful', 'paid']);
+            });
+
             $enrolledSubjects = $student->courseEnrollments
+                ->where('status', 'active')
                 ->flatMap(function ($enrollment) {
                     return $enrollment->subjects->map(function ($subEnrollment) {
                         return $subEnrollment->subject;
@@ -1466,15 +1484,44 @@ class StudentController extends Controller
                 ->unique('id')
                 ->values();
 
-            $enrolledCourses = $student->courseEnrollments
+            $enrolledCourses = $activeCourseEnrollments
                 ->map(fn ($ce) => $ce->course)
                 ->filter()
                 ->unique('id')
                 ->values();
 
+            // Strict definition of isActive: Active enrollment + successful payment + subjects!
+            $isActive = $activeCourseEnrollments->isNotEmpty()
+                && $hasSuccessfulPayment
+                && $enrolledSubjects->isNotEmpty();
+
+            $enrollmentStatus = 'inactive';
+            if ($student->trashed() || $student->banned) {
+                $enrollmentStatus = 'suspended';
+            } elseif ($isActive) {
+                $enrollmentStatus = 'active';
+            } elseif ($pendingCourseEnrollments->isNotEmpty() || $student->payments->contains(fn($p) => $p->status === 'pending')) {
+                $enrollmentStatus = 'pending_approval';
+            } elseif ($student->courseEnrollments->contains(fn($ce) => in_array($ce->status, ['terminated', 'expired']))) {
+                $enrollmentStatus = 'terminated';
+            }
+
+            $latestEnrollment = $student->courseEnrollments->sortByDesc('created_at')->first();
+
             $data = $student->toArray();
+            $data['is_active'] = $isActive;
+            $data['enrollment_status'] = $enrollmentStatus;
+            $data['enrollment_code'] = $latestEnrollment?->enrollment_code;
             $data['enrolled_subjects'] = $enrolledSubjects;
             $data['enrolled_courses'] = $enrolledCourses;
+            $data['pending_courses'] = $pendingCourseEnrollments->map(fn($ce) => [
+                'id' => $ce->course?->id,
+                'title' => $ce->course?->title,
+                'enrollment_id' => $ce->id,
+                'enrollment_code' => $ce->enrollment_code,
+                'status' => $ce->status,
+                'expires_at' => $ce->expires_at,
+            ])->values();
             $data['subject_enrollments'] = $enrolledSubjects;
             return $data;
         });
@@ -1513,14 +1560,29 @@ class StudentController extends Controller
             ], 404);
         }
 
+        $latestPendingPayment = $student->payments()->where('status', 'pending')->latest()->first();
+        $pendingSubjectIds = $latestPendingPayment?->meta['bank_transfer']['subjects'] ?? [];
+        $pendingSubjects = [];
+        if (!empty($pendingSubjectIds)) {
+            $ids = collect($pendingSubjectIds)->map(fn($item) => is_array($item) ? ($item['id'] ?? null) : $item)->filter()->toArray();
+            $pendingSubjects = \App\Models\Subject::whereIn('id', $ids)->get();
+        }
+
+        $latestEnrollment = $student->courseEnrollments->sortByDesc('created_at')->first();
+
         return response()->json([
             'message' => 'Student retrieved successfully.',
             'student' => [
                 'information' => $student,
                 'guardians' => $student->guardians,
+                'enrollment_code' => $latestEnrollment?->enrollment_code,
+                'pending_subjects' => $pendingSubjects,
                 'courses' => $student->courseEnrollments->map(function ($enrollment) {
                     return [
                         'enrollment_id' => $enrollment->id,
+                        'enrollment_code' => $enrollment->enrollment_code,
+                        'expires_at' => $enrollment->expires_at,
+                        'paid_at' => $enrollment->paid_at,
                         'student_id' => $enrollment->student_id,
                         'course_id' => $enrollment->course_id,
                         'enrollment_status' => $enrollment->status ?? null,

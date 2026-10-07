@@ -32,6 +32,7 @@ use App\Http\Controllers\SupportController;
 use App\Http\Controllers\BlogController;
 use App\Http\Controllers\ZoomController;
 use App\Http\Controllers\AssessmentController;
+use App\Http\Controllers\StudentSurveyController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -97,6 +98,9 @@ Route::prefix('students')->group(function () {
     Route::post('/change-password', [StudentController::class, 'changePassword']); // Change Password with OTP
     Route::post('/resend-phone-otp', [StudentController::class, 'resendPhoneOtp']); // Resend Phone Verification
     Route::post('/resend-email-verification', [StudentController::class, 'resendEmailVerification']); // Resend Email Verification
+    // Student Feedback & Learning Experience Survey
+    Route::post('/survey/submit', [StudentSurveyController::class, 'submit']);
+    Route::get('/survey/status', [StudentSurveyController::class, 'status']);
 });
 
 /*
@@ -353,9 +357,20 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
             ->middleware('staff.role:admin');
         Route::post('/{id}/renew', [\App\Http\Controllers\StudentController::class, 'renewEnrollment'])
             ->middleware('staff.role:admin');
+        Route::post('/{id}/terminate', [\App\Http\Controllers\PaymentController::class, 'terminateEnrollment'])
+            ->middleware('staff.role:admin');
+        Route::post('/{id}/approve', [\App\Http\Controllers\PaymentController::class, 'approveEnrollment'])
+            ->middleware('staff.role:admin');
     });
 
     Route::get('/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
+
+    // Student Survey Analytics & Reports
+    Route::prefix('surveys')->group(function () {
+        Route::get('/summary', [StudentSurveyController::class, 'adminSummary']);
+        Route::get('/export', [StudentSurveyController::class, 'adminExport']);
+        Route::get('/{id}', [StudentSurveyController::class, 'adminShow']);
+    });
     Route::patch('/feedbacks/{id}/status', [\App\Http\Controllers\FeedbackController::class, 'adminToggleStatus']);
     Route::delete('/feedbacks/{id}/admin', [\App\Http\Controllers\FeedbackController::class, 'adminDestroy']);
 
@@ -518,6 +533,10 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::post('/{payment}/bank-transfer/resend-receipt', [PaymentController::class, 'resendBankTransferReceipt'])
             ->middleware('staff.role:admin');
         Route::post('/{payment}/bank-transfer/reject', [PaymentController::class, 'rejectBankTransfer'])
+            ->middleware('staff.role:admin');
+        Route::post('/{payment}/bank-transfer/terminate', [PaymentController::class, 'terminateBankTransfer'])
+            ->middleware('staff.role:admin');
+        Route::post('/enrollments/{id}/terminate', [PaymentController::class, 'terminateEnrollment'])
             ->middleware('staff.role:admin');
         Route::get('/registration-recovery/search', [PaymentController::class, 'searchRegistrationRecovery']);
         Route::post('/{payment}/registration-recovery', [PaymentController::class, 'completeRegistrationRecovery'])
