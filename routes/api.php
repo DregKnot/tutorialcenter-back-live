@@ -287,6 +287,7 @@ Route::prefix('staffs')->group(function () {
 
         // Classes
         Route::post('/classes/session/recording', [ClassesController::class, 'updateSessionRecording']); // Update recording link for a session
+        Route::post('/classes/sessions/{classSession}/status', [ClassesController::class, 'updateSessionStatus']); // Update session status
 
         // Notification Routes
         Route::get('/notifications', [NotificationController::class, 'index']);
@@ -445,6 +446,19 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::post('/update/{id}', [ClassesController::class, 'update']);
         Route::delete('/destroy/{id}', [ClassesController::class, 'destroy']); // Deactivate class and cleanup future sessions
         Route::get('/all', [ClassesController::class, 'allClassesSchedule']); // List all classes
+        Route::post('/sessions/{classSession}/status', [ClassesController::class, 'updateSessionStatus']);
+        Route::match(['patch', 'post'], '/sessions/{id}/reschedule', [ClassesController::class, 'rescheduleSession']);
+        Route::match(['patch', 'post'], '/sessions/{id}/cancel', [ClassesController::class, 'cancelSession']);
+        Route::post('/sessions/{id}/check-clash', [ClassesController::class, 'checkSessionClash']);
+        Route::match(['patch', 'post'], '/{id}/reschedule', [ClassesController::class, 'rescheduleSession']);
+        Route::match(['patch', 'post'], '/{id}/cancel', [ClassesController::class, 'cancelSession']);
+    });
+
+    // Session Management Direct Routes (/api/admin/sessions/...)
+    Route::prefix('sessions')->group(function () {
+        Route::match(['patch', 'post'], '/{id}/reschedule', [ClassesController::class, 'rescheduleSession']);
+        Route::match(['patch', 'post'], '/{id}/cancel', [ClassesController::class, 'cancelSession']);
+        Route::post('/{id}/check-clash', [ClassesController::class, 'checkSessionClash']);
     });
 
     // Student Management

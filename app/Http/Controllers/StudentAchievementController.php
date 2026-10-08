@@ -3,8 +3,11 @@
 namespace App\Http\Controllers;
 
 use App\Models\Achievement;
+use App\Models\Student;
 use App\Models\StudentAchievementProgress;
+use App\Models\StudentSurvey;
 use App\Models\StudentWeeklyPerformance;
+use App\Services\AchievementAwardService;
 use Illuminate\Http\Request;
 
 class StudentAchievementController extends Controller
@@ -13,6 +16,22 @@ class StudentAchievementController extends Controller
     {
         $student = $request->user();
         $now = now();
+
+        // Retroactive survey achievement sync: if student has submitted survey, ensure badge is awarded
+        if ($student instanceof Student) {
+            try {
+                $hasSurvey = StudentSurvey::where('student_id', $student->id)->exists();
+                if ($hasSurvey) {
+                    app(AchievementAwardService::class)->award($student, 'special_event.survey_pioneer', 'once', [
+                        'metadata' => [
+                            'source' => 'retroactive_survey_sync',
+                        ],
+                    ]);
+                }
+            } catch (\Throwable $e) {
+                // Ignore sync errors
+            }
+        }
 
         $achievements = Achievement::query()
             ->where('is_active', true)
@@ -98,24 +117,26 @@ class StudentAchievementController extends Controller
             'success' => true,
             'data' => [
                 'practice' => [
-                    'eligible_exam_answers' => (int) ($practiceMilestone?->integer_value ?? 0),
+                    'eligible_answers' => (int) ($practiceMilestone?->current_value ?? 0),
+                    'next_target' => (int) ($practiceMilestone?->target_value ?? 50),
+                    'achieved' => (bool) ($practiceMilestone?->achieved ?? false),
                 ],
                 'streak' => [
-                    'ongoing' => (int) ($streak?->integer_value ?? 0),
-                    'max' => (int) ($streakMetadata['maximum_streak'] ?? 0),
-                    'last_activity_date' => $streakMetadata['last_activity_date'] ?? null,
-                    'started_date' => $streakMetadata['streak_started_date'] ?? null,
-                    'timezone' => $streakMetadata['timezone'] ?? 'Africa/Lagos',
+                    'current_streak_days' => (int) ($streak?->current_value ?? 0),
+                    'best_streak_days' => (int) ($streakMetadata['best_streak_days'] ?? 0),
+                    'last_practice_date' => $streakMetadata['last_practice_date'] ?? null,
                 ],
                 'time_investment' => [
-                    'active_seconds' => (int) ($timeInvestment?->duration_seconds ?? 0),
-                    'active_hours' => round(
-                        ((int) ($timeInvestment?->duration_seconds ?? 0)) / 3600,
-                        2
-                    ),
+                    'active_seconds' => (int) ($timeInvestment?->current_value ?? 0),
+                    'active_hours' => round(((int) ($timeInvestment?->current_value ?? 0)) / 3600, 2),
+                    'target_seconds' => (int) ($timeInvestment?->target_value ?? 3600),
                 ],
-                'latest_weekly_performance' => $latestWeeklyPerformance,
-                'records' => $progress,
+                'weekly_accuracy' => [
+                    'accuracy_percentage' => (float) ($latestWeeklyPerformance?->accuracy_percentage ?? 0),
+                    'eligible_questions' => (int) ($latestWeeklyPerformance?->eligible_questions_count ?? 0),
+                    'threshold_met' => (bool) ($latestWeeklyPerformance?->accuracy_threshold_met ?? false),
+                    'best_weekly_accuracy' => (float) ($latestWeeklyPerformance?->accuracy_percentage ?? 0),
+                ],
             ],
         ]);
     }

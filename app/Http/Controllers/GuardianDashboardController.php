@@ -1053,7 +1053,18 @@ class GuardianDashboardController extends Controller
                 'date_formatted' => $dateFormatted,
                 'day' => $dayName,
                 'time' => $timeRange,
-                'status' => $session->status ?? 'active',
+                'status' => (function() use ($session) {
+                    $classStatus = strtolower(trim($session->class?->status ?? 'active'));
+                    $sessStatus = strtolower(trim($session->status ?? 'active'));
+                    if (in_array($classStatus, ['proposed', 'rescheduled', 'cancelled', 'canceled']) && $sessStatus !== 'recorded') {
+                        return ($classStatus === 'canceled') ? 'cancelled' : $classStatus;
+                    }
+                    return $sessStatus;
+                })(),
+                'class_status' => strtolower(trim($session->class?->status ?? 'active')),
+                'is_proposed' => (strtolower(trim($session->status ?? '')) === 'proposed' || strtolower(trim($session->class?->status ?? '')) === 'proposed'),
+                'is_cancelled' => (in_array(strtolower(trim($session->status ?? '')), ['cancelled', 'canceled']) || in_array(strtolower(trim($session->class?->status ?? '')), ['cancelled', 'canceled'])),
+                'is_rescheduled' => (strtolower(trim($session->status ?? '')) === 'rescheduled' || strtolower(trim($session->class?->status ?? '')) === 'rescheduled'),
                 'attendance_status' => $attendanceStatus,
                 'attendance_duration' => $durationMinutes,
             ];

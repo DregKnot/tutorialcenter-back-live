@@ -245,6 +245,8 @@ class CourseController extends Controller
             'student_id' => 'required|exists:students,id',
             'course_id' => 'required|exists:courses,id',
             'billing_cycle' => 'required|in:monthly,quarterly,semi_annual,annual',
+            'subjects' => 'nullable|array',
+            'subjects.*' => 'nullable',
         ]);
 
         if ($validator->fails()) {
@@ -316,6 +318,18 @@ class CourseController extends Controller
                     'termination_reason' => null,
                 ]);
 
+                if ($request->has('subjects') && is_array($request->subjects)) {
+                    foreach ($request->subjects as $subItem) {
+                        $subId = is_array($subItem) ? ($subItem['id'] ?? 0) : (int) $subItem;
+                        if ($subId > 0 && \App\Models\Subject::where('id', $subId)->exists()) {
+                            \App\Models\SubjectsEnrollment::firstOrCreate([
+                                'course_enrollment_id' => $existingEnrollment->id,
+                                'student_id' => $student->id,
+                                'subject_id' => $subId,
+                            ]);
+                        }
+                    }
+                }
                 DB::commit();
                 return response()->json([
                     'success' => true,
@@ -337,6 +351,18 @@ class CourseController extends Controller
                 'status' => 'pending',
             ]);
 
+            if ($request->has('subjects') && is_array($request->subjects)) {
+                foreach ($request->subjects as $subItem) {
+                    $subId = is_array($subItem) ? ($subItem['id'] ?? 0) : (int) $subItem;
+                    if ($subId > 0 && \App\Models\Subject::where('id', $subId)->exists()) {
+                        \App\Models\SubjectsEnrollment::firstOrCreate([
+                            'course_enrollment_id' => $enrollment->id,
+                            'student_id' => $student->id,
+                            'subject_id' => $subId,
+                        ]);
+                    }
+                }
+            }
             DB::commit();
             return response()->json([
                 'success' => true,

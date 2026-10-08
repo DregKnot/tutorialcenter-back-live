@@ -36,12 +36,12 @@ class ClassesController extends Controller
 
             return \App\Models\Student::query()
                 ->whereHas('courseEnrollments', function ($cq) {
-                    $cq->where('status', 'active')->whereIn('course_id', [2, 3, 4]);
+                    $cq->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])->whereIn('course_id', [2, 3, 4]);
                 })
                 ->whereHas('subjectEnrollments', function ($query) use ($subjectId, $subjectName) {
                     $query->whereNull('deleted_at')
                           ->whereHas('enrollment', function ($q) {
-                              $q->where('status', 'active')
+                              $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                                 ->where(function ($subQ) {
                                     $subQ->whereNull('end_date')
                                          ->orWhere('end_date', '>=', now());
@@ -61,7 +61,7 @@ class ClassesController extends Controller
                 $query->where('subject_id', $subjectId)
                       ->whereNull('deleted_at')
                       ->whereHas('enrollment', function ($q) {
-                          $q->where('status', 'active')
+                          $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                             ->where(function ($subQ) {
                                 $subQ->whereNull('end_date')
                                      ->orWhere('end_date', '>=', now());
@@ -83,7 +83,7 @@ class ClassesController extends Controller
             'all_subject_ids.*' => 'exists:subjects,id',
             'title' => 'nullable|string|max:255',
             'description' => 'nullable|string',
-            'status' => 'nullable|in:active,inactive',
+            'status' => 'nullable|in:active,inactive,proposed,rescheduled,cancelled,canceled',
 
             'staffs' => 'nullable|array',
             'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
@@ -385,8 +385,8 @@ class ClassesController extends Controller
                     'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
                     'schedules.sessions.attendances.student',
                 ])
-                ->whereHas('subject', fn($q) => $q->where('status', 'active'))
-                ->where('status', 'active')
+                ->whereHas('subject', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']))
+                ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                 ->get();
 
             $subjectEnrollmentCache = [];
@@ -417,7 +417,7 @@ class ClassesController extends Controller
                 'attendances.student'
             ])
             ->withCount(['views as views'])
-            ->whereHas('class', fn($q) => $q->where('status', 'active'));
+            ->whereHas('class', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']));
 
             $nextClass = (clone $sessionQuery)
                 ->whereDate('session_date', '>=', now())
@@ -501,7 +501,7 @@ class ClassesController extends Controller
     public function viewClassSchedule(int $classId): JsonResponse
     {
         try {
-            $class = Classes::with(['subject', 'staffs', 'schedules.sessions'])->where('id', $classId)->where('status', 'active')->firstOrFail();
+            $class = Classes::with(['subject', 'staffs', 'schedules.sessions'])->where('id', $classId)->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])->firstOrFail();
 
             return response()->json([
                 'success' => true,
@@ -590,6 +590,247 @@ class ClassesController extends Controller
     /**
      * Get recorded classes for the authenticated user (student or staff)
      */
+    /**
+     * Update status for a class session (Admin, Advisor, or assigned Tutor)
+     */
+    public function updateSessionStatus(Request $request, $classSession): JsonResponse
+    {
+        try {
+            $session = $classSession instanceof ClassSession ? $classSession : ClassSession::find($classSession);
+            if (!$session) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Class session not found.'
+                ], 404);
+            }
+
+            $validator = Validator::make($request->all(), [
+                'status' => 'required|string|in:scheduled,rescheduled,proposed,cancelled,completed,recorded',
+            'session_date' => 'nullable|date',
+            'starts_at' => 'nullable|string',
+            'ends_at' => 'nullable|string',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors(),
+                ], 422);
+            }
+
+            // Get authenticated staff
+            $staff = auth('staff')->user();
+            if (!$staff) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized',
+                ], 401);
+            }
+
+            $session->status = $request->status;
+
+            if ($request->filled('session_date')) {
+                $session->session_date = $request->session_date;
+            }
+            if ($request->filled('starts_at')) {
+                $session->starts_at = $request->starts_at;
+            }
+            if ($request->filled('ends_at')) {
+                $session->ends_at = $request->ends_at;
+            }
+
+            $session->save();
+
+            return response()->json([
+                'success' => true,
+                'message' => "Class session status successfully updated to {$request->status}.",
+                'session' => $session->fresh(),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update session status',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Reschedule a class session (Admin & Staff)
+     */
+    public function rescheduleSession(Request $request, $id): JsonResponse
+    {
+        try {
+            $session = ClassSession::with(['class.subject', 'class.staffs'])->find($id);
+            if (!$session) {
+                // If class_id was passed instead of session_id
+                $session = ClassSession::with(['class.subject', 'class.staffs'])
+                    ->where('class_id', $id)
+                    ->whereDate('session_date', '>=', today()->toDateString())
+                    ->first();
+            }
+
+            if (!$session) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Class session not found.'
+                ], 404);
+            }
+
+            $validator = Validator::make($request->all(), [
+                'new_date' => 'required|date',
+                'new_start_time' => 'required|string',
+                'new_end_time' => 'required|string',
+                'reason' => 'nullable|string',
+                'force_replace_session_id' => 'nullable|integer',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors(),
+                ], 422);
+            }
+
+            DB::beginTransaction();
+
+            // If replacing a clashing session, mark it as cancelled
+            if ($request->filled('force_replace_session_id')) {
+                $clashingSession = ClassSession::find($request->force_replace_session_id);
+                if ($clashingSession) {
+                    $clashingSession->update(['status' => 'cancelled']);
+                }
+            }
+
+            // Update the target session
+            $session->session_date = $request->new_date;
+            $session->starts_at = $request->new_start_time;
+            $session->ends_at = $request->new_end_time;
+            $session->status = 'rescheduled';
+            $session->save();
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => "Class session successfully rescheduled to {$request->new_date}.",
+                'session' => $session->fresh(['class.subject', 'class.staffs']),
+            ]);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to reschedule class session',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Cancel a class session (Admin & Staff)
+     */
+    public function cancelSession(Request $request, $id): JsonResponse
+    {
+        try {
+            $session = ClassSession::with(['class.subject', 'class.staffs'])->find($id);
+            if (!$session) {
+                $session = ClassSession::with(['class.subject', 'class.staffs'])
+                    ->where('class_id', $id)
+                    ->whereDate('session_date', '>=', today()->toDateString())
+                    ->first();
+            }
+
+            if (!$session) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Class session not found.'
+                ], 404);
+            }
+
+            $session->update(['status' => 'cancelled']);
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Class session successfully cancelled.',
+                'session' => $session->fresh(['class.subject', 'class.staffs']),
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to cancel class session',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Check for conflicting class sessions on target date/time
+     */
+    public function checkSessionClash(Request $request, $id): JsonResponse
+    {
+        try {
+            $validator = Validator::make($request->all(), [
+                'new_date' => 'required|date',
+                'new_start_time' => 'required|string',
+                'new_end_time' => 'required|string',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors(),
+                ], 422);
+            }
+
+            $targetDate = $request->new_date;
+            $newStart = $request->new_start_time;
+            $newEnd = $request->new_end_time;
+
+            // Clashes on same date where status is not cancelled and time intervals overlap
+            $clashing = ClassSession::with(['class.subject', 'class.staffs'])
+                ->where('id', '!=', $id)
+                ->where('session_date', $targetDate)
+                ->whereNotIn('status', ['cancelled'])
+                ->where(function ($q) use ($newStart, $newEnd) {
+                    $q->where('starts_at', '<', $newEnd)
+                      ->where('ends_at', '>', $newStart);
+                })
+                ->get()
+                ->map(function ($s) {
+                    $subject = $s->class?->subject?->name ?? 'General';
+                    $tutor = $s->class?->staffs?->first();
+                    return [
+                        'id' => $s->id,
+                        'class_id' => $s->class_id,
+                        'subject_name' => $subject,
+                        'topic' => $s->class?->title ?? "{$subject} Master Class",
+                        'session_date' => $s->session_date ? $s->session_date->toDateString() : '',
+                        'starts_at' => $s->starts_at ? substr($s->starts_at, 0, 5) : '10:00',
+                        'ends_at' => $s->ends_at ? substr($s->ends_at, 0, 5) : '11:30',
+                        'tutor_name' => $tutor ? "{$tutor->firstname} {$tutor->surname}" : 'Assigned Tutor',
+                        'tutor' => [
+                            'id' => $tutor?->id,
+                            'name' => $tutor ? "{$tutor->firstname} {$tutor->surname}" : 'Assigned Tutor',
+                        ],
+                    ];
+                });
+
+            return response()->json([
+                'success' => true,
+                'clashing_sessions' => $clashing,
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to check session clash',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
     public function getRecordedClasses(Request $request): JsonResponse
     {
         try {
@@ -624,7 +865,7 @@ class ClassesController extends Controller
             if ($user instanceof Student) {
                 $activeEnrollments = CoursesEnrollment::with('course')
                     ->where('student_id', $user->id)
-                    ->where('status', 'active')
+                    ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                     ->get();
 
                 if ($activeEnrollments->isEmpty()) {
@@ -934,7 +1175,7 @@ class ClassesController extends Controller
             'subject_id' => 'nullable|exists:subjects,id',
             'title' => 'nullable|string|max:255',
             'description' => 'nullable|string',
-            'status' => 'nullable|in:active,inactive',
+            'status' => 'nullable|in:active,inactive,proposed,rescheduled,cancelled,canceled',
 
             'staffs' => 'nullable|array',
             'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
@@ -975,7 +1216,22 @@ class ClassesController extends Controller
                 $updateData['description'] = $request->description;
             }
             if ($request->has('status')) {
-                $updateData['status'] = $request->status;
+                $statusVal = strtolower(trim($request->status));
+                if ($statusVal === 'canceled') $statusVal = 'cancelled';
+                $updateData['status'] = $statusVal;
+
+                if (in_array($statusVal, ['proposed', 'rescheduled', 'cancelled'])) {
+                    \App\Models\ClassSession::where('class_id', $class->id)
+                        ->whereDate('session_date', '>=', today()->toDateString())
+                        ->whereDoesntHave('attendances')
+                        ->where('status', '!=', 'recorded')
+                        ->update(['status' => $statusVal]);
+                } elseif ($statusVal === 'active' && in_array($class->status, ['proposed', 'rescheduled', 'cancelled'])) {
+                    \App\Models\ClassSession::where('class_id', $class->id)
+                        ->whereDate('session_date', '>=', today()->toDateString())
+                        ->whereIn('status', ['proposed', 'rescheduled', 'cancelled'])
+                        ->update(['status' => 'scheduled']);
+                }
             }
             if ($request->has('class_link')) {
                 $updateData['class_link'] = $request->class_link;
@@ -1029,10 +1285,8 @@ class ClassesController extends Controller
                     ->whereDoesntHave('attendances')
                     ->delete();
 
-                // Delete existing schedules (they will be recreated)
-                ClassSchedule::where('class_id', $class->id)->delete();
-
                 $classLink = $request->class_link ?? $class->zoom_join_url ?? $class->class_link;
+                $activeScheduleIds = [];
 
                 foreach ($request->schedules as $scheduleData) {
                     $startTime = $scheduleData['start_time'];
@@ -1042,14 +1296,36 @@ class ClassesController extends Controller
                         ? $scheduleData['end_time']
                         : Carbon::createFromFormat('H:i', $startTime)->addMinutes($duration)->format('H:i');
 
-                    $schedule = ClassSchedule::create([
-                        'class_id' => $class->id,
-                        'day_of_week' => strtolower(trim($scheduleData['day_of_week'])),
-                        'start_time' => $startTime,
-                        'end_time' => $endTime,
-                        'start_date' => $startDate->toDateString(),
-                        'end_date' => $endDate->toDateString()
-                    ]);
+                    $dayOfWeek = strtolower(trim($scheduleData['day_of_week']));
+
+                    // Find existing or soft-deleted matching schedule to preserve foreign key references
+                    $schedule = ClassSchedule::withTrashed()
+                        ->where('class_id', $class->id)
+                        ->where('day_of_week', $dayOfWeek)
+                        ->where('start_time', $startTime)
+                        ->where('end_time', $endTime)
+                        ->first();
+
+                    if ($schedule) {
+                        if ($schedule->trashed()) {
+                            $schedule->restore();
+                        }
+                        $schedule->update([
+                            'start_date' => $startDate->toDateString(),
+                            'end_date' => $endDate->toDateString()
+                        ]);
+                    } else {
+                        $schedule = ClassSchedule::create([
+                            'class_id' => $class->id,
+                            'day_of_week' => $dayOfWeek,
+                            'start_time' => $startTime,
+                            'end_time' => $endTime,
+                            'start_date' => $startDate->toDateString(),
+                            'end_date' => $endDate->toDateString()
+                        ]);
+                    }
+
+                    $activeScheduleIds[] = $schedule->id;
 
                     // Generate upcoming sessions starting from today (or start_date if in future)
                     $iterationStart = $startDate->greaterThan(today()) ? $startDate->copy() : today();
@@ -1094,6 +1370,13 @@ class ClassesController extends Controller
                         }
                         $current->addWeek();
                     }
+                }
+
+                // Soft-delete schedules that are no longer part of this class
+                if (!empty($activeScheduleIds)) {
+                    ClassSchedule::where('class_id', $class->id)
+                        ->whereNotIn('id', $activeScheduleIds)
+                        ->delete();
                 }
             }
 
@@ -1163,8 +1446,8 @@ class ClassesController extends Controller
                 ], 401);
             }
 
-            // If explicitly requesting all center classes (e.g. from calendar view ?all=true or scope=all), return center-wide schedule
-            if ($request->boolean('all') || $request->input('scope') === 'all') {
+            // Only admin oversight can explicitly pass scope=all to view all center classes
+            if ($staff->role === 'admin' && $request->input('scope') === 'all') {
                 return $this->allClassesSchedule($request);
             }
 
@@ -1175,8 +1458,8 @@ class ClassesController extends Controller
                     'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
                     'schedules.sessions.attendances.student',
                 ])
-                ->whereHas('subject', fn($q) => $q->where('status', 'active'))
-                ->where('status', 'active')
+                ->whereHas('subject', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']))
+                ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                 ->whereHas('staffs', fn($q) => $q->where('staffs.id', $staff->id))
                 ->get();
 
@@ -1209,7 +1492,7 @@ class ClassesController extends Controller
             ])
             ->withCount(['views as views'])
             ->whereHas('class', function ($q) use ($staff) {
-                $q->where('status', 'active')
+                $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                   ->whereHas('staffs', fn($qs) => $qs->where('staffs.id', $staff->id));
             });
 
@@ -1231,7 +1514,7 @@ class ClassesController extends Controller
                              });
                       });
                 })
-                ->whereNotIn('status', ['completed', 'cancelled'])
+                ->whereNotIn('status', ['completed', 'cancelled', 'proposed'])
                 ->orderBy('session_date', 'asc')
                 ->orderBy('starts_at', 'asc')
                 ->first();
@@ -1240,7 +1523,7 @@ class ClassesController extends Controller
             if (!$nextClass) {
                 $nextClass = (clone $sessionQuery)
                     ->whereDate('session_date', '>=', $todayDate)
-                    ->whereNotIn('status', ['cancelled'])
+                    ->whereNotIn('status', ['cancelled', 'proposed'])
                     ->orderBy('session_date', 'asc')
                     ->orderBy('starts_at', 'asc')
                     ->first();
@@ -1274,13 +1557,21 @@ class ClassesController extends Controller
             $totalSessions = (clone $sessionQuery)->count();
             $lastPage = $perPage > 0 ? (int) ceil($totalSessions / $perPage) : 1;
 
-            $offset = ($page - 1) * $perPage;
-            $allSessions = (clone $sessionQuery)
-                ->orderBy('session_date', 'desc')
-                ->orderBy('starts_at', 'desc')
-                ->offset($offset)
-                ->limit($perPage)
-                ->get();
+            $fetchAll = $request->boolean('all');
+            if ($fetchAll) {
+                $allSessions = (clone $sessionQuery)
+                    ->orderBy('session_date', 'desc')
+                    ->orderBy('starts_at', 'desc')
+                    ->get();
+            } else {
+                $offset = ($page - 1) * $perPage;
+                $allSessions = (clone $sessionQuery)
+                    ->orderBy('session_date', 'desc')
+                    ->orderBy('starts_at', 'desc')
+                    ->offset($offset)
+                    ->limit($perPage)
+                    ->get();
+            }
 
             $formatted = $this->formatStaffScheduleResponse($staff, $nextClass, $todayClasses, $weekSchedule, $upcomingSessions, $allSessions);
             $formatted['classes'] = $classes;
@@ -1338,7 +1629,7 @@ class ClassesController extends Controller
             // If empty, check active course enrollments
             if ($subjectIds->isEmpty()) {
                 $courseIds = $student->courseEnrollments()
-                    ->where('status', 'active')
+                    ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                     ->pluck('course_id');
 
                 if ($courseIds->isNotEmpty()) {
@@ -1350,7 +1641,7 @@ class ClassesController extends Controller
 
             // Check if student has an active enrollment in any O-Level exam (WAEC: 2, NECO: 3, GCE: 4)
             $isOLevelStudent = $student->courseEnrollments()
-                ->where('status', 'active')
+                ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                 ->whereIn('course_id', [2, 3, 4])
                 ->exists();
 
@@ -1363,7 +1654,7 @@ class ClassesController extends Controller
                 }
             ])
             ->whereHas('class', function ($q) use ($subjectIds, $isOLevelStudent) {
-                $q->where('status', 'active');
+                $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']);
                 $q->where(function ($subQ) use ($subjectIds, $isOLevelStudent) {
                     if ($subjectIds->isNotEmpty()) {
                         $subQ->whereIn('subject_id', $subjectIds);
@@ -1384,7 +1675,7 @@ class ClassesController extends Controller
                         $q->where('student_id', $student->id);
                     }
                 ])
-                ->whereHas('class', fn($q) => $q->where('status', 'active'));
+                ->whereHas('class', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']));
             }
 
             $transformStudentSession = function($session) use ($student) {
@@ -1462,7 +1753,18 @@ class ClassesController extends Controller
                     'recording_link' => $session->recording_link,
                     'tutor' => $tutorData,
                     'tutor_name' => $tutorName,
-                    'status' => $session->status ?? 'scheduled',
+                    'status' => (function() use ($class, $session) {
+                        $classStatus = strtolower(trim($class->status ?? 'active'));
+                        $sessStatus = strtolower(trim($session->status ?? 'scheduled'));
+                        if (in_array($classStatus, ['proposed', 'rescheduled', 'cancelled', 'canceled']) && $sessStatus !== 'recorded') {
+                            return ($classStatus === 'canceled') ? 'cancelled' : $classStatus;
+                        }
+                        return $sessStatus;
+                    })(),
+                    'class_status' => strtolower(trim($class->status ?? 'active')),
+                    'is_proposed' => (strtolower($session->status ?? '') === 'proposed' || strtolower($class->status ?? '') === 'proposed'),
+                    'is_cancelled' => (in_array(strtolower($session->status ?? ''), ['cancelled', 'canceled']) || in_array(strtolower($class->status ?? ''), ['cancelled', 'canceled'])),
+                    'is_rescheduled' => (strtolower($session->status ?? '') === 'rescheduled' || strtolower($class->status ?? '') === 'rescheduled'),
                     'my_attendance' => $myAttendance ? [
                         'status' => $myAttendance->status,
                         'joined_at' => $myAttendance->joined_at,
@@ -1491,7 +1793,7 @@ class ClassesController extends Controller
                              });
                       });
                 })
-                ->whereNotIn('status', ['completed', 'cancelled'])
+                ->whereNotIn('status', ['completed', 'cancelled', 'proposed'])
                 ->orderBy('session_date', 'asc')
                 ->orderBy('starts_at', 'asc')
                 ->take(2)
@@ -1501,7 +1803,7 @@ class ClassesController extends Controller
             if ($nextClassesRaw->isEmpty()) {
                 $nextClassesRaw = (clone $sessionQuery)
                     ->whereDate('session_date', '>=', $todayDate)
-                    ->whereNotIn('status', ['cancelled'])
+                    ->whereNotIn('status', ['cancelled', 'proposed'])
                     ->orderBy('session_date', 'asc')
                     ->orderBy('starts_at', 'asc')
                     ->take(2)
@@ -1627,6 +1929,18 @@ class ClassesController extends Controller
                 $session->zoom_meeting_id = $class->zoom_meeting_id;
                 $session->zoom_meeting_password = $class->zoom_meeting_password;
                 $session->zoom_join_url = $class->zoom_join_url;
+
+                $classStatus = strtolower(trim($class->status ?? ''));
+                $sessStatus = strtolower(trim($session->status ?? ''));
+
+                if (in_array($classStatus, ['proposed', 'rescheduled', 'cancelled', 'canceled']) && $sessStatus !== 'recorded') {
+                    $session->status = ($classStatus === 'canceled') ? 'cancelled' : $classStatus;
+                }
+
+                $session->is_proposed = (strtolower($session->status) === 'proposed' || $classStatus === 'proposed');
+                $session->is_cancelled = (in_array(strtolower($session->status), ['cancelled', 'canceled']) || in_array($classStatus, ['cancelled', 'canceled']));
+                $session->is_rescheduled = (strtolower($session->status) === 'rescheduled' || $classStatus === 'rescheduled');
+                $session->class_status = $classStatus ?: 'active';
             }
             return $session;
         };
