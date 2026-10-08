@@ -215,6 +215,33 @@ class PaystackService
                     ]];
                 }
 
+                // If courses list is still empty (e.g. from Paystack webhook where metadata is not nested),
+                // resolve the student's pending course enrollments waiting to be activated.
+                if (empty($coursesList) && $student) {
+                    $pendingEnrollments = $student->courseEnrollments()->where('status', 'pending')->get();
+                    if ($pendingEnrollments->isNotEmpty()) {
+                        $coursesList = $pendingEnrollments->map(function ($pe) {
+                            $subjects = $pe->subjects()->pluck('subject_id')->toArray();
+                            return [
+                                'course_id' => $pe->course_id,
+                                'billing_cycle' => $pe->billing_cycle ?: 'monthly',
+                                'price' => (float) $pe->cost,
+                                'subjects' => $subjects,
+                            ];
+                        })->toArray();
+                    } elseif ($student->courseEnrollments()->exists()) {
+                        $latestEnrollment = $student->courseEnrollments()->latest()->first();
+                        if ($latestEnrollment) {
+                            $coursesList = [[
+                                'course_id' => $latestEnrollment->course_id,
+                                'billing_cycle' => $latestEnrollment->billing_cycle ?: 'monthly',
+                                'price' => (float) ($latestEnrollment->cost ?: $amountPaid),
+                                'subjects' => $latestEnrollment->subjects()->pluck('subject_id')->toArray(),
+                            ]];
+                        }
+                    }
+                }
+
                 foreach ($coursesList as $courseItem) {
                     $payment = $this->enrollStudentInCourse(
                         $student,
@@ -351,9 +378,14 @@ class PaystackService
             if ($enrollment->trashed()) {
                 $enrollment->restore();
             }
+            $permanentCode = CoursesEnrollment::generatePermanentCode($enrollment->id);
             $enrollment->update([
+                'enrollment_code' => $permanentCode,
                 'start_date' => $startDate,
                 'end_date' => $endDate,
+                'paid_at' => $paidAt,
+                'expires_at' => null,
+                'termination_reason' => null,
                 'billing_cycle' => $billingCycle,
                 'cost' => $suppliedPrice,
                 'status' => 'active',
@@ -364,9 +396,15 @@ class PaystackService
                 'student_id' => $student->id,
                 'start_date' => $startDate,
                 'end_date' => $endDate,
+                'paid_at' => $paidAt,
+                'expires_at' => null,
+                'termination_reason' => null,
                 'billing_cycle' => $billingCycle,
                 'cost' => $suppliedPrice,
                 'status' => 'active',
+            ]);
+            $enrollment->update([
+                'enrollment_code' => CoursesEnrollment::generatePermanentCode($enrollment->id),
             ]);
         }
 
@@ -406,10 +444,36 @@ class PaystackService
             }
         } else {
             // If subjects array was omitted in renewal payload, inherit & restore all existing subject enrollments
-            SubjectsEnrollment::withTrashed()
+            $restoredCount = SubjectsEnrollment::withTrashed()
                 ->where('course_enrollment_id', $enrollment->id)
                 ->where('student_id', $student->id)
                 ->restore();
+
+            // If no existing subjects were attached, provide default subjects based on course and student department
+            if ($restoredCount === 0 && !SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->exists()) {
+                $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
+                $defaultSubjectsQuery = \App\Models\Subject::where(function ($q) use ($queryCourseId) {
+                    $q->where('course_id', $queryCourseId)
+                      ->orWhereHas('courses', function ($cq) use ($queryCourseId) {
+                          $cq->where('courses.id', $queryCourseId);
+                      });
+                })->where('status', 'active');
+
+                if ($student->department) {
+                    $deptSubjects = (clone $defaultSubjectsQuery)->whereJsonContains('departments', $student->department)->get();
+                    $defaultSubjects = $deptSubjects->isNotEmpty() ? $deptSubjects : $defaultSubjectsQuery->get();
+                } else {
+                    $defaultSubjects = $defaultSubjectsQuery->get();
+                }
+
+                foreach ($defaultSubjects as $defSub) {
+                    SubjectsEnrollment::firstOrCreate([
+                        'course_enrollment_id' => $enrollment->id,
+                        'student_id' => $student->id,
+                        'subject_id' => $defSub->id,
+                    ]);
+                }
+            }
         }
 
         $paymentPayload = [

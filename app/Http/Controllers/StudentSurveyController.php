@@ -2,11 +2,13 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Student;
 use App\Models\StudentSurvey;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class StudentSurveyController extends Controller
@@ -39,18 +41,36 @@ class StudentSurveyController extends Controller
             'responses' => 'required|array',
         ]);
 
-        $student = Auth::guard('sanctum')->user();
-        $studentId = $student ? $student->id : null;
+        $user = Auth::guard('sanctum')->user();
+        $studentId = null;
+
+        // Verify that the authenticated entity actually exists in the students table
+        if ($user) {
+            $potentialId = $user->id;
+            try {
+                if ($user instanceof Student || Student::where('id', $potentialId)->exists()) {
+                    $studentId = $potentialId;
+                }
+            } catch (\Throwable $e) {
+                // If checking students table encounters any issue, keep studentId null
+                $studentId = null;
+            }
+        }
 
         // If name wasn't manually filled, fallback to logged-in student name
         $fullName = $validated['full_name'] ?? null;
-        if (!$fullName && $student) {
-            $fullName = trim(($student->firstname ?? '') . ' ' . ($student->surname ?? ''));
+        if (!$fullName && $user) {
+            $fullName = trim(($user->firstname ?? '') . ' ' . ($user->surname ?? ''));
+            if ($fullName === '' && isset($user->name)) {
+                $fullName = trim($user->name);
+            }
         }
 
-        $survey = StudentSurvey::create([
+        $surveyType = $validated['survey_type'] ?? 'learning_experience_v1';
+
+        $data = [
             'student_id' => $studentId,
-            'survey_type' => $validated['survey_type'] ?? 'learning_experience_v1',
+            'survey_type' => $surveyType,
             'full_name' => $fullName,
             'exam_target' => $validated['exam_target'] ?? null,
             'subjects_taken' => $validated['subjects_taken'] ?? null,
@@ -72,16 +92,77 @@ class StudentSurveyController extends Controller
             'responses' => $validated['responses'],
             'ip_address' => $request->ip(),
             'user_agent' => substr((string) $request->userAgent(), 0, 500),
-        ]);
+        ];
 
-        return response()->json([
-            'status' => 'success',
-            'message' => 'Thank you for taking the time to share your feedback with Tutorial Center Africa! ❤️',
-            'data' => [
-                'id' => $survey->id,
-                'submitted_at' => $survey->created_at,
-            ],
-        ], 201);
+        try {
+            // If student already has a submission, update it gracefully
+            if ($studentId) {
+                $existing = StudentSurvey::where('student_id', $studentId)
+                    ->where('survey_type', $surveyType)
+                    ->latest()
+                    ->first();
+
+                if ($existing) {
+                    $existing->update($data);
+                    return response()->json([
+                        'status' => 'success',
+                        'message' => 'Thank you! Your feedback has been updated successfully. ❤️',
+                        'data' => [
+                            'id' => $existing->id,
+                            'submitted_at' => $existing->updated_at,
+                        ],
+                    ], 200);
+                }
+            }
+
+            $survey = StudentSurvey::create($data);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Thank you for taking the time to share your feedback with Tutorial Center Africa! ❤️',
+                'data' => [
+                    'id' => $survey->id,
+                    'submitted_at' => $survey->created_at,
+                ],
+            ], 201);
+        } catch (\Illuminate\Database\QueryException $e) {
+            Log::error('StudentSurvey submission DB error: ' . $e->getMessage(), [
+                'student_id' => $studentId,
+                'sql' => $e->getSql(),
+            ]);
+
+            // Self-healing fallback: If failed with student_id constraint, retry with student_id = null
+            if ($studentId !== null) {
+                try {
+                    $dataWithoutStudentId = $data;
+                    $dataWithoutStudentId['student_id'] = null;
+                    $survey = StudentSurvey::create($dataWithoutStudentId);
+
+                    return response()->json([
+                        'status' => 'success',
+                        'message' => 'Thank you for taking the time to share your feedback with Tutorial Center Africa! ❤️',
+                        'data' => [
+                            'id' => $survey->id,
+                            'submitted_at' => $survey->created_at,
+                        ],
+                    ], 201);
+                } catch (\Throwable $retryEx) {
+                    Log::error('StudentSurvey fallback submission failed: ' . $retryEx->getMessage());
+                }
+            }
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'We could not save your feedback right now due to a temporary server issue. Your draft answers have been preserved — please try submitting again in a moment.',
+            ], 500);
+        } catch (\Throwable $e) {
+            Log::error('StudentSurvey submission unexpected error: ' . $e->getMessage());
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'An unexpected error occurred while saving your feedback. Please try submitting again.',
+            ], 500);
+        }
     }
 
     /**
@@ -89,14 +170,14 @@ class StudentSurveyController extends Controller
      */
     public function status(Request $request): JsonResponse
     {
-        $student = Auth::guard('sanctum')->user();
-        if (!$student) {
+        $user = Auth::guard('sanctum')->user();
+        if (!$user) {
             return response()->json([
                 'has_submitted' => false,
             ]);
         }
 
-        $survey = StudentSurvey::where('student_id', $student->id)
+        $survey = StudentSurvey::where('student_id', $user->id)
             ->where('survey_type', 'learning_experience_v1')
             ->latest()
             ->first();
