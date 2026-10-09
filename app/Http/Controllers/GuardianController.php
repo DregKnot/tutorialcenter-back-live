@@ -202,7 +202,6 @@ class GuardianController extends Controller
      **/
     protected function sendPhoneOtp(string $tel): void
     {
-
         DB::beginTransaction();
 
         try {
@@ -214,22 +213,12 @@ class GuardianController extends Controller
             // 2. Generate OTP
             $code = random_int(100000, 999999);
 
-            $message = "Your verification code is {$code}. It expires in 10 minutes.";
+            $message = "Your Tutorial Center Guardian verification code is {$code}. It expires in 10 minutes.";
 
-            /**
-             * 3. Send SMS (SIMULATED)
-             * Replace this block when integrating real SMS provider
-             */
-            $smsSent = true; // simulate success
+            // 3. Send SMS via BulkSMSService
+            app(BulkSMSService::class)->sendSMS($tel, $message);
 
-            // Example real usage later:
-            // $smsSent = SmsService::send($tel, $message);
-
-            if (!$smsSent) {
-                throw new \Exception('SMS sending failed');
-            }
-
-            // 4. Save OTP ONLY if SMS was sent
+            // 4. Save OTP
             DB::table('phone_otps')->insert([
                 'tel' => $tel,
                 'code' => Hash::make($code),
@@ -240,11 +229,10 @@ class GuardianController extends Controller
 
             DB::commit();
 
-            // TEMP: log instead of sending SMS
-            logger()->info("OTP for {$tel} is {$code}");
+            logger()->info("Guardian OTP for {$tel} is {$code}");
         } catch (\Throwable $e) {
             DB::rollBack();
-            throw $e; // Let controller decide response
+            throw $e;
         }
     }
 
@@ -827,24 +815,7 @@ class GuardianController extends Controller
      */
     protected function sendGuardianPhoneOtp(string $tel): void
     {
-        DB::table('phone_otps')
-            ->where('tel', $tel)
-            ->delete();
-
-        $code = random_int(100000, 999999);
-
-        app(BulkSMSService::class)->sendSMS(
-            $tel,
-            "Your Tutorial Center Guardian verification code is {$code}. It expires in 10 minutes."
-        );
-
-        DB::table('phone_otps')->insert([
-            'tel' => $tel,
-            'code' => Hash::make($code),
-            'expires_at' => now()->addMinutes(10),
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
+        $this->sendPhoneOtp($tel);
     }
 
     /**

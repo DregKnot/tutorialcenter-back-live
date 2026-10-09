@@ -16,6 +16,7 @@ use App\Services\EmailVerificationService;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Validation\ValidationException;
 use App\Notifications\StaffActivityNotification;
+use App\Services\BulkSMSService;
 
 class StaffController extends Controller
 {
@@ -772,11 +773,10 @@ class StaffController extends Controller
 
             $code = random_int(100000, 999999);
 
-            $smsSent = true; // integrate real SMS later
-
-            if (!$smsSent) {
-                throw new \Exception('SMS sending failed');
-            }
+            app(BulkSMSService::class)->sendSMS(
+                $tel,
+                "Your Tutorial Center verification code is {$code}. It expires in 10 minutes."
+            );
 
             DB::table('phone_otps')->insert([
                 'tel' => $tel,

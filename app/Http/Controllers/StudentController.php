@@ -490,7 +490,15 @@ class StudentController extends Controller
             }
 
             if ($student->tel) {
-                $this->sendPhoneOtp($student->tel);
+                try {
+                    $this->dispatchStudentPhoneOtp($student->tel);
+                } catch (\Throwable $smsError) {
+                    \Illuminate\Support\Facades\Log::warning('Failed to send student phone OTP during registration', [
+                        'student_id' => $student->id,
+                        'tel' => $student->tel,
+                        'error' => $smsError->getMessage(),
+                    ]);
+                }
             }
 
             /**
@@ -689,7 +697,10 @@ class StudentController extends Controller
                     ->notify(new ContactChangeOtpNotification($code, 'email'));
             } else {
 
-                // 🔌 SMS placeholder (plug Termii / Twilio later)
+                app(BulkSMSService::class)->sendSMS(
+                    $value,
+                    "Your Tutorial Center phone change verification code is {$code}. It expires in 10 minutes."
+                );
                 logger()->info("SMS OTP to {$value}: {$code}");
             }
 
@@ -1071,7 +1082,10 @@ class StudentController extends Controller
     /**
      * Summary of sendPhoneOtp
      **/
-    protected function sendPhoneOtp(string $tel): void
+    /**
+     * Dispatch student phone OTP via BulkSMSService
+     */
+    protected function dispatchStudentPhoneOtp(string $tel): void
     {
         DB::beginTransaction();
 
@@ -1084,22 +1098,12 @@ class StudentController extends Controller
             // 2. Generate OTP
             $code = random_int(100000, 999999);
 
-            $message = "Your verification code is {$code}. It expires in 10 minutes.";
+            $message = "Your Tutorial Center verification code is {$code}. It expires in 10 minutes.";
 
-            /**
-             * 3. Send SMS (SIMULATED)
-             * Replace this block when integrating real SMS provider
-             */
-            $smsSent = true; // simulate success
+            // 3. Send SMS via BulkSMSService
+            app(BulkSMSService::class)->sendSMS($tel, $message);
 
-            // Example real usage later:
-            // $smsSent = SmsService::send($tel, $message);
-
-            if (!$smsSent) {
-                throw new \Exception('SMS sending failed');
-            }
-
-            // 4. Save OTP ONLY if SMS was sent
+            // 4. Save OTP
             DB::table('phone_otps')->insert([
                 'tel' => $tel,
                 'code' => Hash::make($code),
@@ -1110,41 +1114,41 @@ class StudentController extends Controller
 
             DB::commit();
 
-            // TEMP: log instead of sending SMS
-            logger()->info("OTP for {$tel} is {$code}");
+            logger()->info("Student OTP sent to {$tel}: {$code}");
         } catch (\Throwable $e) {
             DB::rollBack();
-            throw $e; // Let controller decide response
+            throw $e;
         }
     }
 
+    /**
+     * Send phone OTP (Supports both HTTP Request and direct phone string invocation)
+     */
+    public function sendPhoneOtp($requestOrTel)
+    {
+        if (is_string($requestOrTel)) {
+            $this->dispatchStudentPhoneOtp($requestOrTel);
+            return null;
+        }
 
-    // public function sendPhoneOtp(Request $request)
-    // {
-    //     try {
-    //         $request->validate([
-    //             'tel' => ['required', 'string'],
-    //         ]);
+        try {
+            $requestOrTel->validate([
+                'tel' => ['required', 'string'],
+            ]);
 
-    //         $code = random_int(100000, 999999);
+            $this->dispatchStudentPhoneOtp($requestOrTel->tel);
 
-    //         $response = app(BulkSMSService::class)->sendSMS(
-    //             $request->tel,
-    //             "Your Tutorial Center verification code is {$code}. It expires in 10 minutes."
-    //         );
-
-    //         return response()->json([
-    //             'success' => true,
-    //             'otp' => $code, // Remove this in production
-    //             'response' => $response,
-    //         ]);
-    //     } catch (\Exception $error) {
-    //         return response()->json([
-    //             'success' => false,
-    //             'errors' => $error->getMessage(),
-    //         ], 500);
-    //     }
-    // }
+            return response()->json([
+                'success' => true,
+                'message' => 'OTP sent successfully.',
+            ]);
+        } catch (\Throwable $error) {
+            return response()->json([
+                'success' => false,
+                'message' => $error->getMessage() ?: 'Failed to send OTP.',
+            ], 500);
+        }
+    }
 
     /**
      * Summary of verifyPhoneOtp
@@ -1248,7 +1252,7 @@ class StudentController extends Controller
         try {
             DB::beginTransaction();
 
-            $this->sendPhoneOtp($student->tel);
+            $this->dispatchStudentPhoneOtp($student->tel);
             DB::commit();
 
             return response()->json([
@@ -1298,14 +1302,9 @@ class StudentController extends Controller
             ->delete();
 
         $code = random_int(100000, 999999);
-        $message = "Your password reset code is {$code}. It expires in 10 minutes.";
+        $message = "Your Tutorial Center password reset code is {$code}. It expires in 10 minutes.";
 
-        // Simulate SMS sending (replace with actual SMS service)
-        $smsSent = true; // simulate success
-
-        if (!$smsSent) {
-            throw new \Exception('SMS sending failed');
-        }
+        app(BulkSMSService::class)->sendSMS($tel, $message);
 
         DB::table('phone_otps')->insert([
             'tel' => $tel,
@@ -1356,12 +1355,8 @@ class StudentController extends Controller
                 $code = random_int(100000, 999999);
                 $message = "Your phone number change verification code is {$code}. It expires in 10 minutes.";
 
-                // 3. Send SMS (SIMULATED)
-                $smsSent = true; // simulate success
-
-                if (!$smsSent) {
-                    throw new \Exception('SMS sending failed');
-                }
+                // 3. Send SMS via BulkSMSService
+                app(BulkSMSService::class)->sendSMS($changeRequest->new_value, $message);
 
                 // 4. Update the contact change request with new OTP
                 DB::table('contact_change_requests')
@@ -1858,9 +1853,7 @@ class StudentController extends Controller
 
             if ($result['student']->tel && empty($result['student']->tel_verified_at)) {
                 try {
-                    $code = random_int(100000, 999999);
-                    $message = "Your verification code is {$code}. It expires in 10 minutes.";
-                    app(BulkSMSService::class)->send($result['student']->tel, $message);
+                    $this->dispatchStudentPhoneOtp($result['student']->tel);
                     $verification['phone_otp_sent'] = true;
                 } catch (\Throwable $e) {
                     report($e);

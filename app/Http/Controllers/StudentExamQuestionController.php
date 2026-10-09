@@ -97,12 +97,22 @@ class StudentExamQuestionController extends Controller
                 $startIndex += $subCount;
             }
         } else {
-            $questions = $attempt
+            $questionsQuery = $attempt
                 ->examYear
-                ->pastQuestions()
+                ->pastQuestions();
+
+            if ($attempt->paper_type) {
+                $questionsQuery->where(function ($q) use ($attempt) {
+                    $q->where('paper_type', $attempt->paper_type)
+                      ->orWhereNull('paper_type');
+                });
+            }
+
+            $questions = $questionsQuery
                 ->with([
                     'options:id,past_question_id,label,option_text', 'group',
                 ])
+                ->orderBy('question_number', 'asc')
                 ->get();
         }
 
