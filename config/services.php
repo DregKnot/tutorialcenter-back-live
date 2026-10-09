@@ -36,9 +36,12 @@ return [
     ],
 
     'bulksms' => [
-        'base_url' => env('BULK_SMS_BASE_URL'),
+        'sandbox' => env('BULK_SMS_SANDBOX_MODE', true),
+        'live_url' => env('BULK_SMS_BASE_URL', 'https://www.bulksmsnigeria.com/api/v2'),
+        'sandbox_url' => env('BULK_SMS_SANDBOX_URL', 'https://www.bulksmsnigeria.com/api/sandbox/v2'),
         'api_token' => env('BULK_SMS_API_TOKEN'),
-        'sender_id' => env('BULK_SMS_SENDER_ID'),
+        'sender_id' => env('BULK_SMS_SENDER_ID', 'TutorialCtr'),
+        'gateway' => env('BULK_SMS_GATEWAY', null),
     ],
 
     'zoom' => [

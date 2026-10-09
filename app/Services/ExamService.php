@@ -17,11 +17,12 @@ class ExamService
         protected ExamActivityService $examActivityService
     ) {}
 
-    public function startExam(Student $student, $examYearId)
+    public function startExam(Student $student, $examYearId, ?string $paperType = null)
     {
         return DB::transaction(function () use (
             $student,
-            $examYearId
+            $examYearId,
+            $paperType
         ) {
             if (! $student->canAccessExam($examYearId)) {
                 abort(403, 'Not eligible');
@@ -29,12 +30,31 @@ class ExamService
 
             Student::whereKey($student->id)->lockForUpdate()->firstOrFail();
 
-            $existingAttempt = ExamAttempt::lockForUpdate()
+            $examYear = \App\Models\ExamYear::findOrFail($examYearId);
+
+            // Resolve paper_type if exam year has paper types
+            $resolvedPaperType = null;
+            if ($examYear->has_paper_types) {
+                if ($paperType && is_array($examYear->paper_types) && in_array($paperType, $examYear->paper_types)) {
+                    $resolvedPaperType = $paperType;
+                } elseif (!empty($examYear->paper_types) && is_array($examYear->paper_types)) {
+                    $resolvedPaperType = $examYear->paper_types[0];
+                } else {
+                    $resolvedPaperType = $paperType;
+                }
+            }
+
+            $existingAttemptQuery = ExamAttempt::lockForUpdate()
                 ->where('student_id', $student->id)
                 ->where('exam_year_id', $examYearId)
                 ->where('status', ExamAttempt::IN_PROGRESS)
-                ->where('started_at', '>=', now()->subHours(2))
-                ->first();
+                ->where('started_at', '>=', now()->subHours(2));
+
+            if ($resolvedPaperType) {
+                $existingAttemptQuery->where('paper_type', $resolvedPaperType);
+            }
+
+            $existingAttempt = $existingAttemptQuery->first();
 
             if ($existingAttempt) {
                 $this->subjectTrialService->recordStarted($existingAttempt);
@@ -42,11 +62,19 @@ class ExamService
                 return $existingAttempt;
             }
 
-            $questionsCount = PastQuestion::where('exam_year_id', $examYearId)->count();
+            $questionsQuery = PastQuestion::where('exam_year_id', $examYearId);
+            if ($resolvedPaperType) {
+                $questionsQuery->where(function ($q) use ($resolvedPaperType) {
+                    $q->where('paper_type', $resolvedPaperType)
+                      ->orWhereNull('paper_type');
+                });
+            }
+            $questionsCount = $questionsQuery->count();
 
             $attempt = ExamAttempt::create([
                 'student_id' => $student->id,
                 'exam_year_id' => $examYearId,
+                'paper_type' => $resolvedPaperType,
                 'is_jamb' => false,
                 'total_questions' => $questionsCount,
                 'started_at' => now(),

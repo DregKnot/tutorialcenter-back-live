@@ -51,7 +51,8 @@ class StudentExamController extends Controller
         $attempt = $this->examService
             ->startExam(
                 $student,
-                $examYear->id
+                $examYear->id,
+                $request->input('paper_type')
             );
 
         try {
