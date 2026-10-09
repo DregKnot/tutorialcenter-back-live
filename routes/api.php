@@ -506,7 +506,8 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::get('/all', [ExamYearController::class, 'index']); // List all exam years (including inactive)
         Route::post('/', [ExamYearController::class, 'store']); // Create new exam year
         Route::get('/{id}', [ExamYearController::class, 'show']); // Show exam year details
-        Route::put('/update/{id}', [ExamYearController::class, 'update']); // Update exam year
+        Route::put('/update/{id}', [ExamYearController::class, 'update'])
+            ->middleware('staff.role:admin,super_admin,superadmin,moderator'); // Update exam year
         Route::delete('/destroy/{id}', [ExamYearController::class, 'destroy']); // Soft delete exam year
     });
 

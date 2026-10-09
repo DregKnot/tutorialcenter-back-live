@@ -59,6 +59,9 @@ class ExamYearController extends Controller
                 }),
             ],
             'status' => ['required', 'in:active,inactive'],
+            'has_paper_types' => ['nullable', 'boolean'],
+            'paper_types' => ['nullable', 'array'],
+            'paper_types.*' => ['string', 'max:50'],
         ]);
 
         if ($validator->fails()) {
@@ -73,6 +76,8 @@ class ExamYearController extends Controller
             'subject_id' => $request->subject_id,
             'year' => $request->year,
             'status' => $request->status ?? 'active',
+            'has_paper_types' => $request->boolean('has_paper_types', false),
+            'paper_types' => $request->boolean('has_paper_types', false) ? ($request->input('paper_types') ?? []) : [],
         ]);
 
         AdminNotificationService::notify(
@@ -105,6 +110,14 @@ class ExamYearController extends Controller
     // Update an existing exam year
     public function update(Request $request, $id)
     {
+        $user = $request->user();
+        $allowedRoles = ['admin', 'super_admin', 'superadmin', 'moderator'];
+        if (!$user || !in_array(strtolower($user->role ?? ''), $allowedRoles)) {
+            return response()->json([
+                'message' => 'Access denied. Only administrators and moderators are authorized to edit exam years.',
+            ], 403);
+        }
+
         $examYear = ExamYear::findOrFail($id);
         $validator = Validator::make($request->all(), [
             'exam_body_id' => ['required', 'exists:exam_bodies,id'],
@@ -123,6 +136,9 @@ class ExamYearController extends Controller
                 })->ignore($examYear->id),
             ],
             'status' => ['required', 'in:active,inactive'],
+            'has_paper_types' => ['nullable', 'boolean'],
+            'paper_types' => ['nullable', 'array'],
+            'paper_types.*' => ['string', 'max:50'],
         ]);
 
         if ($validator->fails()) {
@@ -137,6 +153,8 @@ class ExamYearController extends Controller
             'subject_id' => $request->subject_id,
             'year' => $request->year,
             'status' => $request->status ?? $examYear->status,
+            'has_paper_types' => $request->has('has_paper_types') ? $request->boolean('has_paper_types') : $examYear->has_paper_types,
+            'paper_types' => $request->has('paper_types') ? ($request->input('paper_types') ?? []) : $examYear->paper_types,
         ]);
 
         AdminNotificationService::notify(
@@ -239,10 +257,15 @@ class ExamYearController extends Controller
     // Retrieve a paginated list of past questions for a specific exam year
     public function questions(Request $request)
     {
+        $query = PastQuestion::with('options', 'files', 'group')
+            ->where('exam_year_id', $request->exam_year_id);
+
+        if ($request->filled('paper_type')) {
+            $query->where('paper_type', $request->paper_type);
+        }
+
         return response()->json(
-            PastQuestion::with('options', 'files', 'group')
-                ->where('exam_year_id', $request->exam_year_id)
-                ->orderBy('question_number')
+            $query->orderBy('question_number')
                 ->paginate(50)
         );
     }

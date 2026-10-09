@@ -48,7 +48,7 @@ class CognitiveTestController extends Controller
     public function complete(Request $request, CognitiveTest $cognitiveTest)
     {
         $validated = $request->validate([
-            'score' => ['required', 'integer', 'between:0,20'],
+            'score' => ['required', 'integer', 'min:0', 'max:50'],
         ]);
 
         $cognitiveTest->update([
