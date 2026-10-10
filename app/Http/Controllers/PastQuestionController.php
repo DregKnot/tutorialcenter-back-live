@@ -77,6 +77,10 @@ class PastQuestionController extends Controller
                 $query->where('question_type', $request->question_type);
             }
 
+            if ($request->filled('paper_type')) {
+                $query->where('paper_type', $request->paper_type);
+            }
+
             if ($request->filled('status')) {
                 $query->where('status', $request->status);
             }
@@ -104,6 +108,7 @@ class PastQuestionController extends Controller
             'question_number' => ['nullable', 'integer', 'min:1'],
             'question' => ['required', 'string'],
             'question_type' => ['nullable', 'in:multiple_choice,true_false,short_answer,essay'],
+            'paper_type' => ['nullable', 'string', 'max:50'],
             'marks' => ['nullable', 'integer', 'min:1'],
             'explanation' => ['nullable', 'string'],
             'status' => ['nullable', 'in:active,inactive'],
@@ -135,6 +140,7 @@ class PastQuestionController extends Controller
                 'question_number' => $request->question_number,
                 'question' => $this->sanitizeBase64Images($request->question),
                 'question_type' => $request->question_type ?? 'multiple_choice',
+                'paper_type' => $request->filled('paper_type') ? trim($request->paper_type) : null,
                 'marks' => $request->marks ?? 1,
                 'explanation' => $this->sanitizeBase64Images($request->explanation),
                 'status' => $request->status ?? 'active',
@@ -208,6 +214,7 @@ class PastQuestionController extends Controller
             'question_number' => ['nullable', 'integer', 'min:1'],
             'question' => ['required', 'string'],
             'question_type' => ['nullable', 'in:multiple_choice,true_false,short_answer,essay'],
+            'paper_type' => ['nullable', 'string', 'max:50'],
             'marks' => ['nullable', 'integer', 'min:1'],
             'explanation' => ['nullable', 'string'],
             'status' => ['nullable', 'in:active,inactive'],
@@ -239,6 +246,7 @@ class PastQuestionController extends Controller
                 'question_number' => $request->question_number,
                 'question' => $request->question,
                 'question_type' => $request->question_type ?? $pastQuestion->question_type,
+                'paper_type' => $request->has('paper_type') ? ($request->filled('paper_type') ? trim($request->paper_type) : null) : $pastQuestion->paper_type,
                 'marks' => $request->marks ?? $pastQuestion->marks,
                 'explanation' => $request->explanation,
                 'status' => $request->status ?? $pastQuestion->status,

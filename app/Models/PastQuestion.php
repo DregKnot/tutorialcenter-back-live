@@ -15,6 +15,7 @@ class PastQuestion extends Model
         'question_number',
         'question',
         'question_type',
+        'paper_type',
         'marks',
         'explanation',
         'status',

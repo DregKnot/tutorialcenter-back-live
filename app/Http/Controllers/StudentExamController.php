@@ -105,6 +105,7 @@ class StudentExamController extends Controller
             'exam_year_ids' => 'required|array|size:4',
             'exam_year_ids.*' => 'required|exists:exam_years,id',
             'timer' => 'nullable|integer|min:1',
+            'paper_types' => 'nullable|array',
         ]);
 
         $student = $request->user();

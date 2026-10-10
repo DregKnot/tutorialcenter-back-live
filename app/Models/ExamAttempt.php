@@ -13,6 +13,7 @@ class ExamAttempt extends Model
     protected $fillable = [
         'student_id',
         'exam_year_id',
+        'paper_type',
         'score',
         'total_questions',
         'correct_answers',

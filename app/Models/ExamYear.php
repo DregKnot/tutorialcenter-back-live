@@ -14,10 +14,14 @@ class ExamYear extends Model
         'subject_id',
         'year',
         'status',
+        'has_paper_types',
+        'paper_types',
     ];
 
     protected $casts = [
         'year' => 'integer',
+        'has_paper_types' => 'boolean',
+        'paper_types' => 'array',
     ];
 
     public function examBody()
