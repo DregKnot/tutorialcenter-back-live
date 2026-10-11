@@ -112,10 +112,23 @@ class PaymentController extends Controller
                 // Only a confirmed payment may activate the enrollment. A pending
                 // or failed row must never unlock course access.
                 if ($payment->status === 'successful') {
-                    $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+                    $cycle = $locked->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly';
+                $months = match ($cycle) {
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                    default => 1,
+                };
+                $startDate = now();
+                $endDate = now()->addMonths($months);
+
+                $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                 $enrollment->update([
                     'enrollment_code' => $permanentCode,
                     'status' => 'active',
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'billing_cycle' => $cycle,
                     'paid_at' => $paidAt,
                     'expires_at' => null,
                     'termination_reason' => null,
@@ -369,10 +382,23 @@ class PaymentController extends Controller
                         ]),
                     ]);
 
-                    $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+                    $cycle = $locked->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly';
+                $months = match ($cycle) {
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                    default => 1,
+                };
+                $startDate = now();
+                $endDate = now()->addMonths($months);
+
+                $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                 $enrollment->update([
                     'enrollment_code' => $permanentCode,
                     'status' => 'active',
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'billing_cycle' => $cycle,
                     'paid_at' => $paidAt,
                     'expires_at' => null,
                     'termination_reason' => null,
@@ -518,6 +544,29 @@ class PaymentController extends Controller
             ], 422);
         }
 
+        // If enrollment cost is missing or <= 0, or if billing cycle requested, recalculate from course
+        if ((float) $enrollment->cost <= 0 || $request->filled('billing_cycle')) {
+            $course = Course::find($enrollment->course_id);
+            if ($course) {
+                $billingCycle = $request->input('billing_cycle', $enrollment->billing_cycle ?: 'monthly');
+                $months = match ($billingCycle) {
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                    default => 1,
+                };
+                $calcCost = $course->price * $months;
+                if ($months > 1) {
+                    $calcCost *= 0.95;
+                }
+                $enrollment->update([
+                    'cost' => $calcCost,
+                    'billing_cycle' => $billingCycle,
+                ]);
+                $enrollment->refresh();
+            }
+        }
+
         // The enrollment cost is authoritative; never trust a client amount.
         if ((float) $enrollment->cost <= 0) {
             return response()->json([
@@ -525,9 +574,14 @@ class PaymentController extends Controller
             ], 422);
         }
 
-        if (Payment::where('course_enrollment_id', $enrollment->id)->where('status', 'successful')->exists()) {
+        $isCurrentlyActiveAndPaid = $enrollment->status === 'active'
+            && $enrollment->end_date
+            && \Carbon\Carbon::parse($enrollment->end_date)->isFuture()
+            && Payment::where('course_enrollment_id', $enrollment->id)->where('status', 'successful')->exists();
+
+        if ($isCurrentlyActiveAndPaid) {
             return response()->json([
-                'message' => 'This enrollment is already paid.',
+                'message' => 'This enrollment is already active and paid.',
             ], 409);
         }
 
@@ -549,6 +603,12 @@ class PaymentController extends Controller
         }
 
         if ($payment) {
+            if (abs((float) $payment->amount - (float) $enrollment->cost) > 0.01) {
+                $payment->update([
+                    'amount' => $enrollment->cost,
+                    'billing_cycle' => $enrollment->billing_cycle,
+                ]);
+            }
             $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
             if (!empty($validated['subjects']) || !empty($validated['exam_track'])) {
                 $meta = $payment->meta ?? [];
@@ -796,6 +856,12 @@ class PaymentController extends Controller
                 $conflictingPayment = Payment::where('course_enrollment_id', $locked->course_enrollment_id)
                     ->where('id', '!=', $locked->id)
                     ->where('status', 'successful')
+                    ->where(function ($q) use ($locked, $enrollment) {
+                        $q->where('created_at', '>=', $locked->created_at->copy()->subHours(24))
+                          ->orWhere(function ($sub) use ($enrollment) {
+                              $sub->where('end_date', '>', now());
+                          });
+                    })
                     ->first();
 
                 if ($conflictingPayment) {
@@ -848,10 +914,23 @@ class PaymentController extends Controller
                     ]),
                 ]);
 
+                $cycle = $locked->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly';
+                $months = match ($cycle) {
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                    default => 1,
+                };
+                $startDate = now();
+                $endDate = now()->addMonths($months);
+
                 $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                 $enrollment->update([
                     'enrollment_code' => $permanentCode,
                     'status' => 'active',
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'billing_cycle' => $cycle,
                     'paid_at' => $paidAt,
                     'expires_at' => null,
                     'termination_reason' => null,
