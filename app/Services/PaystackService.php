@@ -215,8 +215,8 @@ class PaystackService
                     ]];
                 }
 
-                // If courses list is still empty (e.g. from Paystack webhook where metadata is not nested),
-                // resolve the student's pending course enrollments waiting to be activated.
+                // If courses list is still empty (e.g. from Paystack bank transfer webhook where metadata is not nested),
+                // resolve the student's enrollments reliably so valid payments are never dropped.
                 if (empty($coursesList) && $student) {
                     $pendingEnrollments = $student->courseEnrollments()->where('status', 'pending')->get();
                     if ($pendingEnrollments->isNotEmpty()) {
@@ -229,15 +229,33 @@ class PaystackService
                                 'subjects' => $subjects,
                             ];
                         })->toArray();
-                    } elseif ($student->courseEnrollments()->exists()) {
-                        $latestEnrollment = $student->courseEnrollments()->latest()->first();
-                        if ($latestEnrollment) {
-                            $coursesList = [[
-                                'course_id' => $latestEnrollment->course_id,
-                                'billing_cycle' => $latestEnrollment->billing_cycle ?: 'monthly',
-                                'price' => (float) ($latestEnrollment->cost ?: $amountPaid),
-                                'subjects' => $latestEnrollment->subjects()->pluck('subject_id')->toArray(),
-                            ]];
+                    } else {
+                        // Check all existing enrollments (active, expired, or soft-deleted)
+                        $allEnrollments = CoursesEnrollment::withTrashed()
+                            ->where('student_id', $student->id)
+                            ->get();
+
+                        if ($allEnrollments->isNotEmpty()) {
+                            // Match by payment amount or fallback to latest updated enrollment
+                            $matchedEnrollment = $allEnrollments->first(function ($e) use ($amountPaid) {
+                                return $amountPaid > 0 && abs(((float) $e->cost) - $amountPaid) < 1.0;
+                            }) ?? $allEnrollments->sortByDesc('updated_at')->first();
+
+                            if ($matchedEnrollment) {
+                                $existingSubjects = $matchedEnrollment->subjects()->pluck('subject_id')->toArray();
+                                $coursesList = [[
+                                    'course_id' => $matchedEnrollment->course_id,
+                                    'billing_cycle' => $matchedEnrollment->billing_cycle ?: 'monthly',
+                                    'price' => $amountPaid > 0 ? $amountPaid : (float) ($matchedEnrollment->cost ?: 8000),
+                                    'subjects' => $existingSubjects,
+                                ]];
+                                Log::info('Resolved course for Paystack renewal from student existing enrollment', [
+                                    'reference' => $reference,
+                                    'student_id' => $student->id,
+                                    'course_id' => $matchedEnrollment->course_id,
+                                    'amount_paid' => $amountPaid,
+                                ]);
+                            }
                         }
                     }
                 }
@@ -352,8 +370,11 @@ class PaystackService
             ->where('student_id', $student->id)
             ->first();
 
-        $startDate = now();
-        $endDate = now()->addMonths($months);
+        // If renewing an active course, extend seamlessly from existing end date; otherwise from now
+        $isCurrentlyActive = $enrollment && $enrollment->status === 'active' && $enrollment->end_date && $enrollment->end_date->isFuture();
+        $baseDate = $isCurrentlyActive ? $enrollment->end_date : now();
+        $startDate = $isCurrentlyActive ? ($enrollment->start_date ?: now()) : now();
+        $endDate = $baseDate->copy()->addMonths($months);
 
         $existingPayment = null;
 
