@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Course;
 use App\Models\CoursesEnrollment;
 use App\Models\Payment;
 use App\Models\Staff;
@@ -546,7 +547,7 @@ class PaymentController extends Controller
 
         // If enrollment cost is missing or <= 0, or if billing cycle requested, recalculate from course
         if ((float) $enrollment->cost <= 0 || $request->filled('billing_cycle')) {
-            $course = Course::find($enrollment->course_id);
+            $course = \App\Models\Course::find($enrollment->course_id);
             if ($course) {
                 $billingCycle = $request->input('billing_cycle', $enrollment->billing_cycle ?: 'monthly');
                 $months = match ($billingCycle) {
