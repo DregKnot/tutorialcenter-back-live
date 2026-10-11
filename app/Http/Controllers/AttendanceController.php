@@ -35,6 +35,27 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Unauthorized student.'], 401);
         }
 
+        // Enforce active subscription check for student attendance
+        $now = now();
+        $hasActiveSubscription = \App\Models\CoursesEnrollment::where('student_id', $student->id)
+            ->where('status', 'active')
+            ->where(function ($q) use ($now) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+            })
+            ->whereHas('payments', function ($q) {
+                $q->whereIn('status', ['successful', 'paid']);
+            })
+            ->exists();
+
+        if (!$hasActiveSubscription) {
+            return response()->json([
+                'success' => false,
+                'subscription_expired' => true,
+                'message' => 'Your course subscription has expired. Please renew your training to attend live classes.',
+            ], 403);
+        }
+
         $sessionId = (int) $validated['class_session_id'];
 
         $session = ClassSession::with(['class.subject', 'class.staffs'])->find($sessionId);
@@ -137,6 +158,27 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Unauthorized student.'], 401);
         }
 
+        // Enforce active subscription check for student attendance
+        $now = now();
+        $hasActiveSubscription = \App\Models\CoursesEnrollment::where('student_id', $student->id)
+            ->where('status', 'active')
+            ->where(function ($q) use ($now) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+            })
+            ->whereHas('payments', function ($q) {
+                $q->whereIn('status', ['successful', 'paid']);
+            })
+            ->exists();
+
+        if (!$hasActiveSubscription) {
+            return response()->json([
+                'success' => false,
+                'subscription_expired' => true,
+                'message' => 'Your course subscription has expired. Please renew your training to attend live classes.',
+            ], 403);
+        }
+
         $sessionId = (int) $validated['class_session_id'];
 
         $session = ClassSession::find($sessionId);
@@ -229,6 +271,27 @@ class AttendanceController extends Controller
         $student = $request->user() ?: auth('student')->user();
         if (! $student) {
             return response()->json(['message' => 'Unauthorized student.'], 401);
+        }
+
+        // Enforce active subscription check for student attendance
+        $now = now();
+        $hasActiveSubscription = \App\Models\CoursesEnrollment::where('student_id', $student->id)
+            ->where('status', 'active')
+            ->where(function ($q) use ($now) {
+                $q->whereNull('end_date')
+                  ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+            })
+            ->whereHas('payments', function ($q) {
+                $q->whereIn('status', ['successful', 'paid']);
+            })
+            ->exists();
+
+        if (!$hasActiveSubscription) {
+            return response()->json([
+                'success' => false,
+                'subscription_expired' => true,
+                'message' => 'Your course subscription has expired. Please renew your training to attend live classes.',
+            ], 403);
         }
 
         $sessionId = (int) $validated['class_session_id'];
