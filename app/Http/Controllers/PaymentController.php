@@ -586,83 +586,103 @@ class PaymentController extends Controller
             ], 409);
         }
 
-        // Reuse the open transfer (and its token) instead of piling up rows.
-        $payment = Payment::where('course_enrollment_id', $enrollment->id)
-            ->where('payment_method', 'bank_transfer')
-            ->where('gateway', 'bank')
-            ->whereIn('status', ['pending', 'failed'])
-            ->latest()
-            ->first();
+        return DB::transaction(function () use ($enrollment, $validated, $request) {
+            // Find all open bank transfers for this enrollment with row-level lock
+            $existingPayments = Payment::where('course_enrollment_id', $enrollment->id)
+                ->where('payment_method', 'bank_transfer')
+                ->where('gateway', 'bank')
+                ->whereIn('status', ['pending', 'failed'])
+                ->lockForUpdate()
+                ->orderByDesc('id')
+                ->get();
 
-        $created = false;
+            $payment = $existingPayments->first();
+            $created = false;
 
-        if (empty($enrollment->enrollment_code)) {
-            $enrollment->update([
-                'enrollment_code' => \App\Models\CoursesEnrollment::generateTemporaryCode(),
-                'expires_at' => $enrollment->expires_at ?: now()->addHours(48),
-            ]);
-        }
+            // If duplicate open payments exist, cancel/supersede older duplicates
+            if ($existingPayments->count() > 1) {
+                foreach ($existingPayments->slice(1) as $duplicate) {
+                    $dupMeta = $duplicate->meta ?? [];
+                    $dupMeta['review'] = [
+                        'action' => 'superseded',
+                        'reason' => 'Duplicate transfer superseded by active reference ' . ($payment ? $payment->gateway_reference : ''),
+                        'at' => now()->toIso8601String(),
+                    ];
+                    $duplicate->update([
+                        'status' => 'cancelled',
+                        'meta' => $dupMeta,
+                    ]);
+                }
+            }
 
-        if ($payment) {
-            if (abs((float) $payment->amount - (float) $enrollment->cost) > 0.01) {
-                $payment->update([
+            if (empty($enrollment->enrollment_code)) {
+                $enrollment->update([
+                    'enrollment_code' => \App\Models\CoursesEnrollment::generateTemporaryCode(),
+                    'expires_at' => $enrollment->expires_at ?: now()->addHours(48),
+                ]);
+            }
+
+            if ($payment) {
+                if (abs((float) $payment->amount - (float) $enrollment->cost) > 0.01) {
+                    $payment->update([
+                        'amount' => $enrollment->cost,
+                        'billing_cycle' => $enrollment->billing_cycle,
+                    ]);
+                }
+                $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
+                if (!empty($validated['subjects']) || !empty($validated['exam_track'])) {
+                    $meta = $payment->meta ?? [];
+                    $bankTransfer = $meta['bank_transfer'] ?? [];
+                    if (!empty($validated['subjects'])) {
+                        $bankTransfer['subjects'] = $validated['subjects'];
+                    }
+                    if (!empty($validated['exam_track'])) {
+                        $bankTransfer['exam_track'] = $validated['exam_track'];
+                    }
+                    $payment->update([
+                        'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
+                    ]);
+                }
+            } else {
+                $accessToken = Str::random(48);
+
+                $payment = Payment::create([
+                    'student_id' => $enrollment->student_id,
+                    'course_enrollment_id' => $enrollment->id,
                     'amount' => $enrollment->cost,
+                    'currency' => 'NGN',
+                    'payment_method' => 'bank_transfer',
+                    'gateway' => 'bank',
+                    'status' => 'pending',
                     'billing_cycle' => $enrollment->billing_cycle,
-                ]);
-            }
-            $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
-            if (!empty($validated['subjects']) || !empty($validated['exam_track'])) {
-                $meta = $payment->meta ?? [];
-                $bankTransfer = $meta['bank_transfer'] ?? [];
-                if (!empty($validated['subjects'])) {
-                    $bankTransfer['subjects'] = $validated['subjects'];
-                }
-                if (!empty($validated['exam_track'])) {
-                    $bankTransfer['exam_track'] = $validated['exam_track'];
-                }
-                $payment->update([
-                    'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
-                ]);
-            }
-        } else {
-            $accessToken = Str::random(48);
-
-            $payment = Payment::create([
-                'student_id' => $enrollment->student_id,
-                'course_enrollment_id' => $enrollment->id,
-                'amount' => $enrollment->cost,
-                'currency' => 'NGN',
-                'payment_method' => 'bank_transfer',
-                'gateway' => 'bank',
-                'status' => 'pending',
-                'billing_cycle' => $enrollment->billing_cycle,
-                'gateway_reference' => $this->generateBankTransferReference(),
-                'meta' => [
-                    'bank_transfer' => [
-                        'access_token' => $accessToken,
-                        'initiated_at' => now()->toIso8601String(),
-                        'subjects' => $validated['subjects'] ?? [],
-                        'exam_track' => $validated['exam_track'] ?? null,
+                    'gateway_reference' => $this->generateBankTransferReference(),
+                    'meta' => [
+                        'bank_transfer' => [
+                            'access_token' => $accessToken,
+                            'initiated_at' => now()->toIso8601String(),
+                            'subjects' => $validated['subjects'] ?? [],
+                            'exam_track' => $validated['exam_track'] ?? null,
+                        ],
                     ],
-                ],
-            ]);
+                ]);
 
-            $created = true;
-        }
+                $created = true;
+            }
 
-        return response()->json([
-            'message' => $created
-                ? 'Bank transfer initiated. Use the reference as your transfer narration.'
-                : 'An open bank transfer already exists for this enrollment.',
-            'payment_id' => $payment->id,
-            'reference' => $payment->gateway_reference,
-            'access_token' => $accessToken,
-            'amount' => $payment->amount,
-            'currency' => $payment->currency,
-            'state' => $this->bankTransferState($payment),
-            'enrollment_code' => $enrollment->fresh()->enrollment_code,
-            'expires_at' => $enrollment->fresh()->expires_at?->toIso8601String(),
-        ], $created ? 201 : 200);
+            return response()->json([
+                'message' => $created
+                    ? 'Bank transfer initiated. Use the reference as your transfer narration.'
+                    : 'An open bank transfer already exists for this enrollment.',
+                'payment_id' => $payment->id,
+                'reference' => $payment->gateway_reference,
+                'access_token' => $accessToken,
+                'amount' => $payment->amount,
+                'currency' => $payment->currency,
+                'state' => $this->bankTransferState($payment),
+                'enrollment_code' => $enrollment->fresh()->enrollment_code,
+                'expires_at' => $enrollment->fresh()->expires_at?->toIso8601String(),
+            ], $created ? 201 : 200);
+        });
     }
 
     // Public (reference + token): the student confirms they have paid.
