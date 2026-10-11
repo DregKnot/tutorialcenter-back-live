@@ -861,19 +861,28 @@ class ClassesController extends Controller
 
             $sessions = $query->orderBy('updated_at', 'desc')->get();
 
-            // Enrollment & Course-level isolation
+            // Enrollment & Course-level isolation with strict active subscription check
             if ($user instanceof Student) {
+                $now = now();
+                $hasAnyEnrollment = CoursesEnrollment::where('student_id', $user->id)->exists();
                 $activeEnrollments = CoursesEnrollment::with('course')
                     ->where('student_id', $user->id)
-                    ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
+                    ->where('status', 'active')
+                    ->where(function ($q) use ($now) {
+                        $q->whereNull('end_date')
+                          ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+                    })
                     ->get();
 
                 if ($activeEnrollments->isEmpty()) {
                     return response()->json([
-                        'success' => true,
+                        'success' => false,
+                        'subscription_expired' => $hasAnyEnrollment,
                         'data' => [],
-                        'message' => 'No active course enrollments found.',
-                    ]);
+                        'message' => $hasAnyEnrollment
+                            ? 'Your course subscription has expired. Please renew your training to access recorded masterclasses.'
+                            : 'No active course enrollments found.',
+                    ], $hasAnyEnrollment ? 403 : 200);
                 }
 
                 $enrolledCourseIds = $activeEnrollments->pluck('course_id')->filter()->toArray();
@@ -1619,31 +1628,62 @@ class ClassesController extends Controller
                 ], 401);
             }
 
-            // 1. Get Subject IDs registered by this student
+            // Strict subscription validity check
+            $now = now();
+            $hasAnyEnrollment = $student->courseEnrollments()->exists();
+            $activeCourseEnrollments = $student->courseEnrollments()
+                ->where('status', 'active')
+                ->where(function ($q) use ($now) {
+                    $q->whereNull('end_date')
+                      ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+                })
+                ->get();
+
+            if ($activeCourseEnrollments->isEmpty()) {
+                return response()->json([
+                    'success' => true,
+                    'subscription_expired' => $hasAnyEnrollment,
+                    'has_active_enrollment' => false,
+                    'message' => $hasAnyEnrollment
+                        ? 'Your course subscription has expired. Please renew your training to access live masterclasses.'
+                        : 'No active course enrollments found. Please enroll to view masterclasses.',
+                    'next_class' => null,
+                    'next_classes' => [],
+                    'today_classes' => [],
+                    'week_schedule' => (object)[],
+                    'upcoming_sessions' => [],
+                    'older_sessions' => [],
+                    'sessions' => [],
+                    'data' => [
+                        'next_class' => null,
+                        'next_classes' => [],
+                        'today_classes' => [],
+                        'week_schedule' => (object)[],
+                        'upcoming_sessions' => [],
+                        'older_sessions' => [],
+                        'sessions' => [],
+                    ]
+                ], 200);
+            }
+
+            $activeCourseIds = $activeCourseEnrollments->pluck('course_id')->filter()->unique();
+
+            // 1. Get Subject IDs registered by this student under their active enrollments
             $subjectIds = $student->subjectEnrollments()
                 ->whereNull('deleted_at')
                 ->pluck('subject_id')
                 ->unique()
                 ->values();
 
-            // If empty, check active course enrollments
-            if ($subjectIds->isEmpty()) {
-                $courseIds = $student->courseEnrollments()
-                    ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
-                    ->pluck('course_id');
-
-                if ($courseIds->isNotEmpty()) {
-                    $subjectIds = \App\Models\Subject::whereHas('courses', function($q) use ($courseIds) {
-                        $q->whereIn('courses.id', $courseIds);
-                    })->pluck('id');
-                }
+            // If subject enrollments are empty, pull subject IDs linked to the active enrolled courses
+            if ($subjectIds->isEmpty() && $activeCourseIds->isNotEmpty()) {
+                $subjectIds = \App\Models\Subject::whereHas('courses', function($q) use ($activeCourseIds) {
+                    $q->whereIn('courses.id', $activeCourseIds);
+                })->pluck('id');
             }
 
             // Check if student has an active enrollment in any O-Level exam (WAEC: 2, NECO: 3, GCE: 4)
-            $isOLevelStudent = $student->courseEnrollments()
-                ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
-                ->whereIn('course_id', [2, 3, 4])
-                ->exists();
+            $isOLevelStudent = $activeCourseIds->intersect([2, 3, 4])->isNotEmpty();
 
             // 2. Base Query for Class Sessions
             $sessionQuery = ClassSession::with([
@@ -1653,9 +1693,9 @@ class ClassesController extends Controller
                     $q->where('student_id', $student->id);
                 }
             ])
-            ->whereHas('class', function ($q) use ($subjectIds, $isOLevelStudent) {
+            ->whereHas('class', function ($q) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
                 $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']);
-                $q->where(function ($subQ) use ($subjectIds, $isOLevelStudent) {
+                $q->where(function ($subQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
                     if ($subjectIds->isNotEmpty()) {
                         $subQ->whereIn('subject_id', $subjectIds);
                     }
@@ -1663,11 +1703,14 @@ class ClassesController extends Controller
                         $subQ->orWhere('title', 'LIKE', 'O-Level%')
                              ->orWhere('title', 'LIKE', 'O-LEVEL%');
                     }
+                    if ($activeCourseIds->isNotEmpty()) {
+                        $subQ->orWhereHas('subject.courses', fn($cQ) => $cQ->whereIn('courses.id', $activeCourseIds));
+                    }
                 });
             });
 
-            // If subjectIds still empty, fallback to active classes so calendar isn't blank
-            if ($subjectIds->isEmpty()) {
+            // If subjectIds still empty, restrict strictly to active course classes
+            if ($subjectIds->isEmpty() && $activeCourseIds->isNotEmpty()) {
                 $sessionQuery = ClassSession::with([
                     'class.subject',
                     'class.staffs',
@@ -1675,7 +1718,10 @@ class ClassesController extends Controller
                         $q->where('student_id', $student->id);
                     }
                 ])
-                ->whereHas('class', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']));
+                ->whereHas('class', function($q) use ($activeCourseIds) {
+                    $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
+                      ->whereHas('subject.courses', fn($cQ) => $cQ->whereIn('courses.id', $activeCourseIds));
+                });
             }
 
             $transformStudentSession = function($session) use ($student) {
