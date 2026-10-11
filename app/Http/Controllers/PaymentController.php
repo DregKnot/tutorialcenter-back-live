@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Course;
 use App\Models\CoursesEnrollment;
 use App\Models\Payment;
 use App\Models\Staff;
@@ -112,10 +113,23 @@ class PaymentController extends Controller
                 // Only a confirmed payment may activate the enrollment. A pending
                 // or failed row must never unlock course access.
                 if ($payment->status === 'successful') {
-                    $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+                    $cycle = $locked->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly';
+                $months = match ($cycle) {
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                    default => 1,
+                };
+                $startDate = now();
+                $endDate = now()->addMonths($months);
+
+                $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                 $enrollment->update([
                     'enrollment_code' => $permanentCode,
                     'status' => 'active',
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'billing_cycle' => $cycle,
                     'paid_at' => $paidAt,
                     'expires_at' => null,
                     'termination_reason' => null,
@@ -369,10 +383,23 @@ class PaymentController extends Controller
                         ]),
                     ]);
 
-                    $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+                    $cycle = $locked->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly';
+                $months = match ($cycle) {
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                    default => 1,
+                };
+                $startDate = now();
+                $endDate = now()->addMonths($months);
+
+                $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                 $enrollment->update([
                     'enrollment_code' => $permanentCode,
                     'status' => 'active',
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'billing_cycle' => $cycle,
                     'paid_at' => $paidAt,
                     'expires_at' => null,
                     'termination_reason' => null,
@@ -518,6 +545,29 @@ class PaymentController extends Controller
             ], 422);
         }
 
+        // If enrollment cost is missing or <= 0, or if billing cycle requested, recalculate from course
+        if ((float) $enrollment->cost <= 0 || $request->filled('billing_cycle')) {
+            $course = \App\Models\Course::find($enrollment->course_id);
+            if ($course) {
+                $billingCycle = $request->input('billing_cycle', $enrollment->billing_cycle ?: 'monthly');
+                $months = match ($billingCycle) {
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                    default => 1,
+                };
+                $calcCost = $course->price * $months;
+                if ($months > 1) {
+                    $calcCost *= 0.95;
+                }
+                $enrollment->update([
+                    'cost' => $calcCost,
+                    'billing_cycle' => $billingCycle,
+                ]);
+                $enrollment->refresh();
+            }
+        }
+
         // The enrollment cost is authoritative; never trust a client amount.
         if ((float) $enrollment->cost <= 0) {
             return response()->json([
@@ -525,83 +575,114 @@ class PaymentController extends Controller
             ], 422);
         }
 
-        if (Payment::where('course_enrollment_id', $enrollment->id)->where('status', 'successful')->exists()) {
+        $isCurrentlyActiveAndPaid = $enrollment->status === 'active'
+            && $enrollment->end_date
+            && \Carbon\Carbon::parse($enrollment->end_date)->isFuture()
+            && Payment::where('course_enrollment_id', $enrollment->id)->where('status', 'successful')->exists();
+
+        if ($isCurrentlyActiveAndPaid) {
             return response()->json([
-                'message' => 'This enrollment is already paid.',
+                'message' => 'This enrollment is already active and paid.',
             ], 409);
         }
 
-        // Reuse the open transfer (and its token) instead of piling up rows.
-        $payment = Payment::where('course_enrollment_id', $enrollment->id)
-            ->where('payment_method', 'bank_transfer')
-            ->where('gateway', 'bank')
-            ->whereIn('status', ['pending', 'failed'])
-            ->latest()
-            ->first();
+        return DB::transaction(function () use ($enrollment, $validated, $request) {
+            // Find all open bank transfers for this enrollment with row-level lock
+            $existingPayments = Payment::where('course_enrollment_id', $enrollment->id)
+                ->where('payment_method', 'bank_transfer')
+                ->where('gateway', 'bank')
+                ->whereIn('status', ['pending', 'failed'])
+                ->lockForUpdate()
+                ->orderByDesc('id')
+                ->get();
 
-        $created = false;
+            $payment = $existingPayments->first();
+            $created = false;
 
-        if (empty($enrollment->enrollment_code)) {
-            $enrollment->update([
-                'enrollment_code' => \App\Models\CoursesEnrollment::generateTemporaryCode(),
-                'expires_at' => $enrollment->expires_at ?: now()->addHours(48),
-            ]);
-        }
-
-        if ($payment) {
-            $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
-            if (!empty($validated['subjects']) || !empty($validated['exam_track'])) {
-                $meta = $payment->meta ?? [];
-                $bankTransfer = $meta['bank_transfer'] ?? [];
-                if (!empty($validated['subjects'])) {
-                    $bankTransfer['subjects'] = $validated['subjects'];
+            // If duplicate open payments exist, cancel/supersede older duplicates
+            if ($existingPayments->count() > 1) {
+                foreach ($existingPayments->slice(1) as $duplicate) {
+                    $dupMeta = $duplicate->meta ?? [];
+                    $dupMeta['review'] = [
+                        'action' => 'superseded',
+                        'reason' => 'Duplicate transfer superseded by active reference ' . ($payment ? $payment->gateway_reference : ''),
+                        'at' => now()->toIso8601String(),
+                    ];
+                    $duplicate->update([
+                        'status' => 'cancelled',
+                        'meta' => $dupMeta,
+                    ]);
                 }
-                if (!empty($validated['exam_track'])) {
-                    $bankTransfer['exam_track'] = $validated['exam_track'];
-                }
-                $payment->update([
-                    'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
+            }
+
+            if (empty($enrollment->enrollment_code)) {
+                $enrollment->update([
+                    'enrollment_code' => \App\Models\CoursesEnrollment::generateTemporaryCode(),
+                    'expires_at' => $enrollment->expires_at ?: now()->addHours(48),
                 ]);
             }
-        } else {
-            $accessToken = Str::random(48);
 
-            $payment = Payment::create([
-                'student_id' => $enrollment->student_id,
-                'course_enrollment_id' => $enrollment->id,
-                'amount' => $enrollment->cost,
-                'currency' => 'NGN',
-                'payment_method' => 'bank_transfer',
-                'gateway' => 'bank',
-                'status' => 'pending',
-                'billing_cycle' => $enrollment->billing_cycle,
-                'gateway_reference' => $this->generateBankTransferReference(),
-                'meta' => [
-                    'bank_transfer' => [
-                        'access_token' => $accessToken,
-                        'initiated_at' => now()->toIso8601String(),
-                        'subjects' => $validated['subjects'] ?? [],
-                        'exam_track' => $validated['exam_track'] ?? null,
+            if ($payment) {
+                if (abs((float) $payment->amount - (float) $enrollment->cost) > 0.01) {
+                    $payment->update([
+                        'amount' => $enrollment->cost,
+                        'billing_cycle' => $enrollment->billing_cycle,
+                    ]);
+                }
+                $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
+                if (!empty($validated['subjects']) || !empty($validated['exam_track'])) {
+                    $meta = $payment->meta ?? [];
+                    $bankTransfer = $meta['bank_transfer'] ?? [];
+                    if (!empty($validated['subjects'])) {
+                        $bankTransfer['subjects'] = $validated['subjects'];
+                    }
+                    if (!empty($validated['exam_track'])) {
+                        $bankTransfer['exam_track'] = $validated['exam_track'];
+                    }
+                    $payment->update([
+                        'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
+                    ]);
+                }
+            } else {
+                $accessToken = Str::random(48);
+
+                $payment = Payment::create([
+                    'student_id' => $enrollment->student_id,
+                    'course_enrollment_id' => $enrollment->id,
+                    'amount' => $enrollment->cost,
+                    'currency' => 'NGN',
+                    'payment_method' => 'bank_transfer',
+                    'gateway' => 'bank',
+                    'status' => 'pending',
+                    'billing_cycle' => $enrollment->billing_cycle,
+                    'gateway_reference' => $this->generateBankTransferReference(),
+                    'meta' => [
+                        'bank_transfer' => [
+                            'access_token' => $accessToken,
+                            'initiated_at' => now()->toIso8601String(),
+                            'subjects' => $validated['subjects'] ?? [],
+                            'exam_track' => $validated['exam_track'] ?? null,
+                        ],
                     ],
-                ],
-            ]);
+                ]);
 
-            $created = true;
-        }
+                $created = true;
+            }
 
-        return response()->json([
-            'message' => $created
-                ? 'Bank transfer initiated. Use the reference as your transfer narration.'
-                : 'An open bank transfer already exists for this enrollment.',
-            'payment_id' => $payment->id,
-            'reference' => $payment->gateway_reference,
-            'access_token' => $accessToken,
-            'amount' => $payment->amount,
-            'currency' => $payment->currency,
-            'state' => $this->bankTransferState($payment),
-            'enrollment_code' => $enrollment->fresh()->enrollment_code,
-            'expires_at' => $enrollment->fresh()->expires_at?->toIso8601String(),
-        ], $created ? 201 : 200);
+            return response()->json([
+                'message' => $created
+                    ? 'Bank transfer initiated. Use the reference as your transfer narration.'
+                    : 'An open bank transfer already exists for this enrollment.',
+                'payment_id' => $payment->id,
+                'reference' => $payment->gateway_reference,
+                'access_token' => $accessToken,
+                'amount' => $payment->amount,
+                'currency' => $payment->currency,
+                'state' => $this->bankTransferState($payment),
+                'enrollment_code' => $enrollment->fresh()->enrollment_code,
+                'expires_at' => $enrollment->fresh()->expires_at?->toIso8601String(),
+            ], $created ? 201 : 200);
+        });
     }
 
     // Public (reference + token): the student confirms they have paid.
@@ -796,6 +877,12 @@ class PaymentController extends Controller
                 $conflictingPayment = Payment::where('course_enrollment_id', $locked->course_enrollment_id)
                     ->where('id', '!=', $locked->id)
                     ->where('status', 'successful')
+                    ->where(function ($q) use ($locked, $enrollment) {
+                        $q->where('created_at', '>=', $locked->created_at->copy()->subHours(24))
+                          ->orWhere(function ($sub) use ($enrollment) {
+                              $sub->where('end_date', '>', now());
+                          });
+                    })
                     ->first();
 
                 if ($conflictingPayment) {
@@ -848,10 +935,23 @@ class PaymentController extends Controller
                     ]),
                 ]);
 
+                $cycle = $locked->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly';
+                $months = match ($cycle) {
+                    'quarterly' => 3,
+                    'semi_annual' => 6,
+                    'annual' => 12,
+                    default => 1,
+                };
+                $startDate = now();
+                $endDate = now()->addMonths($months);
+
                 $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                 $enrollment->update([
                     'enrollment_code' => $permanentCode,
                     'status' => 'active',
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'billing_cycle' => $cycle,
                     'paid_at' => $paidAt,
                     'expires_at' => null,
                     'termination_reason' => null,

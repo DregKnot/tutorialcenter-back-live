@@ -59,6 +59,30 @@ class ZoomController extends Controller
             $session = ClassSession::findOrFail($request->class_session_id);
             $class = $session->class;
 
+            // Enforce active subscription check for students joining masterclasses
+            $user = $request->user();
+            if ($user instanceof \App\Models\Student) {
+                $now = now();
+                $hasActiveSubscription = \App\Models\CoursesEnrollment::where('student_id', $user->id)
+                    ->where('status', 'active')
+                    ->where(function ($q) use ($now) {
+                        $q->whereNull('end_date')
+                          ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+                    })
+                    ->whereHas('payments', function ($q) {
+                        $q->whereIn('status', ['successful', 'paid']);
+                    })
+                    ->exists();
+
+                if (!$hasActiveSubscription) {
+                    return response()->json([
+                        'success' => false,
+                        'subscription_expired' => true,
+                        'message' => 'Your training subscription has expired. Please renew your course to join live masterclasses.',
+                    ], 403);
+                }
+            }
+
             if (!$class) {
                 return response()->json([
                     'success' => false,
