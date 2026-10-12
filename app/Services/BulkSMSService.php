@@ -22,8 +22,8 @@ class BulkSMSService
             : rtrim(config('services.bulksms.live_url', 'https://www.bulksmsnigeria.com/api/v2'), '/');
 
         $this->apiToken = config('services.bulksms.api_token');
-        $this->senderId = config('services.bulksms.sender_id', 'TutorialCtr');
-        $this->gateway = config('services.bulksms.gateway') ?? '';
+        $this->senderId = strtoupper(config('services.bulksms.sender_id', 'TUTORIALCTR'));
+        $this->gateway = config('services.bulksms.gateway') ?: 'direct-corporate';
     }
 
     /**
@@ -52,14 +52,28 @@ class BulkSMSService
     }
 
     /**
-     * Sanitize Nigerian phone numbers (e.g. 0803... -> 234803...)
+     * Sanitize and normalize phone numbers to international E.164 without '+'
+     * (e.g. 0803... -> 234803..., 2340803... -> 234803...)
      */
     public function formatPhoneNumber(string $phone): string
     {
         $cleaned = preg_replace('/[^0-9]/', '', $phone);
+
+        // Handle typo where 0 follows Nigeria country code: 234080... (14 digits)
+        if (str_starts_with($cleaned, '2340') && strlen($cleaned) === 14) {
+            return '234' . substr($cleaned, 4);
+        }
+
+        // Standard Nigerian 11-digit local format: 080..., 090..., 070...
         if (str_starts_with($cleaned, '0') && strlen($cleaned) === 11) {
             return '234' . substr($cleaned, 1);
         }
+
+        // 10 digits without leading 0: 80..., 90..., 70...
+        if (strlen($cleaned) === 10 && in_array(substr($cleaned, 0, 2), ['70', '80', '81', '90', '91', '71'])) {
+            return '234' . $cleaned;
+        }
+
         return $cleaned;
     }
 
@@ -79,6 +93,14 @@ class BulkSMSService
         return $this->baseUrl;
     }
 
+    /**
+     * Get configured Gateway
+     */
+    public function getGateway(): string
+    {
+        return $this->gateway;
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // 1. Send Single SMS (POST /api/sandbox/v2/sms or /api/v2/sms)
     // ─────────────────────────────────────────────────────────────────────────
@@ -89,7 +111,7 @@ class BulkSMSService
         }
 
         $formattedTo = $this->formatPhoneNumber($to);
-        $from = substr($senderId ?? $this->senderId, 0, 11);
+        $from = strtoupper(substr($senderId ?? $this->senderId, 0, 11));
 
         $payload = [
             'api_token' => $this->apiToken,
@@ -97,6 +119,8 @@ class BulkSMSService
             'to' => $formattedTo,
             'body' => $message,
         ];
+
+        // Pass gateway for live transactional routing
         if (!$this->isSandbox && !empty($this->gateway)) {
             $payload['gateway'] = $this->gateway;
         }
@@ -108,6 +132,10 @@ class BulkSMSService
             Log::info('BulkSMS successfully dispatched', [
                 'sandbox' => $this->isSandbox,
                 'to' => $formattedTo,
+                'from' => $from,
+                'gateway_requested' => $this->gateway,
+                'gateway_used' => $data['data']['gateway_used'] ?? null,
+                'message_id' => $data['data']['message_id'] ?? null,
                 'data' => $data['data'] ?? $data,
             ]);
             return $data ?? [];
@@ -115,6 +143,9 @@ class BulkSMSService
 
         Log::error('BulkSMS dispatch failed', [
             'status' => $response->status(),
+            'to' => $formattedTo,
+            'from' => $from,
+            'gateway' => $this->gateway,
             'error' => $response->json(),
         ]);
 
@@ -139,12 +170,17 @@ class BulkSMSService
     // ─────────────────────────────────────────────────────────────────────────
     public function sendBulkSMS(array $recipients, string $message, ?string $senderId = null): array
     {
+        if (empty($this->apiToken)) {
+            throw new \Exception('BulkSMS API token is missing. Please set BULK_SMS_API_TOKEN in your .env file.');
+        }
+
         $formatted = array_map(fn($num) => $this->formatPhoneNumber($num), $recipients);
         $commaList = implode(',', $formatted);
+        $from = strtoupper(substr($senderId ?? $this->senderId, 0, 11));
 
         $payload = [
             'api_token' => $this->apiToken,
-            'from' => substr($senderId ?? $this->senderId, 0, 11),
+            'from' => $from,
             'to' => $commaList,
             'body' => $message,
         ];

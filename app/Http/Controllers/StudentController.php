@@ -1101,7 +1101,16 @@ class StudentController extends Controller
             $message = "Your Tutorial Center verification code is {$code}. It expires in 10 minutes.";
 
             // 3. Send SMS via BulkSMSService
-            app(BulkSMSService::class)->sendSMS($tel, $message);
+            try {
+                app(BulkSMSService::class)->sendSMS($tel, $message);
+            } catch (\Throwable $smsEx) {
+                \Illuminate\Support\Facades\Log::error("BulkSMS dispatch failed for {$tel}: " . $smsEx->getMessage());
+                if (app()->isLocal() || config('services.bulksms.sandbox')) {
+                    \Illuminate\Support\Facades\Log::warning("DEV/SANDBOX OTP fallback for {$tel}: {$code}");
+                } else {
+                    throw $smsEx;
+                }
+            }
 
             // 4. Save OTP
             DB::table('phone_otps')->insert([
