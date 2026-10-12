@@ -877,12 +877,7 @@ class PaymentController extends Controller
                 $conflictingPayment = Payment::where('course_enrollment_id', $locked->course_enrollment_id)
                     ->where('id', '!=', $locked->id)
                     ->where('status', 'successful')
-                    ->where(function ($q) use ($locked, $enrollment) {
-                        $q->where('created_at', '>=', $locked->created_at->copy()->subHours(24))
-                          ->orWhere(function ($sub) use ($enrollment) {
-                              $sub->where('end_date', '>', now());
-                          });
-                    })
+                    ->where('created_at', '>=', $locked->created_at->copy()->subHours(24))
                     ->first();
 
                 if ($conflictingPayment) {

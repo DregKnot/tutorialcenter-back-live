@@ -438,18 +438,22 @@ class CourseController extends Controller
             $pendingEnrollment = CoursesEnrollment::with(['course', 'payments'])
                 ->where('student_id', $studentId)
                 ->where('status', 'pending')
-                ->latest()
+                ->latest('id')
                 ->first();
 
             $pendingData = null;
             if ($pendingEnrollment) {
-                $latestPayment = $pendingEnrollment->payments()->latest()->first();
+                $latestPayment = $pendingEnrollment->payments()->latest('id')->first();
                 $pendingSubjectIds = $latestPayment?->meta['bank_transfer']['subjects'] ?? [];
                 $pendingSubjects = [];
                 if (!empty($pendingSubjectIds)) {
                     $pIds = collect($pendingSubjectIds)->map(fn($item) => is_array($item) ? ($item['id'] ?? null) : $item)->filter()->toArray();
                     $pendingSubjects = \App\Models\Subject::whereIn('id', $pIds)->select('id', 'name')->get();
                 }
+
+                $reviewMeta = $latestPayment?->meta['bank_transfer']['review'] 
+                    ?? $latestPayment?->meta['review'] 
+                    ?? null;
 
                 $pendingData = [
                     'id' => $pendingEnrollment->id,
@@ -461,9 +465,12 @@ class CourseController extends Controller
                     'created_at' => $pendingEnrollment->created_at,
                     'is_expired' => $pendingEnrollment->expires_at ? $pendingEnrollment->expires_at->isPast() : false,
                     'pending_subjects' => $pendingSubjects,
+                    'payment_id' => $latestPayment?->id,
                     'payment_reference' => $latestPayment?->gateway_reference,
                     'payment_method' => $latestPayment?->payment_method,
                     'payment_status' => $latestPayment?->status,
+                    'review_action' => $reviewMeta['action'] ?? null,
+                    'review_reason' => $reviewMeta['reason'] ?? null,
                 ];
             }
 
