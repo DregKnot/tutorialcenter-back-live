@@ -354,6 +354,8 @@ class PaymentController extends Controller
         $validated = $request->validate([
             'gateway_reference' => 'required|string|max:255',
             'reason' => 'required|string|min:5|max:1000',
+            'paid_at' => 'nullable|date',
+            'access_start' => 'nullable|string|in:today,payment_date',
         ]);
 
         try {
@@ -395,14 +397,26 @@ class PaymentController extends Controller
                     && $enrollment->status === 'active';
 
                 if (!$alreadyCompleted) {
+                    // Distinguish when the student made payment vs when staff verified/saw it
+                    $actualPaidAt = !empty($validated['paid_at'])
+                        ? \Carbon\Carbon::parse($validated['paid_at'])
+                        : ($lockedPayment->paid_at
+                            ? \Carbon\Carbon::parse($lockedPayment->paid_at)
+                            : (!empty($lockedPayment->meta['bank_transfer']['claimed_paid_at'])
+                                ? \Carbon\Carbon::parse($lockedPayment->meta['bank_transfer']['claimed_paid_at'])
+                                : ($lockedPayment->created_at ? \Carbon\Carbon::parse($lockedPayment->created_at) : now())));
+
+                    $verifiedAt = now();
+
                     $lockedPayment->update([
                         'status' => 'successful',
-                        'paid_at' => $lockedPayment->paid_at ?? now(),
+                        'paid_at' => $actualPaidAt,
                         'meta' => array_merge($lockedPayment->meta ?? [], [
                             'registration_recovery' => [
                                 'completed_by_staff_id' => $request->user()->id,
                                 'reason' => $validated['reason'],
-                                'completed_at' => now()->toIso8601String(),
+                                'actual_paid_at' => $actualPaidAt->toIso8601String(),
+                                'completed_at' => $verifiedAt->toIso8601String(),
                                 'confirmation_type' => 'admin_confirmed',
                             ],
                         ]),
@@ -415,8 +429,10 @@ class PaymentController extends Controller
                         'annual' => 12,
                         default => 1,
                     };
-                    $startDate = now();
-                    $endDate = now()->addMonths($months);
+
+                    $startFromPayment = ($validated['access_start'] ?? 'today') === 'payment_date';
+                    $startDate = $startFromPayment ? $actualPaidAt : now();
+                    $endDate = $startDate->copy()->addMonths($months);
 
                     $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                     $enrollment->update([
@@ -425,10 +441,16 @@ class PaymentController extends Controller
                         'start_date' => $startDate,
                         'end_date' => $endDate,
                         'billing_cycle' => $cycle,
-                        'paid_at' => $lockedPayment->paid_at ?? now(),
+                        'paid_at' => $actualPaidAt,
                         'expires_at' => null,
                         'termination_reason' => null,
                     ]);
+
+                    // Also restore/activate SubjectsEnrollment rows if soft-deleted
+                    \App\Models\SubjectsEnrollment::withTrashed()
+                        ->where('course_enrollment_id', $enrollment->id)
+                        ->where('student_id', $enrollment->student_id)
+                        ->restore();
                 }
 
                 return [
