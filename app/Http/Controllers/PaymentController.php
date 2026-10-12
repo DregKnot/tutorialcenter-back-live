@@ -271,11 +271,16 @@ class PaymentController extends Controller
             });
         } else {
             // Default view: fetch actionable payments needing triage
-            // 1. Pending or failed status
-            // 2. Orphaned payment (no course enrollment)
-            // 3. Payment where enrollment has no course or no subjects
+            // 1. Pending status (excluding cancelled)
+            // 2. Failed online gateway payments (e.g. dropped Paystack attempts), but NOT bank transfers rejected by staff
+            // 3. Orphaned payment (no course enrollment)
+            // 4. Payment where enrollment has no course or no subjects
             $paymentsQuery->where(function ($query) {
-                $query->whereIn('status', ['pending', 'failed'])
+                $query->where('status', 'pending')
+                    ->orWhere(function ($q) {
+                        $q->where('status', 'failed')
+                            ->where('payment_method', '!=', 'bank_transfer');
+                    })
                     ->orWhereNull('course_enrollment_id')
                     ->orWhereDoesntHave('enrollment')
                     ->orWhereHas('enrollment', function ($q) {
@@ -285,7 +290,23 @@ class PaymentController extends Controller
             });
         }
 
-        $payments = $paymentsQuery->latest()->limit(50)->get();
+        $payments = $paymentsQuery->whereNotIn('status', ['cancelled', 'refunded'])
+            ->latest()
+            ->limit(50)
+            ->get()
+            ->filter(function ($payment) {
+                if ($payment->payment_method === 'bank_transfer') {
+                    if (in_array($payment->status, ['failed', 'cancelled', 'refunded'], true)) {
+                        return false;
+                    }
+                    $reviewAction = $payment->meta['bank_transfer']['review']['action'] ?? $payment->meta['review']['action'] ?? null;
+                    if (in_array($reviewAction, ['rejected', 'superseded'], true)) {
+                        return false;
+                    }
+                }
+                return true;
+            })
+            ->values();
 
         $paymentStudentIds = $payments->pluck('student_id')->filter()->unique()->values()->all();
 
@@ -333,6 +354,8 @@ class PaymentController extends Controller
         $validated = $request->validate([
             'gateway_reference' => 'required|string|max:255',
             'reason' => 'required|string|min:5|max:1000',
+            'paid_at' => 'nullable|date',
+            'access_start' => 'nullable|string|in:today,payment_date',
         ]);
 
         try {
@@ -354,6 +377,10 @@ class PaymentController extends Controller
                     abort(422, "A {$lockedPayment->status} payment cannot be used for registration recovery.");
                 }
 
+                if ($lockedPayment->status === 'failed' && $lockedPayment->payment_method === 'bank_transfer') {
+                    abort(422, 'A rejected bank transfer cannot be recovered.');
+                }
+
                 $enrollment = CoursesEnrollment::query()
                     ->lockForUpdate()
                     ->findOrFail($lockedPayment->course_enrollment_id);
@@ -370,40 +397,60 @@ class PaymentController extends Controller
                     && $enrollment->status === 'active';
 
                 if (!$alreadyCompleted) {
+                    // Distinguish when the student made payment vs when staff verified/saw it
+                    $actualPaidAt = !empty($validated['paid_at'])
+                        ? \Carbon\Carbon::parse($validated['paid_at'])
+                        : ($lockedPayment->paid_at
+                            ? \Carbon\Carbon::parse($lockedPayment->paid_at)
+                            : (!empty($lockedPayment->meta['bank_transfer']['claimed_paid_at'])
+                                ? \Carbon\Carbon::parse($lockedPayment->meta['bank_transfer']['claimed_paid_at'])
+                                : ($lockedPayment->created_at ? \Carbon\Carbon::parse($lockedPayment->created_at) : now())));
+
+                    $verifiedAt = now();
+
                     $lockedPayment->update([
                         'status' => 'successful',
-                        'paid_at' => $lockedPayment->paid_at ?? now(),
+                        'paid_at' => $actualPaidAt,
                         'meta' => array_merge($lockedPayment->meta ?? [], [
                             'registration_recovery' => [
                                 'completed_by_staff_id' => $request->user()->id,
                                 'reason' => $validated['reason'],
-                                'completed_at' => now()->toIso8601String(),
+                                'actual_paid_at' => $actualPaidAt->toIso8601String(),
+                                'completed_at' => $verifiedAt->toIso8601String(),
                                 'confirmation_type' => 'admin_confirmed',
                             ],
                         ]),
                     ]);
 
-                    $cycle = $locked->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly';
-                $months = match ($cycle) {
-                    'quarterly' => 3,
-                    'semi_annual' => 6,
-                    'annual' => 12,
-                    default => 1,
-                };
-                $startDate = now();
-                $endDate = now()->addMonths($months);
+                    $cycle = $lockedPayment->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly';
+                    $months = match ($cycle) {
+                        'quarterly' => 3,
+                        'semi_annual' => 6,
+                        'annual' => 12,
+                        default => 1,
+                    };
 
-                $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
-                $enrollment->update([
-                    'enrollment_code' => $permanentCode,
-                    'status' => 'active',
-                    'start_date' => $startDate,
-                    'end_date' => $endDate,
-                    'billing_cycle' => $cycle,
-                    'paid_at' => $paidAt,
-                    'expires_at' => null,
-                    'termination_reason' => null,
-                ]);
+                    $startFromPayment = ($validated['access_start'] ?? 'today') === 'payment_date';
+                    $startDate = $startFromPayment ? $actualPaidAt : now();
+                    $endDate = $startDate->copy()->addMonths($months);
+
+                    $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
+                    $enrollment->update([
+                        'enrollment_code' => $permanentCode,
+                        'status' => 'active',
+                        'start_date' => $startDate,
+                        'end_date' => $endDate,
+                        'billing_cycle' => $cycle,
+                        'paid_at' => $actualPaidAt,
+                        'expires_at' => null,
+                        'termination_reason' => null,
+                    ]);
+
+                    // Also restore/activate SubjectsEnrollment rows if soft-deleted
+                    \App\Models\SubjectsEnrollment::withTrashed()
+                        ->where('course_enrollment_id', $enrollment->id)
+                        ->where('student_id', $enrollment->student_id)
+                        ->restore();
                 }
 
                 return [
