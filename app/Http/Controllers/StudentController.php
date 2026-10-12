@@ -1446,7 +1446,7 @@ class StudentController extends Controller
      */
     public function index()
     {
-        $students = Student::withTrashed()
+        $query = Student::withTrashed()
             ->with([
                 'courseEnrollments.course',
                 'courseEnrollments.subjects.subject',
@@ -1455,8 +1455,24 @@ class StudentController extends Controller
                 'payments',
                 'guardians',
                 'advisors',
-            ])
-            ->orderBy('created_at', 'desc')
+            ]);
+
+        // Support filtering for assigned students (by current advisor or explicit staff/advisor id)
+        if (request()->boolean('assigned') || request()->boolean('assigned_to_me') || request('filter') === 'assigned') {
+            $staff = auth('staff')->user() ?? request()->user('staff') ?? auth()->user();
+            $staffId = $staff?->id ?? request('staff_id');
+            if ($staffId) {
+                $query->whereHas('advisors', function ($q) use ($staffId) {
+                    $q->where('staffs.id', $staffId);
+                });
+            }
+        } elseif (request('advisor_id')) {
+            $query->whereHas('advisors', function ($q) {
+                $q->where('staffs.id', request('advisor_id'));
+            });
+        }
+
+        $students = $query->orderBy('created_at', 'desc')
             ->orderBy('id', 'desc')
             ->get();
 

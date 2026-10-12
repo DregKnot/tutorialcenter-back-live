@@ -195,11 +195,10 @@ class AssessmentService
             ->whereNull('deleted_at')
             ->pluck('subject_id');
 
-        // 2. Subject enrollments via active course enrollments
+        // 2. Subject enrollments via course enrollments
         $enrolledCourseIds = DB::table('courses_enrollments')
             ->where('student_id', $student->id)
             ->whereNull('deleted_at')
-            ->where('status', 'active')
             ->pluck('course_id');
 
         $courseSubjectIds = DB::table('course_subject')
@@ -211,11 +210,19 @@ class AssessmentService
         $classIds = Classes::whereIn('subject_id', $allSubjectIds)->pluck('id');
 
         $assessments = Assessment::with(['class.subject', 'creator'])
-            ->where(function ($q) use ($allSubjectIds, $classIds) {
-                $q->whereIn('subject_id', $allSubjectIds)
-                  ->orWhereIn('class_id', $classIds);
+            ->where(function ($query) use ($allSubjectIds, $classIds, $student) {
+                // Enrolled subjects/classes assessments (published or closed)
+                $query->where(function ($q) use ($allSubjectIds, $classIds) {
+                    $q->whereIn('subject_id', $allSubjectIds)
+                      ->orWhereIn('class_id', $classIds);
+                })->whereIn('status', [Assessment::PUBLISHED, Assessment::CLOSED]);
+
+                // Always include any assessment for which this student has a submission record
+                $query->orWhereHas('submissions', function ($q) use ($student) {
+                    $q->where('student_id', $student->id);
+                });
             })
-            ->where('status', Assessment::PUBLISHED)
+            ->where('status', '!=', Assessment::DRAFT)
             ->latest()
             ->get();
 
@@ -248,7 +255,7 @@ class AssessmentService
     {
         $this->ensureStudentEnrolled($student, $assessment);
 
-        if ($assessment->status !== Assessment::PUBLISHED) {
+        if (! in_array($assessment->status, [Assessment::PUBLISHED, Assessment::CLOSED], true)) {
             throw ValidationException::withMessages(['assessment' => 'This assessment is not available.']);
         }
 
@@ -827,6 +834,14 @@ class AssessmentService
      */
     private function ensureStudentEnrolled(Student $student, Assessment $assessment): void
     {
+        // Allow student to view details if they already submitted this assessment
+        $hasSubmission = AssessmentSubmission::where('assessment_id', $assessment->id)
+            ->where('student_id', $student->id)
+            ->exists();
+        if ($hasSubmission) {
+            return;
+        }
+
         $directEnrolled = SubjectsEnrollment::where('subject_id', $assessment->subject_id)
             ->where('student_id', $student->id)
             ->whereNull('deleted_at')
