@@ -205,7 +205,7 @@ class PaymentController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = Payment::with(['student', 'enrollment.course']);
+            $query = Payment::with(['student.guardian', 'enrollment.course']);
 
             if ($request->filled('student_id')) {
                 $query->where('student_id', $request->student_id);
@@ -653,6 +653,14 @@ class PaymentController extends Controller
                 $guardianId = $authUser->id;
             }
         }
+        if (!$guardianId && $enrollment->student && $enrollment->student->guardian_id) {
+            $guardianId = $enrollment->student->guardian_id;
+        }
+
+        $guardianModel = null;
+        if ($guardianId) {
+            $guardianModel = \App\Models\Guardian::find($guardianId);
+        }
 
         return DB::transaction(function () use ($enrollment, $validated, $request, $isRenewal, $guardianId) {
             // Find all open bank transfers for this enrollment with row-level lock
@@ -734,6 +742,10 @@ class PaymentController extends Controller
                             'initiated_at' => now()->toIso8601String(),
                             'is_renewal' => (bool) $isRenewal,
                             'guardian_id' => $guardianId,
+                            'guardian_name' => $guardianModel ? trim($guardianModel->firstname . ' ' . $guardianModel->surname) : null,
+                            'guardian_email' => $guardianModel?->email,
+                            'guardian_tel' => $guardianModel?->tel,
+                            'guardian_relationship' => $guardianModel?->relationship,
                             'subjects' => $validated['subjects'] ?? [],
                             'exam_track' => $validated['exam_track'] ?? null,
                         ],
@@ -865,7 +877,7 @@ class PaymentController extends Controller
     {
         $state = $request->input('state');
 
-        $query = Payment::with(['student', 'enrollment.course'])
+        $query = Payment::with(['student.guardian', 'enrollment.course'])
             ->where('payment_method', 'bank_transfer')
             ->where('gateway', 'bank');
 
@@ -902,7 +914,38 @@ class PaymentController extends Controller
                 break;
         }
 
-        $payments = $query->orderBy('created_at')->paginate(20);
+        $payments = $query->orderByDesc('created_at')->paginate(20);
+
+        // Attach full guardian details so admin UI can highlight the sponsor
+        $payments->getCollection()->transform(function ($payment) {
+            $metaBank = $payment->meta['bank_transfer'] ?? [];
+            $metaGuardianId = $metaBank['guardian_id'] ?? $payment->student?->guardian_id;
+            $guardian = $payment->student?->guardian;
+            if (!$guardian && $metaGuardianId) {
+                $guardian = \App\Models\Guardian::find($metaGuardianId);
+            }
+            if ($guardian) {
+                $payment->setRelation('guardian', $guardian);
+                $payment->guardian = [
+                    'id' => $guardian->id,
+                    'firstname' => $guardian->firstname,
+                    'surname' => $guardian->surname,
+                    'name' => trim($guardian->firstname . ' ' . $guardian->surname),
+                    'email' => $guardian->email,
+                    'tel' => $guardian->tel,
+                    'relationship' => $guardian->relationship ?? ($metaBank['guardian_relationship'] ?? null),
+                ];
+            } elseif (!empty($metaBank['guardian_name'])) {
+                $payment->guardian = [
+                    'id' => $metaGuardianId,
+                    'name' => $metaBank['guardian_name'],
+                    'email' => $metaBank['guardian_email'] ?? null,
+                    'tel' => $metaBank['guardian_tel'] ?? null,
+                    'relationship' => $metaBank['guardian_relationship'] ?? null,
+                ];
+            }
+            return $payment;
+        });
 
         return response()->json([
             'payments' => $payments,

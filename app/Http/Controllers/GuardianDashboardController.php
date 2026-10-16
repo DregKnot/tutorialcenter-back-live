@@ -1024,7 +1024,7 @@ class GuardianDashboardController extends Controller
         $validated = $request->validate([
             'student_id' => 'required|exists:students,id',
             'course_id' => 'nullable|exists:courses,id',
-            'amount' => 'nullable|numeric|min:100',
+            'amount' => 'nullable|numeric|min:0',
             'billing_cycle' => 'nullable|in:monthly,quarterly,semi_annual,annual',
             'subject_ids' => 'nullable|array',
         ]);
@@ -1048,8 +1048,8 @@ class GuardianDashboardController extends Controller
         $calculatedPlanPrice = $course
             ? ($months === 1 ? (float)$course->price : (float)round($course->price * $months * 0.95))
             : null;
-        $amount = $validated['amount'] ?? ($calculatedPlanPrice ?? ($course->price ?? 10000));
-        $reference = 'TCA_' . strtoupper(uniqid()) . '_' . time();
+        $amount = isset($validated['amount']) ? (float)$validated['amount'] : (float)($calculatedPlanPrice ?? ($course->price ?? 10000));
+        $isFree = $amount <= 0 || ($course && (float)$course->price <= 0);
 
         $enrollment = null;
         if ($course) {
@@ -1058,6 +1058,90 @@ class GuardianDashboardController extends Controller
                 ->where('student_id', $student->id)
                 ->first();
 
+            if ($isFree) {
+                $permanentCode = $enrollment && $enrollment->enrollment_code && !str_starts_with($enrollment->enrollment_code, 'TEMP_')
+                    ? $enrollment->enrollment_code
+                    : CoursesEnrollment::generatePermanentCode($enrollment ? $enrollment->id : 1);
+
+                if ($enrollment) {
+                    if ($enrollment->trashed()) {
+                        $enrollment->restore();
+                    }
+                    $enrollment->update([
+                        'enrollment_code' => $permanentCode,
+                        'billing_cycle' => $cycle,
+                        'cost' => 0,
+                        'status' => 'active',
+                        'start_date' => now(),
+                        'end_date' => now()->addMonths($months),
+                        'paid_at' => now(),
+                        'expires_at' => null,
+                        'termination_reason' => null,
+                    ]);
+                } else {
+                    $enrollment = CoursesEnrollment::create([
+                        'enrollment_code' => $permanentCode,
+                        'course_id' => $course->id,
+                        'student_id' => $student->id,
+                        'billing_cycle' => $cycle,
+                        'cost' => 0,
+                        'status' => 'active',
+                        'start_date' => now(),
+                        'end_date' => now()->addMonths($months),
+                        'paid_at' => now(),
+                        'expires_at' => null,
+                    ]);
+                }
+
+                // Enroll subjects immediately for free grant
+                if (!empty($validated['subject_ids'])) {
+                    foreach ($validated['subject_ids'] as $subjId) {
+                        \App\Models\SubjectsEnrollment::firstOrCreate([
+                            'course_enrollment_id' => $enrollment->id,
+                            'subject_id' => (int)$subjId,
+                            'student_id' => $student->id,
+                        ], [
+                            'status' => 'active',
+                        ]);
+                    }
+                }
+
+                // Record complimentary grant payment
+                \App\Models\Payment::create([
+                    'student_id' => $student->id,
+                    'course_enrollment_id' => $enrollment->id,
+                    'amount' => 0,
+                    'currency' => 'NGN',
+                    'payment_method' => 'free_grant',
+                    'gateway' => 'complimentary',
+                    'status' => 'successful',
+                    'paid_at' => now(),
+                    'billing_cycle' => $cycle,
+                    'gateway_reference' => 'GRANT_' . strtoupper(uniqid()) . '_' . time(),
+                    'meta' => [
+                        'is_free_grant' => true,
+                        'guardian_id' => $guardian->id,
+                        'course_title' => $course->title,
+                        'granted_at' => now()->toIso8601String(),
+                        'reason' => 'Free training program grant',
+                    ],
+                ]);
+
+                return response()->json([
+                    'success' => true,
+                    'is_free' => true,
+                    'message' => 'Free training grant successfully activated for ' . ($student->firstname ?: 'ward'),
+                    'data' => [
+                        'is_free' => true,
+                        'enrollment_id' => $enrollment->id,
+                        'course_id' => $course->id,
+                        'student_id' => $student->id,
+                        'status' => 'active',
+                    ],
+                ]);
+            }
+
+            // Paid Course Flow
             if ($enrollment) {
                 if ($enrollment->trashed()) {
                     $enrollment->restore();
@@ -1081,6 +1165,8 @@ class GuardianDashboardController extends Controller
                 ]);
             }
         }
+
+        $reference = 'TCA_' . strtoupper(uniqid()) . '_' . time();
 
         $paystackData = [
             'reference' => $reference,
