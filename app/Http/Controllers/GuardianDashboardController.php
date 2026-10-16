@@ -69,6 +69,10 @@ class GuardianDashboardController extends Controller
                     'email' => $student->email,
                     'tel' => $student->tel,
                     'department' => $student->department ?? 'General',
+                    'email_verified_at' => $student->email_verified_at,
+                    'is_verified' => !empty($student->email_verified_at),
+                    'location' => $student->location,
+                    'address' => $student->address,
                 ];
             });
 
@@ -86,7 +90,7 @@ class GuardianDashboardController extends Controller
         return $this->getWards($request);
     }
 
-    /**
+        /**
      * Create or link a new ward directly from Guardian Portal
      * [HTTP]: POST /api/guardians/wards/create-or-link
      */
@@ -97,56 +101,125 @@ class GuardianDashboardController extends Controller
         $validated = $request->validate([
             'firstname' => 'required|string|max:100',
             'surname' => 'required|string|max:100',
-            'email' => 'nullable|email',
-            'tel' => 'nullable|string',
-            'department' => 'nullable|string',
+            'email' => 'nullable|email|max:150',
+            'tel' => 'nullable|string|max:30',
+            'department' => 'nullable|string|max:50',
+            'gender' => 'nullable|string|max:20',
+            'relationship' => 'nullable|string|max:50',
+            'date_of_birth' => 'nullable|date',
             'password' => 'required|string|min:6',
         ]);
 
-        // Check if student already exists by email or tel
-        $student = null;
-        if (!empty($validated['email'])) {
-            $student = Student::where('email', $validated['email'])->first();
-        }
-        if (!$student && !empty($validated['tel'])) {
-            $student = Student::where('tel', $validated['tel'])->first();
+        $email = !empty($validated['email']) ? trim(strtolower($validated['email'])) : null;
+        $tel = !empty($validated['tel']) ? trim($validated['tel']) : null;
+
+        if (empty($email) && empty($tel)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Please provide either an email address or phone number for the student.',
+            ], 422);
         }
 
+        // Normalize gender for enum('male','female','others')
+        $gender = null;
+        if (!empty($validated['gender'])) {
+            $g = strtolower(trim($validated['gender']));
+            if ($g === 'male' || $g === 'female') {
+                $gender = $g;
+            } else {
+                $gender = 'others';
+            }
+        }
+
+        // Normalize relationship for enum('parent','relative','other')
+        $relationship = 'parent';
+        if (!empty($validated['relationship'])) {
+            $r = strtolower(trim($validated['relationship']));
+            if (in_array($r, ['father', 'mother', 'mom', 'dad', 'son', 'daughter', 'parent'])) {
+                $relationship = 'parent';
+            } elseif (in_array($r, ['uncle', 'aunt', 'cousin', 'nephew', 'niece', 'sibling', 'brother', 'sister', 'relative'])) {
+                $relationship = 'relative';
+            } else {
+                $relationship = 'other';
+            }
+        }
+
+        // Check if student already exists by email or tel
+        $student = null;
+        if (!empty($email)) {
+            $student = Student::where('email', $email)->first();
+        }
+        if (!$student && !empty($tel)) {
+            $student = Student::where('tel', $tel)->first();
+        }
+
+        $isExisting = false;
         if ($student) {
+            $isExisting = true;
             // SECURITY CHECK: If student account exists, verify student password to prevent unauthorized account takeover
             if (!Hash::check($validated['password'], $student->password)) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'A student account with this email/phone already exists. Please provide the student account password to link.',
+                    'message' => 'A student account with this email/phone already exists. Please provide their correct password to link this ward.',
                 ], 422);
             }
         } else {
             $student = Student::create([
-                'firstname' => $validated['firstname'],
-                'surname' => $validated['surname'],
-                'email' => $validated['email'] ?? null,
-                'tel' => $validated['tel'] ?? null,
+                'firstname' => trim($validated['firstname']),
+                'surname' => trim($validated['surname']),
+                'email' => $email,
+                'tel' => $tel,
                 'department' => $validated['department'] ?? 'General',
+                'gender' => $gender,
+                'date_of_birth' => $validated['date_of_birth'] ?? null,
                 'password' => Hash::make($validated['password']),
-                'status' => 'active',
+                'email_verified_at' => !empty($email) ? now() : null,
+                'tel_verified_at' => !empty($tel) ? now() : null,
             ]);
         }
 
-        // Link to guardian
-        if (!$guardian->students()->where('students.id', $student->id)->exists()) {
-            $guardian->students()->attach($student->id, ['relationship' => 'parent', 'status' => 'verified']);
+        // Link to guardian using pivot table guardian_students (handling soft-deletes and avoid duplicate key violation)
+        $existingPivot = \Illuminate\Support\Facades\DB::table('guardian_students')
+            ->where('guardian_id', $guardian->id)
+            ->where('student_id', $student->id)
+            ->first();
+
+        if ($existingPivot) {
+            \Illuminate\Support\Facades\DB::table('guardian_students')
+                ->where('id', $existingPivot->id)
+                ->update([
+                    'relationship' => $relationship,
+                    'deleted_at' => null,
+                    'updated_at' => now(),
+                ]);
+        } else {
+            \Illuminate\Support\Facades\DB::table('guardian_students')->insert([
+                'guardian_id' => $guardian->id,
+                'student_id' => $student->id,
+                'relationship' => $relationship,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
         }
 
         return response()->json([
             'success' => true,
-            'message' => 'Ward linked and added successfully.',
+            'message' => $isExisting
+                ? 'Existing student account verified and linked to your guardian portal!'
+                : 'New ward account created and linked to your portal successfully!',
             'data' => [
                 'id' => $student->id,
                 'name' => trim($student->firstname . ' ' . $student->surname),
+                'firstname' => $student->firstname,
+                'surname' => $student->surname,
                 'email' => $student->email,
+                'tel' => $student->tel,
                 'department' => $student->department,
+                'gender' => $student->gender,
+                'relationship' => $relationship,
+                'is_existing' => $isExisting,
             ]
-        ]);
+        ], 201);
     }
 
     /**
@@ -298,20 +371,35 @@ class GuardianDashboardController extends Controller
 
         $primaryEnrollment = $enrollmentsList->firstWhere('is_active', true) ?? $enrollmentsList->first();
 
-        $course = $primaryEnrollment ? null : Course::first();
-        $fallbackPrice = (float) ($course?->price ?? 10000);
+        if (!$primaryEnrollment) {
+            return response()->json([
+                'has_active_subscription' => false,
+                'course_id' => null,
+                'course_title' => null,
+                'course_price' => 0,
+                'banner' => null,
+                'start_date' => null,
+                'end_date' => null,
+                'days_left' => 0,
+                'cost' => 0,
+                'billing_cycle' => null,
+                'enrolled_subjects' => [],
+                'enrollments' => [],
+                'total_enrollments' => 0,
+            ]);
+        }
 
         return response()->json([
-            'has_active_subscription' => (bool) $primaryEnrollment,
-            'course_id' => $primaryEnrollment['course_id'] ?? $course?->id,
-            'course_title' => $primaryEnrollment['course_title'] ?? ($course?->title ?? 'WAEC & JAMB Intensive Exam Prep'),
-            'course_price' => $primaryEnrollment['course_price'] ?? $fallbackPrice,
-            'banner' => $primaryEnrollment['banner'] ?? $course?->banner,
-            'start_date' => $primaryEnrollment['start_date'] ?? now()->toDateString(),
-            'end_date' => $primaryEnrollment['end_date'] ?? now()->addDays(30)->toDateString(),
-            'days_left' => $primaryEnrollment['days_left'] ?? 30,
-            'cost' => $primaryEnrollment['cost'] ?? $fallbackPrice,
-            'billing_cycle' => $primaryEnrollment['billing_cycle'] ?? 'monthly',
+            'has_active_subscription' => $primaryEnrollment['is_active'] ?? false,
+            'course_id' => $primaryEnrollment['course_id'],
+            'course_title' => $primaryEnrollment['course_title'],
+            'course_price' => $primaryEnrollment['course_price'],
+            'banner' => $primaryEnrollment['banner'],
+            'start_date' => $primaryEnrollment['start_date'],
+            'end_date' => $primaryEnrollment['end_date'],
+            'days_left' => $primaryEnrollment['days_left'],
+            'cost' => $primaryEnrollment['cost'],
+            'billing_cycle' => $primaryEnrollment['billing_cycle'],
             'enrolled_subjects' => $primaryEnrollment['enrolled_subjects'] ?? [],
             'enrollments' => $enrollmentsList,
             'total_enrollments' => $enrollmentsList->count(),
@@ -893,6 +981,16 @@ class GuardianDashboardController extends Controller
         $amount = $validated['amount'] ?? ($calculatedPlanPrice ?? 10000);
         $reference = 'TCR_' . strtoupper(uniqid()) . '_' . time();
 
+        $targetEnrollment = CoursesEnrollment::withTrashed()
+            ->where('student_id', $student->id)
+            ->where(function ($q) use ($course) {
+                if ($course) {
+                    $q->where('course_id', $course->id);
+                }
+            })
+            ->latest('id')
+            ->first();
+
         $paystackData = [
             'reference' => $reference,
             'amount' => $amount,
@@ -901,6 +999,7 @@ class GuardianDashboardController extends Controller
             'student_name' => trim($student->firstname . ' ' . $student->surname),
             'course_id' => $course?->id,
             'course_title' => $course?->title,
+            'enrollment_id' => $targetEnrollment?->id,
             'guardian_id' => $guardian->id,
             'payment_type' => 'training_renewal',
             'billing_cycle' => $cycle,
@@ -952,6 +1051,37 @@ class GuardianDashboardController extends Controller
         $amount = $validated['amount'] ?? ($calculatedPlanPrice ?? ($course->price ?? 10000));
         $reference = 'TCA_' . strtoupper(uniqid()) . '_' . time();
 
+        $enrollment = null;
+        if ($course) {
+            $enrollment = CoursesEnrollment::withTrashed()
+                ->where('course_id', $course->id)
+                ->where('student_id', $student->id)
+                ->first();
+
+            if ($enrollment) {
+                if ($enrollment->trashed()) {
+                    $enrollment->restore();
+                }
+                if ($enrollment->status !== 'active') {
+                    $enrollment->update([
+                        'enrollment_code' => $enrollment->enrollment_code ?: CoursesEnrollment::generateTemporaryCode(),
+                        'billing_cycle' => $cycle,
+                        'cost' => $amount,
+                        'status' => 'pending',
+                    ]);
+                }
+            } else {
+                $enrollment = CoursesEnrollment::create([
+                    'enrollment_code' => CoursesEnrollment::generateTemporaryCode(),
+                    'course_id' => $course->id,
+                    'student_id' => $student->id,
+                    'billing_cycle' => $cycle,
+                    'cost' => $amount,
+                    'status' => 'pending',
+                ]);
+            }
+        }
+
         $paystackData = [
             'reference' => $reference,
             'amount' => $amount,
@@ -960,6 +1090,7 @@ class GuardianDashboardController extends Controller
             'student_name' => trim($student->firstname . ' ' . $student->surname),
             'course_id' => $course?->id,
             'course_title' => $course?->title ?? 'New Training Program',
+            'enrollment_id' => $enrollment?->id,
             'subject_ids' => $validated['subject_ids'] ?? [],
             'guardian_id' => $guardian->id,
             'payment_type' => 'add_training_course',

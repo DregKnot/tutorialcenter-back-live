@@ -20,6 +20,8 @@ class ClassSession extends Model
         'class_link',
         'recording_link',
         'status',
+        'started_by_staff_id',
+        'started_at',
     ];
 
     /**
@@ -29,6 +31,7 @@ class ClassSession extends Model
         'session_date' => 'date',
         'starts_at'    => 'string',  // because DB column is TIME
         'ends_at'      => 'string',  // because DB column is TIME
+        'started_at'   => 'datetime',
     ];
 
     /**
@@ -65,5 +68,11 @@ class ClassSession extends Model
             Feedback::class,
             'feedbackable'
         );
+    }
+
+    // Staff/Advisor who started the session as Host
+    public function startedBy()
+    {
+        return $this->belongsTo(Staff::class, 'started_by_staff_id');
     }
 }
