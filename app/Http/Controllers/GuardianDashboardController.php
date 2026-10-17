@@ -1152,6 +1152,8 @@ class GuardianDashboardController extends Controller
                         'billing_cycle' => $cycle,
                         'cost' => $amount,
                         'status' => 'pending',
+                        'start_date' => $enrollment->start_date ?: now(),
+                        'end_date' => $enrollment->end_date ?: now()->addMonths($months),
                     ]);
                 }
             } else {
@@ -1162,7 +1164,22 @@ class GuardianDashboardController extends Controller
                     'billing_cycle' => $cycle,
                     'cost' => $amount,
                     'status' => 'pending',
+                    'start_date' => now(),
+                    'end_date' => now()->addMonths($months),
                 ]);
+            }
+
+            // Also attach subjects if provided so they are associated with this enrollment
+            if (!empty($validated['subject_ids'])) {
+                foreach ($validated['subject_ids'] as $subjId) {
+                    \App\Models\SubjectsEnrollment::firstOrCreate([
+                        'course_enrollment_id' => $enrollment->id,
+                        'subject_id' => (int)$subjId,
+                        'student_id' => $student->id,
+                    ], [
+                        'progress' => 0,
+                    ]);
+                }
             }
         }
 
