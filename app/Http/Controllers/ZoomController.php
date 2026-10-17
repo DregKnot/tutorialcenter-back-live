@@ -192,18 +192,58 @@ class ZoomController extends Controller
                     ->value('role');
                 $pivotRole = $pivotRole ? strtolower($pivotRole) : null;
 
-                // Host power and Zoom Pro Plan single-host protection:
-                // 1. Course Advisors are the dedicated primary hosts who initiate and govern classes (role = 1).
-                // 2. Admins & COO can initiate as Host (role = 1), or join as executive auditors (role = 0) to prevent kicking out the Advisor.
-                // 3. Tutors, teachers, and moderators strictly join as participants (role = 0) to teach without host collision.
-                if (in_array($roleName, ['advisor', 'courseadvisor', 'course_advisor'])) {
-                    $role = 1;
-                } elseif (in_array($roleName, ['admin', 'coo'])) {
-                    $wantsAuditor = $request->boolean('auditor') || $request->input('role') === '0';
-                    $role = $wantsAuditor ? 0 : 1;
-                } else {
-                    $role = 0;
-                }
+                // Class Initiation & Waiting Room Bypass Governance:
+                // 1. PHASE 1 (Class Not Yet Started): ONLY a Course Advisor can start the meeting (role = 1).
+                //    Tutors, Admins, and Students get role = 0 and are blocked by Zoom's join_before_host = false.
+                // 2. PHASE 2 (Class Is Running): The original Advisor retains Primary Host (role = 1).
+                //    Admins, COO, and ANY other Course Advisor join with role = 1 (elevated Co-Host),
+                //    bypassing the Waiting Room completely so they can drop in and co-host/audit without being let in.
+                // 3. Tutors and Students strictly enter as participants (role = 0) and are held in the Waiting Room.
+                $isAdvisor = in_array($roleName, ['advisor', 'courseadvisor', 'course_advisor']);
+                $isAdminOrCoo = in_array($roleName, ['admin', 'coo']);
+                $isPrivilegedStaff = $isAdvisor || $isAdminOrCoo;
+
+                $role = 0;
+
+                \Illuminate\Support\Facades\DB::transaction(function () use ($session, $user, $isAdvisor, $isPrivilegedStaff, &$role) {
+                    $lockedSession = ClassSession::where('id', $session->id)->lockForUpdate()->first();
+
+                    // Check if session has a valid active host within the last 6 hours
+                    $hasActiveHost = !empty($lockedSession->started_by_staff_id)
+                        && !empty($lockedSession->started_at)
+                        && \Carbon\Carbon::parse($lockedSession->started_at)->gt(now()->subHours(6));
+
+                    if (!$hasActiveHost) {
+                        // PHASE 1: CLASS NOT YET STARTED
+                        // Only a Course Advisor can initiate and start the meeting
+                        if ($isAdvisor) {
+                            $lockedSession->update([
+                                'started_by_staff_id' => $user->id,
+                                'started_at' => now(),
+                            ]);
+                            $session->started_by_staff_id = $user->id;
+                            $session->started_at = now();
+                            $role = 1; // Primary Host
+                        } else {
+                            // Tutors, Admins, COO, and Students cannot start early
+                            $role = 0;
+                        }
+                    } else {
+                        // PHASE 2: CLASS IS ACTIVELY RUNNING
+                        if ((int)$lockedSession->started_by_staff_id === (int)$user->id) {
+                            // The primary hosting advisor reconnecting: preserve Host role
+                            $role = 1;
+                        } elseif ($isPrivilegedStaff) {
+                            // Admins, COO, and OTHER Course Advisors join as elevated Co-Hosts (role = 1),
+                            // bypassing the Waiting Room directly with no disruption to the primary host.
+                            $role = 1;
+                        } else {
+                            // Tutors, moderators, assistants, and students strictly enter as participants (role = 0)
+                            // and are held in the Waiting Room until admitted by the Advisor.
+                            $role = 0;
+                        }
+                    }
+                });
             } else {
                 return response()->json([
                     'success' => false,
@@ -226,6 +266,7 @@ class ZoomController extends Controller
                 'sdk_key' => config('services.zoom.sdk_key'),
                 'role' => $role,
                 'user_name' => $user->firstname . ' ' . $user->surname,
+                'user_email' => $user->email,
             ], 200);
 
         } catch (\Throwable $e) {

@@ -36,6 +36,13 @@ class BankTransferNotificationService
         if ($payment->student) {
             $this->deliver($payment->student, new BankTransferNotification($event, $details));
         }
+        $guardianId = $bank['guardian_id'] ?? null;
+        if ($guardianId) {
+            $guardian = \App\Models\Guardian::find($guardianId);
+            if ($guardian) {
+                $this->deliver($guardian, new BankTransferNotification($event, $details));
+            }
+        }
     }
 
     /**

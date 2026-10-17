@@ -120,8 +120,15 @@ class PaymentController extends Controller
                     'annual' => 12,
                     default => 1,
                 };
-                $startDate = now();
-                $endDate = now()->addMonths($months);
+                // If renewing an active course, extend seamlessly from existing end date; otherwise from now
+                $isCurrentlyActive = $enrollment && $enrollment->status === 'active' && $enrollment->end_date && \Carbon\Carbon::parse($enrollment->end_date)->isFuture();
+                $baseDate = $isCurrentlyActive ? \Carbon\Carbon::parse($enrollment->end_date) : now();
+                $startDate = $isCurrentlyActive ? ($enrollment->start_date ?: now()) : now();
+                $endDate = $baseDate->copy()->addMonths($months);
+
+                if ($enrollment->trashed()) {
+                    $enrollment->restore();
+                }
 
                 $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                 $enrollment->update([
@@ -198,7 +205,7 @@ class PaymentController extends Controller
     public function index(Request $request)
     {
         try {
-            $query = Payment::with(['student', 'enrollment.course']);
+            $query = Payment::with(['student.guardian', 'enrollment.course']);
 
             if ($request->filled('student_id')) {
                 $query->where('student_id', $request->student_id);
@@ -582,6 +589,9 @@ class PaymentController extends Controller
             'subjects' => 'nullable|array',
             'subjects.*' => 'integer',
             'exam_track' => 'nullable|string|max:50',
+            'billing_cycle' => 'nullable|string|in:monthly,quarterly,semi_annual,annual',
+            'is_renewal' => 'nullable|boolean',
+            'guardian_id' => 'nullable|integer',
         ]);
 
         $enrollment = CoursesEnrollment::withTrashed()->find($validated['course_enrollment_id']);
@@ -627,13 +637,32 @@ class PaymentController extends Controller
             && \Carbon\Carbon::parse($enrollment->end_date)->isFuture()
             && Payment::where('course_enrollment_id', $enrollment->id)->where('status', 'successful')->exists();
 
-        if ($isCurrentlyActiveAndPaid) {
+        $isRenewal = $request->boolean('is_renewal')
+            || ($isCurrentlyActiveAndPaid && ($request->filled('billing_cycle') || $request->input('is_renewal')));
+
+        if ($isCurrentlyActiveAndPaid && !$isRenewal) {
             return response()->json([
                 'message' => 'This enrollment is already active and paid.',
             ], 409);
         }
 
-        return DB::transaction(function () use ($enrollment, $validated, $request) {
+        $guardianId = $request->input('guardian_id');
+        if (!$guardianId && auth('sanctum')->check()) {
+            $authUser = auth('sanctum')->user();
+            if ($authUser instanceof \App\Models\Guardian) {
+                $guardianId = $authUser->id;
+            }
+        }
+        if (!$guardianId && $enrollment->student && $enrollment->student->guardian_id) {
+            $guardianId = $enrollment->student->guardian_id;
+        }
+
+        $guardianModel = null;
+        if ($guardianId) {
+            $guardianModel = \App\Models\Guardian::find($guardianId);
+        }
+
+        return DB::transaction(function () use ($enrollment, $validated, $request, $isRenewal, $guardianId) {
             // Find all open bank transfers for this enrollment with row-level lock
             $existingPayments = Payment::where('course_enrollment_id', $enrollment->id)
                 ->where('payment_method', 'bank_transfer')
@@ -677,19 +706,23 @@ class PaymentController extends Controller
                     ]);
                 }
                 $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
-                if (!empty($validated['subjects']) || !empty($validated['exam_track'])) {
-                    $meta = $payment->meta ?? [];
-                    $bankTransfer = $meta['bank_transfer'] ?? [];
-                    if (!empty($validated['subjects'])) {
-                        $bankTransfer['subjects'] = $validated['subjects'];
-                    }
-                    if (!empty($validated['exam_track'])) {
-                        $bankTransfer['exam_track'] = $validated['exam_track'];
-                    }
-                    $payment->update([
-                        'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
-                    ]);
+                $meta = $payment->meta ?? [];
+                $bankTransfer = $meta['bank_transfer'] ?? [];
+                if (!empty($validated['subjects'])) {
+                    $bankTransfer['subjects'] = $validated['subjects'];
                 }
+                if (!empty($validated['exam_track'])) {
+                    $bankTransfer['exam_track'] = $validated['exam_track'];
+                }
+                if ($isRenewal) {
+                    $bankTransfer['is_renewal'] = true;
+                }
+                if ($guardianId) {
+                    $bankTransfer['guardian_id'] = $guardianId;
+                }
+                $payment->update([
+                    'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
+                ]);
             } else {
                 $accessToken = Str::random(48);
 
@@ -707,6 +740,12 @@ class PaymentController extends Controller
                         'bank_transfer' => [
                             'access_token' => $accessToken,
                             'initiated_at' => now()->toIso8601String(),
+                            'is_renewal' => (bool) $isRenewal,
+                            'guardian_id' => $guardianId,
+                            'guardian_name' => $guardianModel ? trim($guardianModel->firstname . ' ' . $guardianModel->surname) : null,
+                            'guardian_email' => $guardianModel?->email,
+                            'guardian_tel' => $guardianModel?->tel,
+                            'guardian_relationship' => $guardianModel?->relationship,
                             'subjects' => $validated['subjects'] ?? [],
                             'exam_track' => $validated['exam_track'] ?? null,
                         ],
@@ -838,7 +877,7 @@ class PaymentController extends Controller
     {
         $state = $request->input('state');
 
-        $query = Payment::with(['student', 'enrollment.course'])
+        $query = Payment::with(['student.guardian', 'enrollment.course'])
             ->where('payment_method', 'bank_transfer')
             ->where('gateway', 'bank');
 
@@ -875,7 +914,38 @@ class PaymentController extends Controller
                 break;
         }
 
-        $payments = $query->orderBy('created_at')->paginate(20);
+        $payments = $query->orderByDesc('created_at')->paginate(20);
+
+        // Attach full guardian details so admin UI can highlight the sponsor
+        $payments->getCollection()->transform(function ($payment) {
+            $metaBank = $payment->meta['bank_transfer'] ?? [];
+            $metaGuardianId = $metaBank['guardian_id'] ?? $payment->student?->guardian_id;
+            $guardian = $payment->student?->guardian;
+            if (!$guardian && $metaGuardianId) {
+                $guardian = \App\Models\Guardian::find($metaGuardianId);
+            }
+            if ($guardian) {
+                $payment->setRelation('guardian', $guardian);
+                $payment->guardian = [
+                    'id' => $guardian->id,
+                    'firstname' => $guardian->firstname,
+                    'surname' => $guardian->surname,
+                    'name' => trim($guardian->firstname . ' ' . $guardian->surname),
+                    'email' => $guardian->email,
+                    'tel' => $guardian->tel,
+                    'relationship' => $guardian->relationship ?? ($metaBank['guardian_relationship'] ?? null),
+                ];
+            } elseif (!empty($metaBank['guardian_name'])) {
+                $payment->guardian = [
+                    'id' => $metaGuardianId,
+                    'name' => $metaBank['guardian_name'],
+                    'email' => $metaBank['guardian_email'] ?? null,
+                    'tel' => $metaBank['guardian_tel'] ?? null,
+                    'relationship' => $metaBank['guardian_relationship'] ?? null,
+                ];
+            }
+            return $payment;
+        });
 
         return response()->json([
             'payments' => $payments,
@@ -918,21 +988,27 @@ class PaymentController extends Controller
                     abort(422, 'The payment does not belong to the enrollment student.');
                 }
 
-                // Never create a second settled payment for one enrollment. If the
+                $meta = $locked->meta ?? [];
+                $bankTransfer = $meta['bank_transfer'] ?? [];
+                $isRenewal = !empty($bankTransfer['is_renewal']);
+
+                // Never create a second settled payment for one enrollment unless it is a renewal. If the
                 // student already paid via Paystack (or another transfer) while this
                 // one sat in the queue, approving would double-count the money.
-                $conflictingPayment = Payment::where('course_enrollment_id', $locked->course_enrollment_id)
-                    ->where('id', '!=', $locked->id)
-                    ->where('status', 'successful')
-                    ->where('created_at', '>=', $locked->created_at->copy()->subHours(24))
-                    ->first();
+                if (!$isRenewal) {
+                    $conflictingPayment = Payment::where('course_enrollment_id', $locked->course_enrollment_id)
+                        ->where('id', '!=', $locked->id)
+                        ->where('status', 'successful')
+                        ->where('created_at', '>=', $locked->created_at->copy()->subHours(24))
+                        ->first();
 
-                if ($conflictingPayment) {
-                    abort(422, sprintf(
-                        'This enrollment is already settled by %s (%s). Reject this transfer instead of approving, and refund if the student also transferred.',
-                        $conflictingPayment->gateway_reference,
-                        $conflictingPayment->payment_method
-                    ));
+                    if ($conflictingPayment) {
+                        abort(422, sprintf(
+                            'This enrollment is already settled by %s (%s). Reject this transfer instead of approving, and refund if the student also transferred.',
+                            $conflictingPayment->gateway_reference,
+                            $conflictingPayment->payment_method
+                        ));
+                    }
                 }
 
                 $isWaived = (bool) ($validated['is_waived'] ?? false);
@@ -984,8 +1060,15 @@ class PaymentController extends Controller
                     'annual' => 12,
                     default => 1,
                 };
-                $startDate = now();
-                $endDate = now()->addMonths($months);
+                // If renewing an active course, extend seamlessly from existing end date; otherwise from now
+                $isCurrentlyActive = $enrollment && $enrollment->status === 'active' && $enrollment->end_date && \Carbon\Carbon::parse($enrollment->end_date)->isFuture();
+                $baseDate = $isCurrentlyActive ? \Carbon\Carbon::parse($enrollment->end_date) : now();
+                $startDate = $isCurrentlyActive ? ($enrollment->start_date ?: now()) : now();
+                $endDate = $baseDate->copy()->addMonths($months);
+
+                if ($enrollment->trashed()) {
+                    $enrollment->restore();
+                }
 
                 $permanentCode = \App\Models\CoursesEnrollment::generatePermanentCode($enrollment->id);
                 $enrollment->update([
