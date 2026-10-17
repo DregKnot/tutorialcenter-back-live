@@ -685,3 +685,6 @@ Route::get('/staffs/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyti
 Route::get('/admin/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
 Route::get('/staffs/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);
 Route::get('/admin/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);
+
+Route::get('/admin/analytics/traffic', [\App\Http\Controllers\AdminDashboardAnalyticsController::class, 'siteTraffic']);
+Route::get('/staffs/analytics/traffic', [\App\Http\Controllers\AdminDashboardAnalyticsController::class, 'siteTraffic']);
