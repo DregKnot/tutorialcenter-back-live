@@ -245,6 +245,7 @@ class CourseController extends Controller
             'student_id' => 'required|exists:students,id',
             'course_id' => 'required|exists:courses,id',
             'billing_cycle' => 'required|in:monthly,quarterly,semi_annual,annual',
+            'exam_track' => 'nullable|string|max:20',
             'subjects' => 'nullable|array',
             'subjects.*' => 'nullable',
         ]);

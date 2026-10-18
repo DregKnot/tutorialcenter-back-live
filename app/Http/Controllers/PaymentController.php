@@ -242,9 +242,7 @@ class PaymentController extends Controller
                 if ($status === 'failed') {
                     $query->whereIn('status', ['failed', 'cancelled', 'refunded']);
                 } elseif ($status === 'free') {
-                    $query->where(function ($q) {
-                        $q->where('amount', 0)->orWhere('payment_method', 'manual');
-                    });
+                    $query->where('amount', '<=', 0);
                 } else {
                     $query->where('status', $status);
                 }
@@ -275,40 +273,23 @@ class PaymentController extends Controller
             }
 
             // 4. Global & Filtered Financial Summaries across the entire database
-            // Strictly exclude any free grants, complimentary registrations, or fee waivers from revenue
+            // Strictly include any successful transaction with amount > 0 as official revenue
             $payingPaymentsBase = Payment::where('status', 'successful')
-                ->where('amount', '>', 0)
-                ->where(function ($q) {
-                    $q->whereNull('gateway')
-                      ->orWhere('gateway', '!=', 'complimentary');
-                })
-                ->where(function ($q) {
-                    $q->whereNull('gateway_reference')
-                      ->orWhere('gateway_reference', 'not like', 'FREE-%');
-                });
+                ->where('amount', '>', 0);
 
             $lifetimeRevenue = (float) $payingPaymentsBase->sum('amount');
             $lifetimeTotal = Payment::count();
             $lifetimeSuccessful = Payment::where('status', 'successful')->count();
             $lifetimePending = Payment::where('status', 'pending')->count();
             $lifetimeFailed = Payment::whereIn('status', ['failed', 'cancelled', 'refunded'])->count();
-            $lifetimeFreeGrants = Payment::where(function ($q) {
-                $q->where('amount', '<=', 0)
-                  ->orWhere('gateway', 'complimentary')
-                  ->orWhere('gateway_reference', 'like', 'FREE-%');
-            })->where('status', 'successful')->count();
+            $lifetimeFreeGrants = Payment::where('status', 'successful')
+                ->where('amount', '<=', 0)
+                ->count();
 
             $filteredQuery = clone $query;
             $filteredRevenue = (float) (clone $filteredQuery)->where('status', 'successful')
                 ->where('amount', '>', 0)
-                ->where(function ($q) {
-                    $q->whereNull('gateway')
-                      ->orWhere('gateway', '!=', 'complimentary');
-                })
-                ->where(function ($q) {
-                    $q->whereNull('gateway_reference')
-                      ->orWhere('gateway_reference', 'not like', 'FREE-%');
-                })->sum('amount');
+                ->sum('amount');
             $filteredTotal = (clone $filteredQuery)->count();
 
             $summary = [

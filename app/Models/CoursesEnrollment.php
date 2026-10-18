@@ -13,6 +13,7 @@ class CoursesEnrollment extends Model
     protected $fillable = [
         'enrollment_code',
         'course_id',
+        'exam_track',
         'student_id',
         'start_date',
         'end_date',
@@ -96,18 +97,40 @@ class CoursesEnrollment extends Model
 
     public function isActive(): bool
     {
-        return
-            $this->status === 'active'
-            && (
-                is_null($this->end_date)
-                || $this->end_date->gte(now())
-            )
-            && $this->payments()
+        if ($this->status !== 'active') {
+            return false;
+        }
+
+        $now = now();
+        $successfulPayments = $this->payments()
             ->whereIn('status', ['successful', 'paid'])
-            ->exists()
-            && $this->subjects()
-            ->whereNull('deleted_at')
-            ->exists();
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        if ($successfulPayments->isEmpty()) {
+            return false;
+        }
+
+        foreach ($successfulPayments as $p) {
+            $paidAt = $p->paid_at ?: $p->created_at;
+            $cycle = strtolower($p->billing_cycle ?: $this->billing_cycle ?: 'monthly');
+            $days = match($cycle) {
+                'weekly' => 7,
+                'quarterly' => 90,
+                'semi_annual' => 180,
+                'annual' => 365,
+                default => 30,
+            };
+            $paymentExpiry = $paidAt ? \Carbon\Carbon::parse($paidAt)->addDays($days) : null;
+            $enrollmentExpiry = $this->end_date ? \Carbon\Carbon::parse($this->end_date) : null;
+
+            if (($enrollmentExpiry && $enrollmentExpiry->gte($now)) ||
+                ($paymentExpiry && $paymentExpiry->gte($now))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function scopeActiveSubscription($query)

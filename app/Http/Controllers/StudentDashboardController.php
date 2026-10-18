@@ -38,22 +38,39 @@ class StudentDashboardController extends Controller
             $now = now();
             $today = $now->toDateString();
 
-            // 1. Active Courses with pruned columns
+            // 1. Active Courses with pruned columns (strictly unexpired)
             $enrollments = CoursesEnrollment::with([
                 'course:id,title,description,banner',
-                'subjects.subject:id,name,description,banner'
+                'subjects.subject:id,name,description,banner',
+                'payments' => function ($q) {
+                    $q->select(['id', 'course_enrollment_id', 'student_id', 'status', 'paid_at', 'billing_cycle', 'created_at'])
+                      ->whereIn('status', ['successful', 'paid']);
+                }
             ])
                 ->where('student_id', $studentId)
                 ->where('status', 'active')
-                ->where(function ($q) use ($now) {
-                    $q->whereNull('end_date')
-                      ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
-                })
-                ->whereHas('payments', function ($q) {
-                    $q->whereIn('status', ['successful', 'paid']);
-                })
                 ->latest('updated_at')
-                ->get();
+                ->get()
+                ->filter(function ($enrollment) use ($now) {
+                    if ($enrollment->end_date && \Carbon\Carbon::parse($enrollment->end_date)->gte($now)) {
+                        return true;
+                    }
+                    foreach ($enrollment->payments as $p) {
+                        $paidAt = $p->paid_at ?: $p->created_at;
+                        $cycle = strtolower($p->billing_cycle ?: $enrollment->billing_cycle ?: 'monthly');
+                        $days = match($cycle) {
+                            'weekly' => 7,
+                            'quarterly' => 90,
+                            'semi_annual' => 180,
+                            'annual' => 365,
+                            default => 30,
+                        };
+                        if ($paidAt && \Carbon\Carbon::parse($paidAt)->addDays($days)->gte($now)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                });
 
             $activeCourses = $enrollments->map(function ($enrollment) {
                 return [
