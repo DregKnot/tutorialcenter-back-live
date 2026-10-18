@@ -742,8 +742,8 @@ class PaymentController extends Controller
                 $guardianId = $authUser->id;
             }
         }
-        if (!$guardianId && $enrollment->student && $enrollment->student->guardian_id) {
-            $guardianId = $enrollment->student->guardian_id;
+        if (!$guardianId && $enrollment->student) {
+            $guardianId = $enrollment->student->guardian_id ?? $enrollment->student->guardians()->first()?->id;
         }
 
         $guardianModel = null;
@@ -751,7 +751,7 @@ class PaymentController extends Controller
             $guardianModel = \App\Models\Guardian::find($guardianId);
         }
 
-        return DB::transaction(function () use ($enrollment, $validated, $request, $isRenewal, $guardianId) {
+        return DB::transaction(function () use ($enrollment, $validated, $request, $isRenewal, $guardianId, $guardianModel) {
             // Find all open bank transfers for this enrollment with row-level lock
             $existingPayments = Payment::where('course_enrollment_id', $enrollment->id)
                 ->where('payment_method', 'bank_transfer')
@@ -808,6 +808,12 @@ class PaymentController extends Controller
                 }
                 if ($guardianId) {
                     $bankTransfer['guardian_id'] = $guardianId;
+                    if ($guardianModel) {
+                        $bankTransfer['guardian_name'] = trim($guardianModel->firstname . ' ' . $guardianModel->surname);
+                        $bankTransfer['guardian_email'] = $guardianModel->email;
+                        $bankTransfer['guardian_tel'] = $guardianModel->tel;
+                        $bankTransfer['guardian_relationship'] = $guardianModel->pivot?->relationship ?? $guardianModel->relationship ?? null;
+                    }
                 }
                 $payment->update([
                     'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
@@ -834,7 +840,7 @@ class PaymentController extends Controller
                             'guardian_name' => $guardianModel ? trim($guardianModel->firstname . ' ' . $guardianModel->surname) : null,
                             'guardian_email' => $guardianModel?->email,
                             'guardian_tel' => $guardianModel?->tel,
-                            'guardian_relationship' => $guardianModel?->relationship,
+                            'guardian_relationship' => $guardianModel?->pivot?->relationship ?? $guardianModel?->relationship ?? null,
                             'subjects' => $validated['subjects'] ?? [],
                             'exam_track' => $validated['exam_track'] ?? null,
                         ],
