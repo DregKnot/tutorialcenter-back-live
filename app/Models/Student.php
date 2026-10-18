@@ -99,6 +99,18 @@ class Student extends Model
             ->withPivot('relationship')
             ->withTimestamps();
     }
+    public function guardian()
+    {
+        return $this->hasOneThrough(
+            Guardian::class,
+            GuardianStudent::class,
+            'student_id',
+            'id',
+            'id',
+            'guardian_id'
+        );
+    }
+
 
     public function enrolledInSubject($subjectId): bool
     {

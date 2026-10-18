@@ -24,6 +24,7 @@ use App\Http\Controllers\SpecialEventCalendarController;
 use App\Http\Controllers\StaffController;
 use App\Http\Controllers\StudentAchievementController;
 use App\Http\Controllers\StudentController;
+use App\Http\Controllers\StudentDashboardController;
 use App\Http\Controllers\StudentExamController;
 use App\Http\Controllers\StudentExamQuestionController;
 use App\Http\Controllers\StudentExamResultController;
@@ -108,7 +109,8 @@ Route::prefix('students')->group(function () {
 | Student Protected Routes
 |--------------------------------------------------------------------------
 */
-Route::prefix('students')->middleware('auth:sanctum')->group(function () {
+Route::prefix('students')->middleware(['auth:sanctum', 'auth:student'])->group(function () {
+    Route::get('/dashboard-summary', [StudentDashboardController::class, 'summary']);
     // Masterclass Attendance Lifecycle
     Route::post('/classes/attendance/join', [AttendanceController::class, 'joinAttendance']);
     Route::post('/classes/attendance/heartbeat', [AttendanceController::class, 'heartbeat']);
@@ -212,10 +214,7 @@ Route::prefix('students')->group(function () {
 | Guardian Registration & Verification
 |--------------------------------------------------------------------------
 */
-Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
-    Route::get('/advisors/all', [StudentController::class, 'allAdvisors']);
-
-    Route::prefix('guardians')->group(function () {
+Route::prefix('guardians')->group(function () {
     // Route::post('/register', [GuardianController::class, 'store']);
     Route::post('/register', [GuardianController::class, 'registerWithBiodata']);
 
@@ -233,7 +232,7 @@ Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
 | Guardian Protected Routes
 |--------------------------------------------------------------------------
 */
-Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
+Route::prefix('guardians')->middleware(['auth:sanctum', 'auth:guardian'])->group(function () {
     Route::get('/profile', [GuardianController::class, 'profile']);
     Route::post('/profile/update', [GuardianController::class, 'update']);
     Route::get('/dashboard/wards', [GuardianDashboardController::class, 'getWardsDashboard']);
@@ -257,15 +256,7 @@ Route::prefix('guardians')->middleware('auth:sanctum')->group(function () {
 | Staff Registration Verification
 |--------------------------------------------------------------------------
 */
-Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
-
 Route::prefix('staffs')->group(function () {
-    Route::post('/classes/tutor-report', [\App\Http\Controllers\FeedbackController::class, 'storeTutorReport']);
-    Route::post('/classes/advisor-report', [\App\Http\Controllers\FeedbackController::class, 'storeAdvisorReport']);
-
-    Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']); // Leaderboard
-        Route::get('/leaderboard/students/{id}', [AdminDashboardAnalyticsController::class, 'studentLeaderboardDetail']); // Student Subject & Daily Leaderboard Detail
-    Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
     // Login (restricted until verified)
     Route::post('/login', [StaffController::class, 'login']);
 
@@ -284,6 +275,27 @@ Route::prefix('staffs')->group(function () {
     Route::middleware('auth:staff')->group(function () {
         // Logout
         Route::post('/logout', [StaffController::class, 'logout']);
+
+        // Reports & Class Interactions
+        Route::post('/classes/tutor-report', [\App\Http\Controllers\FeedbackController::class, 'storeTutorReport']);
+        Route::post('/classes/advisor-report', [\App\Http\Controllers\FeedbackController::class, 'storeAdvisorReport']);
+        Route::get('/leaderboard', [AdminDashboardAnalyticsController::class, 'leaderboard']);
+        Route::get('/leaderboard/students/{id}', [AdminDashboardAnalyticsController::class, 'studentLeaderboardDetail']);
+        Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
+
+        // System Audit Logs & Feedbacks
+        Route::get('/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
+        Route::get('/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
+
+        // Staff Analytics & Class Hierarchy
+        Route::prefix('enrollments')->group(function () {
+            Route::get('/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
+            Route::get('/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
+            Route::get('/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
+        });
+        Route::get('/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
+        Route::get('/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);
+        Route::get('/analytics/traffic', [\App\Http\Controllers\AdminDashboardAnalyticsController::class, 'siteTraffic']);
 
         // Classes
         Route::post('/classes/session/recording', [ClassesController::class, 'updateSessionRecording']); // Update recording link for a session
@@ -377,7 +389,6 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
 
 
     // Guardians Management
-    Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
     Route::get('/advisors/all', [StudentController::class, 'allAdvisors']);
 
     Route::prefix('guardians')->group(function () {
@@ -418,6 +429,10 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     });
 
     // Course Management
+    Route::get('/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
+    Route::get('/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);
+    Route::get('/analytics/traffic', [\App\Http\Controllers\AdminDashboardAnalyticsController::class, 'siteTraffic']);
+
     Route::prefix('courses')->group(function () {
         Route::post('/', [CourseController::class, 'store']);
         Route::put('/update/{id}', [CourseController::class, 'update']);
@@ -658,7 +673,6 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
     });
 
     // Guardians Management
-    Route::get('/guardians/all', [StudentController::class, 'allGuardians']);
     Route::get('/advisors/all', [StudentController::class, 'allAdvisors']);
 
     Route::prefix('guardians')->group(function () {
@@ -674,14 +688,3 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
         Route::get('/{id}', [StudentController::class, 'show']); // Show student details
     });
 });
-
-Route::get('/staffs/audit-logs', [\App\Http\Controllers\NotificationController::class, 'adminAuditLogs']);
-
-Route::get('/staffs/feedbacks/all', [\App\Http\Controllers\FeedbackController::class, 'adminIndex']);
-Route::get('/staffs/enrollments/subjects/roster', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'subjectRoster']);
-Route::get('/staffs/enrollments/subjects/popular', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'mostRegisteredSubjects']);
-Route::get('/staffs/enrollments/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
-Route::get('/staffs/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
-Route::get('/admin/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
-Route::get('/staffs/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);
-Route::get('/admin/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);

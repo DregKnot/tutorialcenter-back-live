@@ -20,9 +20,22 @@ return [
     'allowed_methods' => ['*'],
 
     // 'allowed_origins' => ['*'],
-    'allowed_origins' => ['http://localhost:3000', 'https://tutorialcenter-rho.vercel.app', 'https://tutorialcenter.africa', 'https://affiliates.tutorialcenter.africa', 'https://www.tutorialcenter.africa'],
+    'allowed_origins' => [
+        'http://localhost:3000',
+        'http://localhost:3001',
+        'http://localhost:3002',
+        'http://127.0.0.1:3000',
+        'http://127.0.0.1:3001',
+        'http://127.0.0.1:3002',
+        'https://tutorialcenter-rho.vercel.app',
+        'https://tutorialcenter.africa',
+        'https://affiliates.tutorialcenter.africa',
+        'https://www.tutorialcenter.africa'
+    ],
 
-    'allowed_origins_patterns' => [],
+    'allowed_origins_patterns' => [
+        '#^http://(localhost|127\\.0\\.0\\.1)(:\\d+)?$#'
+    ],
 
     'allowed_headers' => ['*'],
 
