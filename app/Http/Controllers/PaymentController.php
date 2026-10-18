@@ -201,11 +201,30 @@ class PaymentController extends Controller
         }
     }
 
-    // Admin: View all payments with filters
+    // Admin: View all payments with filters, search, dynamic pagination, and global summary metrics
     public function index(Request $request)
     {
         try {
             $query = Payment::with(['student.guardian', 'enrollment.course']);
+
+            // 1. Search Query across Reference, Student Name, Email, Phone, Course Title
+            if ($request->filled('search')) {
+                $search = trim($request->search);
+                $query->where(function ($q) use ($search) {
+                    $q->where('gateway_reference', 'like', "%{$search}%");
+                    if (ctype_digit($search)) {
+                        $q->orWhere('id', (int) $search);
+                    }
+                    $q->orWhereHas('student', function ($sq) use ($search) {
+                        $sq->where('firstname', 'like', "%{$search}%")
+                            ->orWhere('surname', 'like', "%{$search}%")
+                            ->orWhere('email', 'like', "%{$search}%")
+                            ->orWhere('tel', 'like', "%{$search}%");
+                    })->orWhereHas('enrollment.course', function ($cq) use ($search) {
+                        $cq->where('title', 'like', "%{$search}%");
+                    });
+                });
+            }
 
             if ($request->filled('student_id')) {
                 $query->where('student_id', $request->student_id);
@@ -217,12 +236,34 @@ class PaymentController extends Controller
                 });
             }
 
-            if ($request->filled('status')) {
-                $query->where('status', $request->status);
+            // 2. Status Filter
+            if ($request->filled('status') && $request->status !== 'all') {
+                $status = strtolower(trim($request->status));
+                if ($status === 'failed') {
+                    $query->whereIn('status', ['failed', 'cancelled', 'refunded']);
+                } elseif ($status === 'free') {
+                    $query->where(function ($q) {
+                        $q->where('amount', 0)->orWhere('payment_method', 'manual');
+                    });
+                } else {
+                    $query->where('status', $status);
+                }
             }
 
             if ($request->filled('payment_method')) {
                 $query->where('payment_method', $request->payment_method);
+            }
+
+            // 3. Timeframe / Date Filters
+            if ($request->filled('timeframe') && $request->timeframe !== 'all') {
+                $tf = strtolower(trim($request->timeframe));
+                if ($tf === 'today') {
+                    $query->whereDate('created_at', \Carbon\Carbon::today());
+                } elseif ($tf === 'week') {
+                    $query->where('created_at', '>=', \Carbon\Carbon::now()->subDays(7));
+                } elseif ($tf === 'month') {
+                    $query->where('created_at', '>=', \Carbon\Carbon::now()->subDays(30));
+                }
             }
 
             if ($request->filled('from_date')) {
@@ -233,9 +274,76 @@ class PaymentController extends Controller
                 $query->whereDate('created_at', '<=', $request->to_date);
             }
 
-            $payments = $query->latest()->paginate(20);
+            // 4. Global & Filtered Financial Summaries across the entire database
+            // Strictly exclude any free grants, complimentary registrations, or fee waivers from revenue
+            $payingPaymentsBase = Payment::where('status', 'successful')
+                ->where('amount', '>', 0)
+                ->where(function ($q) {
+                    $q->whereNull('gateway')
+                      ->orWhere('gateway', '!=', 'complimentary');
+                })
+                ->where(function ($q) {
+                    $q->whereNull('gateway_reference')
+                      ->orWhere('gateway_reference', 'not like', 'FREE-%');
+                });
+
+            $lifetimeRevenue = (float) $payingPaymentsBase->sum('amount');
+            $lifetimeTotal = Payment::count();
+            $lifetimeSuccessful = Payment::where('status', 'successful')->count();
+            $lifetimePending = Payment::where('status', 'pending')->count();
+            $lifetimeFailed = Payment::whereIn('status', ['failed', 'cancelled', 'refunded'])->count();
+            $lifetimeFreeGrants = Payment::where(function ($q) {
+                $q->where('amount', '<=', 0)
+                  ->orWhere('gateway', 'complimentary')
+                  ->orWhere('gateway_reference', 'like', 'FREE-%');
+            })->where('status', 'successful')->count();
+
+            $filteredQuery = clone $query;
+            $filteredRevenue = (float) (clone $filteredQuery)->where('status', 'successful')
+                ->where('amount', '>', 0)
+                ->where(function ($q) {
+                    $q->whereNull('gateway')
+                      ->orWhere('gateway', '!=', 'complimentary');
+                })
+                ->where(function ($q) {
+                    $q->whereNull('gateway_reference')
+                      ->orWhere('gateway_reference', 'not like', 'FREE-%');
+                })->sum('amount');
+            $filteredTotal = (clone $filteredQuery)->count();
+
+            $summary = [
+                'total_revenue' => $lifetimeRevenue,
+                'total_transactions' => $lifetimeTotal,
+                'total_successful' => $lifetimeSuccessful,
+                'total_paying' => $lifetimeSuccessful - $lifetimeFreeGrants,
+                'total_pending' => $lifetimePending,
+                'total_failed' => $lifetimeFailed,
+                'total_free_grants' => $lifetimeFreeGrants,
+                'filtered_revenue' => $filteredRevenue,
+                'filtered_total' => $filteredTotal,
+            ];
+
+            // 5. Pagination vs Full List
+            $wantsAll = $request->boolean('all') ||
+                $request->input('all') === 'true' ||
+                $request->input('paginate') === 'false' ||
+                $request->input('per_page') === 'all';
+
+            if ($wantsAll) {
+                $paymentsList = $query->latest()->get();
+                return response()->json([
+                    'payments' => $paymentsList,
+                    'data' => $paymentsList,
+                    'summary' => $summary,
+                ], 200);
+            }
+
+            $perPage = min(max((int) $request->input('per_page', 20), 1), 500);
+            $payments = $query->latest()->paginate($perPage);
+
             return response()->json([
                 'payments' => $payments,
+                'summary' => $summary,
             ], 200);
         } catch (\Exception $e) {
             return response()->json([
@@ -1035,8 +1143,12 @@ class PaymentController extends Controller
 
                 $locked->update([
                     'status' => 'successful',
+                    'amount' => $isWaived ? 0.00 : $locked->amount,
                     'paid_at' => $paidAt,
                     'meta' => array_merge($meta, [
+                        'original_amount' => $locked->amount,
+                        'is_waived' => $isWaived,
+                        'waiver_type' => $isWaived ? ($validated['waiver_type'] ?? 'test_account') : null,
                         'bank_transfer' => array_merge($bankTransfer, [
                             'review' => [
                                 'action' => 'approved',
@@ -1534,3 +1646,4 @@ class PaymentController extends Controller
         }
     }
 }
+

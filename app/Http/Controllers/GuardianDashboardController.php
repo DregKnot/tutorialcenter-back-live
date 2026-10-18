@@ -58,9 +58,47 @@ class GuardianDashboardController extends Controller
     {
         $guardian = $this->authorizeGuardian($request);
         $wards = $guardian->students()
-            ->select('students.id', 'students.firstname', 'students.surname', 'students.email', 'students.tel', 'students.department')
+            ->select('students.id', 'students.firstname', 'students.surname', 'students.email', 'students.tel', 'students.department', 'students.email_verified_at', 'students.location', 'students.address')
             ->get()
             ->map(function ($student) {
+                $isVerified = !empty($student->email_verified_at);
+
+                // Fetch latest course enrollment
+                $enrollment = CoursesEnrollment::where('student_id', $student->id)
+                    ->with('subjects')
+                    ->latest('created_at')
+                    ->first();
+
+                $hasCourse = !empty($enrollment) && !empty($enrollment->course_id);
+                $subjectsCount = $hasCourse ? $enrollment->subjects()->count() : 0;
+                $hasSubjects = $subjectsCount > 0;
+                $hasActivePayment = !empty($enrollment) && $enrollment->status === 'active' && !empty($enrollment->paid_at);
+
+                // Determine exact stopped step
+                if (!$isVerified) {
+                    $stoppedStep = 1;
+                    $stoppedStepName = 'Step 1: Ward Biodata & OTP Verification';
+                    $stoppedReason = 'Student email/phone verification pending';
+                } elseif (!$hasCourse) {
+                    $stoppedStep = 2;
+                    $stoppedStepName = 'Step 2: Course Program Selection';
+                    $stoppedReason = 'No academic training course selected (e.g. JAMB, WAEC, NECO)';
+                } elseif (!$hasSubjects) {
+                    $stoppedStep = 3;
+                    $stoppedStepName = 'Step 3: Subject Selection';
+                    $stoppedReason = 'No specific subjects chosen under the selected course';
+                } elseif (!$hasActivePayment) {
+                    $stoppedStep = 5;
+                    $stoppedStepName = 'Step 5: Payment & Plan Activation';
+                    $stoppedReason = 'Study plan payment pending';
+                } else {
+                    $stoppedStep = null;
+                    $stoppedStepName = 'Completed';
+                    $stoppedReason = 'Fully Enrolled & Active';
+                }
+
+                $isOnboardingComplete = ($stoppedStep === null);
+
                 return [
                     'id' => $student->id,
                     'name' => trim($student->firstname . ' ' . $student->surname),
@@ -70,9 +108,18 @@ class GuardianDashboardController extends Controller
                     'tel' => $student->tel,
                     'department' => $student->department ?? 'General',
                     'email_verified_at' => $student->email_verified_at,
-                    'is_verified' => !empty($student->email_verified_at),
+                    'is_verified' => $isVerified,
                     'location' => $student->location,
                     'address' => $student->address,
+                    'has_course' => $hasCourse,
+                    'has_subjects' => $hasSubjects,
+                    'subjects_count' => $subjectsCount,
+                    'has_active_payment' => $hasActivePayment,
+                    'is_onboarding_complete' => $isOnboardingComplete,
+                    'stopped_step' => $stoppedStep,
+                    'stopped_step_name' => $stoppedStepName,
+                    'stopped_reason' => $stoppedReason,
+                    'course_id' => $enrollment?->course_id,
                 ];
             });
 
@@ -107,6 +154,8 @@ class GuardianDashboardController extends Controller
             'gender' => 'nullable|string|max:20',
             'relationship' => 'nullable|string|max:50',
             'date_of_birth' => 'nullable|date',
+            'location' => 'nullable|string|max:100',
+            'address' => 'nullable|string|max:255',
             'password' => 'required|string|min:6',
         ]);
 
@@ -172,10 +221,29 @@ class GuardianDashboardController extends Controller
                 'department' => $validated['department'] ?? 'General',
                 'gender' => $gender,
                 'date_of_birth' => $validated['date_of_birth'] ?? null,
+                'location' => $validated['location'] ?? null,
+                'address' => $validated['address'] ?? null,
                 'password' => Hash::make($validated['password']),
-                'email_verified_at' => !empty($email) ? now() : null,
-                'tel_verified_at' => !empty($tel) ? now() : null,
+                'email_verified_at' => null,
+                'tel_verified_at' => null,
             ]);
+
+            // Dispatch OTP verification email to new student
+            if (!empty($email)) {
+                try {
+                    app(\App\Services\EmailVerificationService::class)->send($student);
+                } catch (\Throwable $mailEx) {
+                    \Illuminate\Support\Facades\Log::error("Failed to send student OTP to {$email}: " . $mailEx->getMessage());
+                }
+            }
+        }
+
+        if ($isExisting && empty($student->email_verified_at) && !empty($student->email)) {
+            try {
+                app(\App\Services\EmailVerificationService::class)->send($student);
+            } catch (\Throwable $mailEx) {
+                \Illuminate\Support\Facades\Log::error("Failed to send student OTP to {$student->email}: " . $mailEx->getMessage());
+            }
         }
 
         // Link to guardian using pivot table guardian_students (handling soft-deletes and avoid duplicate key violation)
@@ -217,7 +285,10 @@ class GuardianDashboardController extends Controller
                 'department' => $student->department,
                 'gender' => $student->gender,
                 'relationship' => $relationship,
+                'location' => $student->location,
+                'address' => $student->address,
                 'is_existing' => $isExisting,
+                'is_verified' => !empty($student->email_verified_at),
             ]
         ], 201);
     }

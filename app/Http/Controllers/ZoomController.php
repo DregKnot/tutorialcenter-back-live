@@ -265,6 +265,8 @@ class ZoomController extends Controller
                 'zoom_join_url' => $class->zoom_join_url ?: $rawMeetingLink,
                 'sdk_key' => config('services.zoom.sdk_key'),
                 'role' => $role,
+                'is_host' => ($role === 1),
+                'active_host_staff_id' => $session->started_by_staff_id,
                 'user_name' => $user->firstname . ' ' . $user->surname,
                 'user_email' => $user->email,
             ], 200);
