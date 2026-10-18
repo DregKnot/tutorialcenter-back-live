@@ -3,23 +3,23 @@
 namespace App\Http\Controllers;
 
 use Carbon\Carbon;
+use App\Models\Staff;
 use App\Models\Course;
 use App\Models\Holiday;
 use App\Models\Subject;
 use App\Models\Classes;
+use App\Models\Student;
 use App\Models\ClassStaff;
 use App\Models\ClassSession;
 use Illuminate\Http\Request;
 use App\Models\ClassSchedule;
+use App\Services\ZoomService;
 use App\Models\ClassAttendance;
 use App\Models\ClassSessionView;
-use App\Models\Student;
 use App\Models\CoursesEnrollment;
-use App\Models\Staff;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
-use App\Services\ZoomService;
 use App\Services\StaffNotificationService;
 
 class ClassesController extends Controller
@@ -187,7 +187,7 @@ class ClassesController extends Controller
 
                     $classLink = $zoomJoinUrl;
                 } catch (\Throwable $ze) {
-                    \Log::warning("Zoom meeting auto-creation during class store failed: " . $ze->getMessage());
+                    \Illuminate\Support\Facades\Log::warning("Zoom meeting auto-creation during class store failed: " . $ze->getMessage());
                 }
             }
 
