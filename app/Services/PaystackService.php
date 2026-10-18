@@ -400,8 +400,21 @@ class PaystackService
                 $enrollment->restore();
             }
             $permanentCode = CoursesEnrollment::generatePermanentCode($enrollment->id);
+            $examTrack = !empty($courseItem['exam_track'])
+                ? strtoupper(trim($courseItem['exam_track']))
+                : (!empty($metadata['exam_track'])
+                    ? strtoupper(trim($metadata['exam_track']))
+                    : match ((int) $courseId) {
+                        1 => 'JAMB',
+                        2 => 'WAEC',
+                        3 => 'NECO',
+                        4 => 'GCE',
+                        default => 'WAEC',
+                    });
+
             $enrollment->update([
                 'enrollment_code' => $permanentCode,
+                'exam_track' => $examTrack,
                 'start_date' => $startDate,
                 'end_date' => $endDate,
                 'paid_at' => $paidAt,
@@ -412,8 +425,21 @@ class PaystackService
                 'status' => 'active',
             ]);
         } else {
+            $examTrack = !empty($courseItem['exam_track'])
+                ? strtoupper(trim($courseItem['exam_track']))
+                : (!empty($metadata['exam_track'])
+                    ? strtoupper(trim($metadata['exam_track']))
+                    : match ((int) $courseId) {
+                        1 => 'JAMB',
+                        2 => 'WAEC',
+                        3 => 'NECO',
+                        4 => 'GCE',
+                        default => 'WAEC',
+                    });
+
             $enrollment = CoursesEnrollment::create([
                 'course_id' => $courseId,
+                'exam_track' => $examTrack,
                 'student_id' => $student->id,
                 'start_date' => $startDate,
                 'end_date' => $endDate,

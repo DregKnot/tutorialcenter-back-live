@@ -1444,53 +1444,201 @@ class StudentController extends Controller
     /*
      * Fetch all students (for admin use)
      */
-    public function index()
+    public function index(Request $request)
     {
+        $search = trim($request->input('search', ''));
+        $statusFilter = strtolower(trim($request->input('status', '')));
+        $perPage = (int) $request->input('per_page', 10);
+        $page = (int) $request->input('page', 1);
+        $returnAll = $request->boolean('all') || !$request->has('page');
+
+        // Base query with column selection on students
         $query = Student::withTrashed()
+            ->select([
+                'id',
+                'firstname',
+                'surname',
+                'email',
+                'tel',
+                'profile_picture',
+                'gender',
+                'date_of_birth',
+                'department',
+                'location',
+                'address',
+                'enrollment_code',
+                'enrollment_status',
+                'is_active',
+                'banned',
+                'status',
+                'account_status',
+                'email_verified_at',
+                'created_at',
+                'updated_at',
+                'deleted_at',
+            ])
             ->with([
-                'courseEnrollments.course',
-                'courseEnrollments.subjects.subject',
-                'courseEnrollments.payments',
-                'subjectEnrollments.subject',
-                'payments',
-                'guardians',
-                'advisors',
+                'courseEnrollments' => function ($q) {
+                    $q->select([
+                        'id',
+                        'student_id',
+                        'course_id',
+                        'status',
+                        'start_date',
+                        'end_date',
+                        'created_at',
+                        'enrollment_code',
+                        'exam_track',
+                        'billing_cycle',
+                    ])->with([
+                        'course:id,title,slug,price',
+                        'subjects.subject:id,name',
+                        'payments' => function ($pq) {
+                            $pq->select([
+                                'id',
+                                'student_id',
+                                'course_enrollment_id',
+                                'amount',
+                                'status',
+                                'paid_at',
+                                'created_at',
+                                'gateway',
+                            ])->orderBy('created_at', 'desc')->orderBy('id', 'desc');
+                        },
+                    ]);
+                },
+                'subjectEnrollments.subject:id,name',
+                'payments' => function ($q) {
+                    $q->select([
+                        'id',
+                        'student_id',
+                        'course_enrollment_id',
+                        'amount',
+                        'currency',
+                        'status',
+                        'paid_at',
+                        'created_at',
+                        'gateway',
+                        'billing_cycle',
+                        'gateway_reference',
+                    ])->orderBy('created_at', 'desc')->orderBy('id', 'desc');
+                },
+                'guardians:id,firstname,surname,tel',
+                'advisors:staffs.id,staffs.firstname,staffs.surname',
             ]);
 
-        // Support filtering for assigned students (by current advisor or explicit staff/advisor id)
-        if (request()->boolean('assigned') || request()->boolean('assigned_to_me') || request('filter') === 'assigned') {
-            $staff = auth('staff')->user() ?? request()->user('staff') ?? auth()->user();
-            $staffId = $staff?->id ?? request('staff_id');
+        // Search Filter (SQL indexed)
+        if ($search !== '') {
+            $query->where(function ($sq) use ($search) {
+                $sq->where('firstname', 'like', "%{$search}%")
+                    ->orWhere('surname', 'like', "%{$search}%")
+                    ->orWhere('email', 'like', "%{$search}%")
+                    ->orWhere('tel', 'like', "%{$search}%")
+                    ->orWhere('enrollment_code', 'like', "%{$search}%")
+                    ->orWhere(DB::raw("CONCAT(firstname, ' ', surname)"), 'like', "%{$search}%");
+            });
+        }
+
+        // Support filtering for assigned students
+        if ($request->boolean('assigned') || $request->boolean('assigned_to_me') || $request->input('filter') === 'assigned') {
+            $staff = auth('staff')->user() ?? $request->user('staff') ?? auth()->user();
+            $staffId = $staff?->id ?? $request->input('staff_id');
             if ($staffId) {
                 $query->whereHas('advisors', function ($q) use ($staffId) {
                     $q->where('staffs.id', $staffId);
                 });
             }
-        } elseif (request('advisor_id')) {
-            $query->whereHas('advisors', function ($q) {
-                $q->where('staffs.id', request('advisor_id'));
+        } elseif ($request->input('advisor_id')) {
+            $query->whereHas('advisors', function ($q) use ($request) {
+                $q->where('staffs.id', $request->input('advisor_id'));
             });
         }
 
-        $students = $query->orderBy('created_at', 'desc')
-            ->orderBy('id', 'desc')
-            ->get();
+        // Status filter at SQL level
+        if ($statusFilter === 'suspended') {
+            $query->where(function ($sq) {
+                $sq->whereNotNull('deleted_at')->orWhere('banned', 1)->orWhere('account_status', 'suspended');
+            });
+        } elseif ($statusFilter === 'active' || $statusFilter === 'inactive') {
+            $query->whereNull('deleted_at')->where('banned', 0);
+        }
 
-        $formatted = $students->map(function ($student) {
+        // Order newest to oldest
+        $query->orderBy('created_at', 'desc')->orderBy('id', 'desc');
+
+        // Total count before pagination
+        $totalMatching = (clone $query)->count();
+
+        // Pagination or Full fetch
+        if ($returnAll) {
+            $students = $query->get();
+            $currentPage = 1;
+            $lastPage = 1;
+            $perPage = $students->count();
+        } else {
+            $perPage = max(1, min(100, $perPage));
+            $currentPage = max(1, $page);
+            $students = $query->skip(($currentPage - 1) * $perPage)->take($perPage)->get();
+            $lastPage = (int) ceil($totalMatching / $perPage);
+        }
+
+        // Format students (computing isActive strictly based on active unexpired payment)
+        $now = Carbon::now();
+
+        $formatted = $students->map(function ($student) use ($now) {
+            $hasUnexpiredPayment = false;
+
+            foreach ($student->payments as $p) {
+                if (!in_array(strtolower($p->status), ['successful', 'paid'])) {
+                    continue;
+                }
+
+                $paidAt = $p->paid_at ?: $p->created_at;
+                $cycle = strtolower($p->billing_cycle ?: 'monthly');
+                $days = match($cycle) {
+                    'weekly' => 7,
+                    'quarterly' => 90,
+                    'semi_annual' => 180,
+                    'annual' => 365,
+                    default => 30,
+                };
+                
+                $expiryFromPayment = $paidAt ? Carbon::parse($paidAt)->addDays($days) : null;
+                $ce = $student->courseEnrollments->firstWhere('id', $p->course_enrollment_id);
+                $expiryFromEnrollment = $ce?->end_date ? Carbon::parse($ce->end_date) : null;
+
+                if (($expiryFromEnrollment && $expiryFromEnrollment->gte($now)) ||
+                    ($expiryFromPayment && $expiryFromPayment->gte($now))) {
+                    $hasUnexpiredPayment = true;
+                    break;
+                }
+            }
+
+            if (!$hasUnexpiredPayment) {
+                $hasActiveFutureEnrollment = $student->courseEnrollments->contains(function ($ce) use ($now) {
+                    return $ce->status === 'active' && $ce->end_date && Carbon::parse($ce->end_date)->gte($now);
+                });
+                $hasSuccessfulPayment = $student->payments->contains(function ($p) {
+                    return in_array(strtolower($p->status), ['successful', 'paid']);
+                });
+                if ($hasActiveFutureEnrollment && $hasSuccessfulPayment) {
+                    $hasUnexpiredPayment = true;
+                }
+            }
+
+            // An active student is strictly a student who has paid and their payment is still on
+            $isActive = $hasUnexpiredPayment && !$student->trashed() && !$student->banned;
+
             $activeCourseEnrollments = $student->courseEnrollments
-                ->filter(function ($enrollment) {
+                ->filter(function ($enrollment) use ($now) {
                     return $enrollment->status === 'active'
-                        && (is_null($enrollment->end_date) || $enrollment->end_date->gte(now()));
+                        && (is_null($enrollment->end_date) || Carbon::parse($enrollment->end_date)->gte($now));
                 });
 
             $pendingCourseEnrollments = $student->courseEnrollments
                 ->filter(function ($enrollment) {
                     return $enrollment->status === 'pending';
                 });
-
-            $hasSuccessfulPayment = $student->payments->contains(function ($payment) {
-                return in_array($payment->status, ['successful', 'paid']);
-            });
 
             $enrolledSubjects = $student->courseEnrollments
                 ->where('status', 'active')
@@ -1510,13 +1658,8 @@ class StudentController extends Controller
                 ->unique('id')
                 ->values();
 
-            // Strict definition of isActive: Active enrollment + successful payment + subjects!
-            $isActive = $activeCourseEnrollments->isNotEmpty()
-                && $hasSuccessfulPayment
-                && $enrolledSubjects->isNotEmpty();
-
             $enrollmentStatus = 'inactive';
-            if ($student->trashed() || $student->banned) {
+            if ($student->trashed() || $student->banned || $student->account_status === 'suspended') {
                 $enrollmentStatus = 'suspended';
             } elseif ($isActive) {
                 $enrollmentStatus = 'active';
@@ -1527,11 +1670,13 @@ class StudentController extends Controller
             }
 
             $latestEnrollment = $student->courseEnrollments->sortByDesc('created_at')->first();
+            $latestEndDate = $activeCourseEnrollments->sortByDesc('end_date')->first()?->end_date;
 
             $data = $student->toArray();
             $data['is_active'] = $isActive;
             $data['enrollment_status'] = $enrollmentStatus;
-            $data['enrollment_code'] = $latestEnrollment?->enrollment_code;
+            $data['enrollment_code'] = $latestEnrollment?->enrollment_code ?: $student->enrollment_code;
+            $data['latest_end_date'] = $latestEndDate;
             $data['enrolled_subjects'] = $enrolledSubjects;
             $data['enrolled_courses'] = $enrolledCourses;
             $data['pending_courses'] = $pendingCourseEnrollments->map(fn($ce) => [
@@ -1543,12 +1688,88 @@ class StudentController extends Controller
                 'expires_at' => $ce->expires_at,
             ])->values();
             $data['subject_enrollments'] = $enrolledSubjects;
+
             return $data;
         });
 
+        // Client-side status filter fallback if requested
+        if ($statusFilter === 'active') {
+            $formatted = $formatted->filter(fn($s) => $s['is_active'] && $s['enrollment_status'] !== 'suspended')->values();
+        } elseif ($statusFilter === 'inactive') {
+            $formatted = $formatted->filter(fn($s) => !$s['is_active'] && $s['enrollment_status'] !== 'suspended')->values();
+        }
+
+        // Fast platform statistics across all students
+        $allStudentsForStats = Student::withTrashed()->with(['payments', 'courseEnrollments'])->get();
+        $totalAll = $allStudentsForStats->count();
+        $suspendedCount = 0;
+        $activeCount = 0;
+        $newThisMonth = 0;
+
+        foreach ($allStudentsForStats as $sObj) {
+            if ($sObj->trashed() || $sObj->banned || $sObj->account_status === 'suspended') {
+                $suspendedCount++;
+                continue;
+            }
+
+            if ($sObj->created_at && Carbon::parse($sObj->created_at)->isCurrentMonth() && Carbon::parse($sObj->created_at)->isCurrentYear()) {
+                $newThisMonth++;
+            }
+
+            $sStillOn = false;
+            foreach ($sObj->payments as $p) {
+                if (!in_array(strtolower($p->status), ['successful', 'paid'])) continue;
+                $pPaidAt = $p->paid_at ?: $p->created_at;
+                $pCycle = strtolower($p->billing_cycle ?: 'monthly');
+                $pDays = match($pCycle) {
+                    'weekly' => 7,
+                    'quarterly' => 90,
+                    'semi_annual' => 180,
+                    'annual' => 365,
+                    default => 30,
+                };
+                $pExp = $pPaidAt ? Carbon::parse($pPaidAt)->addDays($pDays) : null;
+                $pCe = $sObj->courseEnrollments->firstWhere('id', $p->course_enrollment_id);
+                $pCeEnd = $pCe?->end_date ? Carbon::parse($pCe->end_date) : null;
+
+                if (($pCeEnd && $pCeEnd->gte($now)) || ($pExp && $pExp->gte($now))) {
+                    $sStillOn = true;
+                    break;
+                }
+            }
+
+            if (!$sStillOn) {
+                $hasCeFuture = $sObj->courseEnrollments->contains(fn($ce) => $ce->status === 'active' && $ce->end_date && Carbon::parse($ce->end_date)->gte($now));
+                $hasPaidP = $sObj->payments->contains(fn($p) => in_array(strtolower($p->status), ['successful', 'paid']));
+                if ($hasCeFuture && $hasPaidP) $sStillOn = true;
+            }
+
+            if ($sStillOn) {
+                $activeCount++;
+            }
+        }
+
+        $inactiveCount = max(0, $totalAll - $suspendedCount - $activeCount);
+
         return response()->json([
+            'success' => true,
             'message' => 'Students retrieved successfully.',
             'students' => $formatted,
+            'data' => $formatted,
+            'pagination' => [
+                'total' => $totalMatching,
+                'per_page' => $perPage,
+                'current_page' => $currentPage,
+                'last_page' => $lastPage,
+                'has_more' => $currentPage < $lastPage,
+            ],
+            'stats' => [
+                'total' => $totalAll,
+                'active' => $activeCount,
+                'inactive' => $inactiveCount,
+                'suspended' => $suspendedCount,
+                'new_this_month' => $newThisMonth,
+            ],
         ], 200);
     }
 
@@ -1569,6 +1790,12 @@ class StudentController extends Controller
                 'guardians',
                 'courseEnrollments.course',
                 'courseEnrollments.subjects.subject',
+                'courseEnrollments.payments' => function ($q) {
+                    $q->orderBy('created_at', 'desc')->orderBy('id', 'desc');
+                },
+                'payments' => function ($q) {
+                    $q->orderBy('created_at', 'desc')->orderBy('id', 'desc');
+                },
                 'advisors',
                 'attendances',
             ])
@@ -1683,6 +1910,7 @@ class StudentController extends Controller
             'subject_ids' => 'required|array|min:1',
             'subject_ids.*' => 'required|integer|distinct|exists:subjects,id',
             'billing_cycle' => 'required|in:monthly,quarterly,semi_annual,annual',
+            'exam_track' => 'nullable|string|max:20',
             'reason' => 'required|string|min:5|max:1000',
         ]);
 
@@ -1761,18 +1989,40 @@ class StudentController extends Controller
                     ->first();
 
                 if ($existingEnrollment) {
+                    $adminExamTrack = !empty($validated['exam_track'])
+                        ? strtoupper(trim($validated['exam_track']))
+                        : match ((int) $course->id) {
+                            1 => 'JAMB',
+                            2 => 'WAEC',
+                            3 => 'NECO',
+                            4 => 'GCE',
+                            default => 'WAEC',
+                        };
+
                     $existingEnrollment->update([
                         'start_date' => now(),
                         'end_date' => now()->addMonths($months),
                         'billing_cycle' => $validated['billing_cycle'],
                         'cost' => $amountPaid,
+                        'exam_track' => $adminExamTrack,
                         'status' => 'active',
                     ]);
                     $enrollment = $existingEnrollment;
                 } else {
+                    $adminExamTrack = !empty($validated['exam_track'])
+                        ? strtoupper(trim($validated['exam_track']))
+                        : match ((int) $course->id) {
+                            1 => 'JAMB',
+                            2 => 'WAEC',
+                            3 => 'NECO',
+                            4 => 'GCE',
+                            default => 'WAEC',
+                        };
+
                     $enrollment = CoursesEnrollment::create([
                         'student_id' => $student->id,
                         'course_id' => $course->id,
+                        'exam_track' => $adminExamTrack,
                         'start_date' => now(),
                         'end_date' => now()->addMonths($months),
                         'billing_cycle' => $validated['billing_cycle'],

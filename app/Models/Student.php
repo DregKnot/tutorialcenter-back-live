@@ -157,13 +157,12 @@ class Student extends Model
 
     public function hasActiveCourseSubscription($courseId): bool
     {
-        return $this->courseEnrollments()
-            ->activeSubscription()
+        $enrollment = $this->courseEnrollments()
             ->where('course_id', $courseId)
-            ->whereHas('payments', function ($query) {
-                $query->where('status', 'successful');
-            })
-            ->exists();
+            ->where('status', 'active')
+            ->first();
+
+        return $enrollment ? $enrollment->isActive() : false;
     }
 
     public function canAccessExam($examYearId): bool

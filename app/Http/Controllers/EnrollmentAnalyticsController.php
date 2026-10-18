@@ -373,11 +373,23 @@ class EnrollmentAnalyticsController extends Controller
                 ];
             }
 
+            // Calculate real candidate counts across active exam tracks
+            $trackDistribution = CoursesEnrollment::whereNull('deleted_at')
+                ->where('status', 'active')
+                ->select(
+                    DB::raw("COALESCE(exam_track, 'WAEC') as track"),
+                    DB::raw("count(DISTINCT student_id) as student_count")
+                )
+                ->groupBy('track')
+                ->pluck('student_count', 'track')
+                ->toArray();
+
             return response()->json([
                 'success' => true,
                 'message' => 'Course-subject hierarchy retrieved successfully.',
                 'total_courses' => count($hierarchy),
                 'total_unique_students' => count($allUniqueStudentIds),
+                'track_distribution' => $trackDistribution,
                 'courses' => $hierarchy,
             ], 200);
 
