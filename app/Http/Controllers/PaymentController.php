@@ -183,7 +183,19 @@ class PaymentController extends Controller
             $studentId = $request->user()->id;
             $payments = Payment::with(['enrollment' => function ($query) {
                 $query->withTrashed()->with('course');
-            }])->where('student_id', $studentId)->latest()->get();
+            }])
+            ->where('student_id', $studentId)
+            ->where(function ($q) {
+                // Only return payments that are:
+                // 1) Non-bank payments (e.g. card/paystack/manual)
+                // 2) Successful bank transfers
+                // 3) Bank transfers where the student actually submitted/claimed proof of payment
+                $q->where('gateway', '!=', 'bank')
+                  ->orWhere('status', 'successful')
+                  ->orWhereNotNull('meta->bank_transfer->claimed_paid_at');
+            })
+            ->latest()
+            ->get();
             $paymentsData = $payments->map(function ($payment) {
                 return [
                     ...$payment->toArray(),
@@ -397,6 +409,11 @@ class PaymentController extends Controller
                     }
                     $reviewAction = $payment->meta['bank_transfer']['review']['action'] ?? $payment->meta['review']['action'] ?? null;
                     if (in_array($reviewAction, ['rejected', 'superseded'], true)) {
+                        return false;
+                    }
+                    // Exclude abandoned bank transfers where student never clicked "I have paid"
+                    $claimedAt = $payment->meta['bank_transfer']['claimed_paid_at'] ?? null;
+                    if (empty($claimedAt) && $payment->status !== 'successful') {
                         return false;
                     }
                 }
@@ -736,22 +753,24 @@ class PaymentController extends Controller
         }
 
         $guardianId = $request->input('guardian_id');
-        if (!$guardianId && auth('sanctum')->check()) {
-            $authUser = auth('sanctum')->user();
-            if ($authUser instanceof \App\Models\Guardian) {
-                $guardianId = $authUser->id;
-            }
-        }
-        if (!$guardianId && $enrollment->student) {
-            $guardianId = $enrollment->student->guardian_id ?? $enrollment->student->guardians()->first()?->id;
+        $isGuardianPayer = false;
+        if ($guardianId) {
+            $isGuardianPayer = true;
+        } elseif (auth('sanctum')->check() && auth('sanctum')->user() instanceof \App\Models\Guardian) {
+            $guardianId = auth('sanctum')->user()->id;
+            $isGuardianPayer = true;
         }
 
         $guardianModel = null;
-        if ($guardianId) {
+        if ($isGuardianPayer && $guardianId) {
             $guardianModel = \App\Models\Guardian::find($guardianId);
+            if (!$guardianModel) {
+                $isGuardianPayer = false;
+                $guardianId = null;
+            }
         }
 
-        return DB::transaction(function () use ($enrollment, $validated, $request, $isRenewal, $guardianId, $guardianModel) {
+        return DB::transaction(function () use ($enrollment, $validated, $request, $isRenewal, $guardianId, $guardianModel, $isGuardianPayer) {
             // Find all open bank transfers for this enrollment with row-level lock
             $existingPayments = Payment::where('course_enrollment_id', $enrollment->id)
                 ->where('payment_method', 'bank_transfer')
@@ -794,9 +813,19 @@ class PaymentController extends Controller
                         'billing_cycle' => $enrollment->billing_cycle,
                     ]);
                 }
-                $accessToken = ($payment->meta ?? [])['bank_transfer']['access_token'] ?? null;
                 $meta = $payment->meta ?? [];
                 $bankTransfer = $meta['bank_transfer'] ?? [];
+                $accessToken = $bankTransfer['access_token'] ?? null;
+                if (empty($accessToken)) {
+                    $accessToken = Str::random(48);
+                    $bankTransfer['access_token'] = $accessToken;
+                }
+                if (empty($payment->gateway_reference)) {
+                    $payment->gateway_reference = $this->generateBankTransferReference();
+                }
+                if (empty($payment->currency)) {
+                    $payment->currency = 'NGN';
+                }
                 if (!empty($validated['subjects'])) {
                     $bankTransfer['subjects'] = $validated['subjects'];
                 }
@@ -806,7 +835,9 @@ class PaymentController extends Controller
                 if ($isRenewal) {
                     $bankTransfer['is_renewal'] = true;
                 }
-                if ($guardianId) {
+                $bankTransfer['payer_type'] = $isGuardianPayer ? 'guardian' : 'student';
+                $bankTransfer['is_guardian_sponsored'] = (bool) $isGuardianPayer;
+                if ($isGuardianPayer) {
                     $bankTransfer['guardian_id'] = $guardianId;
                     if ($guardianModel) {
                         $bankTransfer['guardian_name'] = trim($guardianModel->firstname . ' ' . $guardianModel->surname);
@@ -814,8 +845,12 @@ class PaymentController extends Controller
                         $bankTransfer['guardian_tel'] = $guardianModel->tel;
                         $bankTransfer['guardian_relationship'] = $guardianModel->pivot?->relationship ?? $guardianModel->relationship ?? null;
                     }
+                } else {
+                    unset($bankTransfer['guardian_id'], $bankTransfer['guardian_name'], $bankTransfer['guardian_email'], $bankTransfer['guardian_tel'], $bankTransfer['guardian_relationship']);
                 }
                 $payment->update([
+                    'currency' => $payment->currency ?: 'NGN',
+                    'gateway_reference' => $payment->gateway_reference,
                     'meta' => array_merge($meta, ['bank_transfer' => $bankTransfer])
                 ]);
             } else {
@@ -830,17 +865,19 @@ class PaymentController extends Controller
                     'gateway' => 'bank',
                     'status' => 'pending',
                     'billing_cycle' => $enrollment->billing_cycle,
-                    'gateway_reference' => $this->generateBankTransferReference(),
+                    'gateway_reference' => $this->generateBankTransferReference($isGuardianPayer),
                     'meta' => [
                         'bank_transfer' => [
                             'access_token' => $accessToken,
                             'initiated_at' => now()->toIso8601String(),
                             'is_renewal' => (bool) $isRenewal,
-                            'guardian_id' => $guardianId,
-                            'guardian_name' => $guardianModel ? trim($guardianModel->firstname . ' ' . $guardianModel->surname) : null,
-                            'guardian_email' => $guardianModel?->email,
-                            'guardian_tel' => $guardianModel?->tel,
-                            'guardian_relationship' => $guardianModel?->pivot?->relationship ?? $guardianModel?->relationship ?? null,
+                            'payer_type' => $isGuardianPayer ? 'guardian' : 'student',
+                            'is_guardian_sponsored' => (bool) $isGuardianPayer,
+                            'guardian_id' => $isGuardianPayer ? $guardianId : null,
+                            'guardian_name' => $isGuardianPayer && $guardianModel ? trim($guardianModel->firstname . ' ' . $guardianModel->surname) : null,
+                            'guardian_email' => $isGuardianPayer ? $guardianModel?->email : null,
+                            'guardian_tel' => $isGuardianPayer ? $guardianModel?->tel : null,
+                            'guardian_relationship' => $isGuardianPayer ? ($guardianModel?->pivot?->relationship ?? $guardianModel?->relationship ?? null) : null,
                             'subjects' => $validated['subjects'] ?? [],
                             'exam_track' => $validated['exam_track'] ?? null,
                         ],
@@ -1399,13 +1436,14 @@ class PaymentController extends Controller
      * Short, human-readable, unique, unguessable code used as the transfer
      * narration and the WhatsApp reference (e.g. TC-7K2M9Q).
      */
-    protected function generateBankTransferReference(): string
+    protected function generateBankTransferReference(bool $isGuardian = false): string
     {
         // No 0/O/1/I so the code can be read out or copied without ambiguity.
         $alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+        $prefix = $isGuardian ? 'TCG-' : 'TC-';
 
         for ($attempt = 0; $attempt < 10; $attempt++) {
-            $code = 'TC-';
+            $code = $prefix;
 
             for ($i = 0; $i < 6; $i++) {
                 $code .= $alphabet[random_int(0, strlen($alphabet) - 1)];
@@ -1416,7 +1454,7 @@ class PaymentController extends Controller
             }
         }
 
-        return 'TC-' . strtoupper((string) Str::ulid());
+        return $prefix . strtoupper((string) Str::ulid());
     }
 
 

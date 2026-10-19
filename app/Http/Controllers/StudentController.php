@@ -1466,13 +1466,8 @@ class StudentController extends Controller
                 'department',
                 'location',
                 'address',
-                'enrollment_code',
-                'enrollment_status',
-                'is_active',
-                'banned',
-                'status',
-                'account_status',
                 'email_verified_at',
+                'tel_verified_at',
                 'created_at',
                 'updated_at',
                 'deleted_at',
@@ -1527,15 +1522,24 @@ class StudentController extends Controller
                 'advisors:staffs.id,staffs.firstname,staffs.surname',
             ]);
 
-        // Search Filter (SQL indexed)
+        // Search Filter (SQL indexed & relation aware)
         if ($search !== '') {
             $query->where(function ($sq) use ($search) {
                 $sq->where('firstname', 'like', "%{$search}%")
                     ->orWhere('surname', 'like', "%{$search}%")
                     ->orWhere('email', 'like', "%{$search}%")
                     ->orWhere('tel', 'like', "%{$search}%")
-                    ->orWhere('enrollment_code', 'like', "%{$search}%")
-                    ->orWhere(DB::raw("CONCAT(firstname, ' ', surname)"), 'like', "%{$search}%");
+                    ->orWhereHas('courseEnrollments', function ($ceq) use ($search) {
+                        $ceq->where('enrollment_code', 'like', "%{$search}%");
+                    });
+
+                if (str_contains($search, ' ')) {
+                    $parts = explode(' ', $search, 2);
+                    $sq->orWhere(function ($fnQ) use ($parts) {
+                        $fnQ->where('firstname', 'like', "%{$parts[0]}%")
+                            ->where('surname', 'like', "%{$parts[1]}%");
+                    });
+                }
             });
         }
 
@@ -1556,11 +1560,9 @@ class StudentController extends Controller
 
         // Status filter at SQL level
         if ($statusFilter === 'suspended') {
-            $query->where(function ($sq) {
-                $sq->whereNotNull('deleted_at')->orWhere('banned', 1)->orWhere('account_status', 'suspended');
-            });
+            $query->whereNotNull('deleted_at');
         } elseif ($statusFilter === 'active' || $statusFilter === 'inactive') {
-            $query->whereNull('deleted_at')->where('banned', 0);
+            $query->whereNull('deleted_at');
         }
 
         // Order newest to oldest
@@ -1627,7 +1629,7 @@ class StudentController extends Controller
             }
 
             // An active student is strictly a student who has paid and their payment is still on
-            $isActive = $hasUnexpiredPayment && !$student->trashed() && !$student->banned;
+            $isActive = $hasUnexpiredPayment && !$student->trashed();
 
             $activeCourseEnrollments = $student->courseEnrollments
                 ->filter(function ($enrollment) use ($now) {
@@ -1659,11 +1661,18 @@ class StudentController extends Controller
                 ->values();
 
             $enrollmentStatus = 'inactive';
-            if ($student->trashed() || $student->banned || $student->account_status === 'suspended') {
+            if ($student->trashed()) {
                 $enrollmentStatus = 'suspended';
             } elseif ($isActive) {
                 $enrollmentStatus = 'active';
-            } elseif ($pendingCourseEnrollments->isNotEmpty() || $student->payments->contains(fn($p) => $p->status === 'pending')) {
+            } elseif ($pendingCourseEnrollments->isNotEmpty() || $student->payments->contains(function ($p) {
+                if ($p->status !== 'pending') return false;
+                if ($p->payment_method === 'bank_transfer') {
+                    $claimedAt = $p->meta['bank_transfer']['claimed_paid_at'] ?? null;
+                    return !empty($claimedAt);
+                }
+                return true;
+            })) {
                 $enrollmentStatus = 'pending_approval';
             } elseif ($student->courseEnrollments->contains(fn($ce) => in_array($ce->status, ['terminated', 'expired']))) {
                 $enrollmentStatus = 'terminated';
@@ -1675,7 +1684,7 @@ class StudentController extends Controller
             $data = $student->toArray();
             $data['is_active'] = $isActive;
             $data['enrollment_status'] = $enrollmentStatus;
-            $data['enrollment_code'] = $latestEnrollment?->enrollment_code ?: $student->enrollment_code;
+            $data['enrollment_code'] = $latestEnrollment?->enrollment_code;
             $data['latest_end_date'] = $latestEndDate;
             $data['enrolled_subjects'] = $enrolledSubjects;
             $data['enrolled_courses'] = $enrolledCourses;
@@ -1707,7 +1716,7 @@ class StudentController extends Controller
         $newThisMonth = 0;
 
         foreach ($allStudentsForStats as $sObj) {
-            if ($sObj->trashed() || $sObj->banned || $sObj->account_status === 'suspended') {
+            if ($sObj->trashed()) {
                 $suspendedCount++;
                 continue;
             }
@@ -1874,6 +1883,7 @@ class StudentController extends Controller
             'student_id' => 'nullable|integer|exists:students,id',
             'payment_id' => 'nullable|integer|exists:payments,id',
             'payment_type' => 'nullable|in:paid,free',
+            'payer_type' => 'nullable|in:student,guardian,scholarship,free,free_grant',
             'amount_paid' => 'required_if:payment_type,paid|nullable|numeric|min:0',
             'reference_code' => [
                 'required_if:payment_type,paid',
@@ -1980,7 +1990,16 @@ class StudentController extends Controller
 
                 $isPaid = ($validated['payment_type'] ?? 'free') === 'paid';
                 $amountPaid = $isPaid ? (float) ($validated['amount_paid'] ?? 0) : 0.00;
-                $referenceCode = $isPaid ? trim($validated['reference_code']) : ('FREE-' . Str::uuid());
+                                if ($isPaid) {
+                    $referenceCode = trim($validated['reference_code']);
+                } elseif (!empty($validated['reference_code'])) {
+                    $referenceCode = trim($validated['reference_code']);
+                } else {
+                    $prefix = (($validated['payer_type'] ?? null) === 'scholarship') ? 'FREE-GRANT-' : 'FREE-';
+                    do {
+                        $referenceCode = $prefix . random_int(100000, 999999);
+                    } while (Payment::withTrashed()->where('gateway_reference', $referenceCode)->exists());
+                }
                 $paymentMethod = $validated['payment_method'] ?? ($isPaid ? 'bank_transfer' : 'manual');
                 $gateway = $isPaid ? 'manual_entry' : 'complimentary';
 
@@ -2069,12 +2088,30 @@ class StudentController extends Controller
                         'status' => 'successful',
                         'billing_cycle' => $validated['billing_cycle'],
                         'paid_at' => now(),
-                        'meta' => [
-                            'type' => $isPaid ? 'admin_paid_registration' : 'complimentary',
-                            'reason' => $validated['reason'],
-                            'created_by_staff_id' => $request->user()->id,
-                            'reference_code' => $referenceCode,
-                        ],
+                        'meta' => (function() use ($isPaid, $validated, $request, $referenceCode, $student) {
+                            $isGuardian = ($validated['payer_type'] ?? null) === 'guardian' || str_starts_with($referenceCode, 'TCG-');
+                            $guardianId = $isGuardian ? ($student->guardian_id ?? $student->guardian?->id) : null;
+                            $guardianModel = $guardianId ? \App\Models\Guardian::find($guardianId) : null;
+
+                            $meta = [
+                                'type' => $isPaid ? 'admin_paid_registration' : 'complimentary',
+                                'reason' => $validated['reason'],
+                                'created_by_staff_id' => $request->user()->id,
+                                'reference_code' => $referenceCode,
+                                'payer_type' => $isGuardian ? 'guardian' : 'student',
+                                'is_guardian_sponsored' => $isGuardian,
+                            ];
+
+                            if ($isGuardian) {
+                                $meta['guardian_id'] = $guardianId;
+                                if ($guardianModel) {
+                                    $meta['guardian_name'] = trim($guardianModel->firstname . ' ' . $guardianModel->surname);
+                                    $meta['guardian_email'] = $guardianModel->email;
+                                    $meta['guardian_tel'] = $guardianModel->tel;
+                                }
+                            }
+                            return $meta;
+                        })(),
                     ]);
                 }
 
@@ -2371,12 +2408,22 @@ class StudentController extends Controller
             'days' => 'nullable|integer|min:1|max:365',
             'custom_end_date' => 'nullable|date|after:today',
             'reason' => 'required|string|min:5|max:1000',
+            'amount' => 'nullable|numeric|min:0',
+            'reference_code' => [
+                'nullable',
+                'string',
+                'min:3',
+                'max:191',
+                Rule::unique('payments', 'gateway_reference'),
+            ],
+            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd',
+            'payer_type' => 'nullable|in:student,guardian,scholarship,free,free_grant',
         ]);
 
         try {
             $result = DB::transaction(function () use ($request, $enrollmentId, $validated) {
                 $enrollment = CoursesEnrollment::withTrashed()
-                    ->with(['course', 'student'])
+                    ->with(['course', 'student.guardian'])
                     ->lockForUpdate()
                     ->findOrFail($enrollmentId);
 
@@ -2403,13 +2450,67 @@ class StudentController extends Controller
                     'status' => 'active',
                 ]);
 
-                return $enrollment->fresh(['course', 'student', 'subjects.subject']);
+                $payment = null;
+                if (!empty($validated['reference_code'])) {
+                    $refCode = trim($validated['reference_code']);
+                    $isGuardian = ($validated['payer_type'] ?? null) === 'guardian' || str_starts_with($refCode, 'TCG-');
+                    $isScholarship = ($validated['payer_type'] ?? null) === 'scholarship' || str_starts_with($refCode, 'FREE-GRANT-');
+                    $isFreeGrant = ($validated['payer_type'] ?? null) === 'free' || ($validated['payer_type'] ?? null) === 'free_grant' || (str_starts_with($refCode, 'FREE-') && !$isScholarship);
+
+                    $student = $enrollment->student;
+                    $guardianId = $isGuardian ? ($student?->guardian_id ?? $student?->guardian?->id) : null;
+                    $guardianModel = null;
+                    if ($guardianId) {
+                        $guardianModel = \App\Models\Guardian::find($guardianId);
+                    }
+
+                    $payerType = $isGuardian ? 'guardian' : ($isScholarship ? 'scholarship' : ($isFreeGrant ? 'free_grant' : 'student'));
+
+                    $paymentMeta = [
+                        'type' => 'admin_course_extension',
+                        'reason' => $validated['reason'],
+                        'created_by_staff_id' => $request->user()->id,
+                        'reference_code' => $refCode,
+                        'payer_type' => $payerType,
+                        'is_guardian_sponsored' => $isGuardian,
+                        'is_free_grant' => ($isScholarship || $isFreeGrant || (float)($validated['amount'] ?? 0) <= 0),
+                    ];
+
+                    if ($isGuardian) {
+                        $paymentMeta['guardian_id'] = $guardianId;
+                        if ($guardianModel) {
+                            $paymentMeta['guardian_name'] = trim($guardianModel->firstname . ' ' . $guardianModel->surname);
+                            $paymentMeta['guardian_email'] = $guardianModel->email;
+                            $paymentMeta['guardian_tel'] = $guardianModel->tel;
+                        }
+                    }
+
+                    $payment = Payment::create([
+                        'student_id' => $enrollment->student_id,
+                        'course_enrollment_id' => $enrollment->id,
+                        'amount' => (float) ($validated['amount'] ?? 0),
+                        'currency' => 'NGN',
+                        'payment_method' => $validated['payment_method'] ?? 'bank_transfer',
+                        'gateway' => 'manual_entry',
+                        'gateway_reference' => $refCode,
+                        'status' => 'successful',
+                        'billing_cycle' => $enrollment->billing_cycle ?? 'monthly',
+                        'paid_at' => now(),
+                        'meta' => $paymentMeta,
+                    ]);
+                }
+
+                return [
+                    'enrollment' => $enrollment->fresh(['course', 'student', 'subjects.subject']),
+                    'payment' => $payment,
+                ];
             });
 
             return response()->json([
                 'success' => true,
                 'message' => 'Course enrollment access extended successfully.',
-                'enrollment' => $result,
+                'enrollment' => $result['enrollment'],
+                'payment' => $result['payment'],
             ], 200);
         } catch (\Symfony\Component\HttpKernel\Exception\HttpException $e) {
             return response()->json(['message' => $e->getMessage()], $e->getStatusCode());
@@ -2438,13 +2539,14 @@ class StudentController extends Controller
                 Rule::unique('payments', 'gateway_reference'),
             ],
             'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd',
+            'payer_type' => 'nullable|in:student,guardian,scholarship,free,free_grant',
             'reason' => 'required|string|min:5|max:1000',
         ]);
 
         try {
             $result = DB::transaction(function () use ($request, $enrollmentId, $validated) {
                 $enrollment = CoursesEnrollment::withTrashed()
-                    ->with(['course', 'student'])
+                    ->with(['course', 'student.guardian'])
                     ->lockForUpdate()
                     ->findOrFail($enrollmentId);
 
@@ -2459,8 +2561,10 @@ class StudentController extends Controller
                     'annual' => 12,
                 };
 
-                $startDate = now();
-                $endDate = now()->addMonths($months);
+                $currentEndDate = $enrollment->end_date ? Carbon::parse($enrollment->end_date) : null;
+                $effectiveBase = ($currentEndDate && $currentEndDate->isFuture()) ? $currentEndDate->copy() : now();
+                $startDate = ($currentEndDate && $currentEndDate->isFuture()) ? Carbon::parse($enrollment->start_date) : now();
+                $endDate = $effectiveBase->addMonths($months);
 
                 $enrollment->update([
                     'start_date' => $startDate,
@@ -2470,6 +2574,39 @@ class StudentController extends Controller
                     'status' => 'active',
                 ]);
 
+                $refCode = trim($validated['reference_code']);
+                $isGuardian = ($validated['payer_type'] ?? null) === 'guardian' || str_starts_with($refCode, 'TCG-');
+                $isScholarship = ($validated['payer_type'] ?? null) === 'scholarship' || str_starts_with($refCode, 'FREE-GRANT-');
+                $isFreeGrant = ($validated['payer_type'] ?? null) === 'free' || ($validated['payer_type'] ?? null) === 'free_grant' || (str_starts_with($refCode, 'FREE-') && !$isScholarship);
+
+                $student = $enrollment->student;
+                $guardianId = $isGuardian ? ($student?->guardian_id ?? $student?->guardian?->id) : null;
+                $guardianModel = null;
+                if ($guardianId) {
+                    $guardianModel = \App\Models\Guardian::find($guardianId);
+                }
+
+                $payerType = $isGuardian ? 'guardian' : ($isScholarship ? 'scholarship' : ($isFreeGrant ? 'free_grant' : 'student'));
+
+                $paymentMeta = [
+                    'type' => 'admin_course_renewal',
+                    'reason' => $validated['reason'],
+                    'created_by_staff_id' => $request->user()->id,
+                    'reference_code' => $refCode,
+                    'payer_type' => $payerType,
+                    'is_guardian_sponsored' => $isGuardian,
+                    'is_free_grant' => ($isScholarship || $isFreeGrant || (float)$validated['amount'] <= 0),
+                ];
+
+                if ($isGuardian) {
+                    $paymentMeta['guardian_id'] = $guardianId;
+                    if ($guardianModel) {
+                        $paymentMeta['guardian_name'] = trim($guardianModel->firstname . ' ' . $guardianModel->surname);
+                        $paymentMeta['guardian_email'] = $guardianModel->email;
+                        $paymentMeta['guardian_tel'] = $guardianModel->tel;
+                    }
+                }
+
                 // Record brand new payment
                 $payment = Payment::create([
                     'student_id' => $enrollment->student_id,
@@ -2478,16 +2615,11 @@ class StudentController extends Controller
                     'currency' => 'NGN',
                     'payment_method' => $validated['payment_method'] ?? 'bank_transfer',
                     'gateway' => 'manual_entry',
-                    'gateway_reference' => trim($validated['reference_code']),
+                    'gateway_reference' => $refCode,
                     'status' => 'successful',
                     'billing_cycle' => $validated['billing_cycle'],
                     'paid_at' => now(),
-                    'meta' => [
-                        'type' => 'admin_course_renewal',
-                        'reason' => $validated['reason'],
-                        'created_by_staff_id' => $request->user()->id,
-                        'reference_code' => trim($validated['reference_code']),
-                    ],
+                    'meta' => $paymentMeta,
                 ]);
 
                 return [
