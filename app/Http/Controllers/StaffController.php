@@ -25,66 +25,69 @@ class StaffController extends Controller
      */
     public function login(Request $request)
     {
-        // Validation must run outside the try/catch, otherwise the
-        // ValidationException is swallowed and the client sees a masked 500
-        // instead of a 422 telling it which field is missing.
         $request->validate([
             'login' => 'required|string',
             'password' => 'required|string',
         ]);
 
         try {
-            // 2. Create unique throttle key
-            $throttleKey = Str::lower($request->input('login')) . '|' . $request->ip();
+            $inputLogin = trim($request->input('login'));
+            $throttleKey = Str::lower($inputLogin) . '|' . $request->ip();
 
-            // 3. Check if user is rate limited
             if (RateLimiter::tooManyAttempts($throttleKey, 5)) {
                 $seconds = RateLimiter::availableIn($throttleKey);
+                \Illuminate\Support\Facades\Log::warning("Staff login rate-limited for '{$inputLogin}' from IP {$request->ip()}. Available in {$seconds}s.");
                 return response()->json([
-                    'message' => "Too many login attempts. Please try again in {$seconds} seconds."
+                    'message' => "Too many login attempts. Please try again in {$seconds} seconds.",
+                    'error' => 'Rate limited',
+                    'retry_after' => $seconds,
                 ], 429);
             }
 
-            // 4. Find staff by email or staff_id
-            $staff = Staff::where('email', $request->login)->orWhere('staff_id', $request->login)->first();
+            // Find staff by email or staff_id
+            $staff = Staff::where('email', $inputLogin)->orWhere('staff_id', $inputLogin)->first();
 
-            // 5. Validate credentials
+            // Validate credentials
             if (!$staff || !Hash::check($request->password, $staff->password)) {
-
-                RateLimiter::hit($throttleKey, 60); // lock attempt for 60 seconds
+                RateLimiter::hit($throttleKey, 60);
+                $reason = !$staff ? 'Staff account not found' : 'Incorrect password';
+                \Illuminate\Support\Facades\Log::warning("Staff login failed for '{$inputLogin}': {$reason} from IP {$request->ip()}");
 
                 throw ValidationException::withMessages([
-                    'login' => ['Invalid login credentials.'],
+                    'login' => ["Invalid login credentials. ({$reason})"],
                 ]);
             }
 
-            // 6. Email verification check
+            // Email verification check
             if (!$staff->email_verified_at) {
+                \Illuminate\Support\Facades\Log::warning("Staff login blocked: Email unverified for staff ID {$staff->id} ({$staff->email})");
                 return response()->json([
-                    'message' => 'Please verify your email before logging in.'
+                    'message' => 'Please verify your email before logging in.',
+                    'error' => 'Email unverified',
+                    'staff_id' => $staff->staff_id,
+                    'email' => $staff->email,
                 ], 403);
             }
 
-            // // 7. Phone verification check
-            // if (!$staff->tel_verified_at) {
-            //     return response()->json([
-            //         'message' => 'Please verify your phone number before logging in.'
-            //     ], 403);
-            // }
-
-            // 8. Clear rate limiter after successful login
+            // Clear rate limiter after successful login
             RateLimiter::clear($throttleKey);
 
-            // 9. Remove all existing tokens
+            // Remove all existing tokens
             $staff->tokens()->delete();
 
-            // 10. Create new token
+            // Create new token
             $token = $staff->createToken('staff-token')->plainTextToken;
 
-            $staff->notify(new StaffActivityNotification(
-                $staff->id,
-                "{$staff->role} {$staff->firstname} {$staff->surname} logged in."
-            ));
+            try {
+                $staff->notify(new StaffActivityNotification(
+                    (string) $staff->id,
+                    "{$staff->role} {$staff->firstname} {$staff->surname} logged in."
+                ));
+            } catch (\Throwable $notifEx) {
+                \Illuminate\Support\Facades\Log::warning("Staff login notification skipped or failed: " . $notifEx->getMessage());
+            }
+
+            \Illuminate\Support\Facades\Log::info("Staff login successful: {$staff->role} {$staff->firstname} {$staff->surname} (ID: {$staff->id}, StaffID: {$staff->staff_id}) from IP {$request->ip()}");
 
             return response()->json([
                 'message' => 'Login successful.',
@@ -93,19 +96,25 @@ class StaffController extends Controller
                 'role' => $staff->role,
             ], 200);
         } catch (ValidationException $e) {
-            // Bad credentials: surface the field error as a 422, not a 500.
             throw $e;
         } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::error("Staff login unhandled exception for '{$request->input('login')}': " . $e->getMessage(), [
+                'exception' => get_class($e),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString(),
+                'ip' => $request->ip(),
+            ]);
+
             return response()->json([
-                'message' => 'Login failed.',
-                'error' => config('app.debug') ? $e->getMessage() : null,
+                'message' => 'Login failed: ' . $e->getMessage(),
+                'error' => $e->getMessage(),
+                'error_type' => get_class($e),
+                'error_location' => basename($e->getFile()) . ':' . $e->getLine(),
             ], 500);
         }
     }
 
-    /**
-     * Staff logout.
-     **/
     public function logout(Request $request)
     {
         $staff = $request->user();
