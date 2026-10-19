@@ -107,9 +107,13 @@ class StudentDashboardController extends Controller
                 ->latest()
                 ->first();
 
-            // 3. Pending Payment Flag
+            // 3. Pending Payment Flag (must be an active gateway payment or a claimed bank transfer)
             $hasPendingPayment = Payment::where('student_id', $studentId)
                 ->where('status', 'pending')
+                ->where(function ($q) {
+                    $q->where('payment_method', '!=', 'bank_transfer')
+                      ->orWhereNotNull('meta->bank_transfer->claimed_paid_at');
+                })
                 ->exists();
 
             // 4. Unread Notifications Count

@@ -914,6 +914,11 @@ class GuardianDashboardController extends Controller
         // 4. Payment & Billing Transactions
         if (in_array($category, ['all', 'payment', 'billing'])) {
             $payments = Payment::whereIn('student_id', $activeWardIds)
+                ->where(function ($q) {
+                    $q->where('gateway', '!=', 'bank')
+                      ->orWhere('status', 'successful')
+                      ->orWhereNotNull('meta->bank_transfer->claimed_paid_at');
+                })
                 ->with(['student:id,firstname,surname', 'enrollment.course:id,title'])
                 ->latest('created_at')
                 ->limit(30)
@@ -989,6 +994,11 @@ class GuardianDashboardController extends Controller
         }
 
         $payments = Payment::whereIn('student_id', $wardIds)
+            ->where(function ($q) {
+                $q->where('gateway', '!=', 'bank')
+                  ->orWhere('status', 'successful')
+                  ->orWhereNotNull('meta->bank_transfer->claimed_paid_at');
+            })
             ->with(['student:id,firstname,surname,email', 'enrollment.course:id,title,price'])
             ->latest('created_at')
             ->get()
@@ -1188,7 +1198,12 @@ class GuardianDashboardController extends Controller
                     'status' => 'successful',
                     'paid_at' => now(),
                     'billing_cycle' => $cycle,
-                    'gateway_reference' => 'GRANT_' . strtoupper(uniqid()) . '_' . time(),
+                                        'gateway_reference' => (function() {
+                        do {
+                            $ref = 'FREE-GRANT-' . random_int(100000, 999999);
+                        } while (\App\Models\Payment::withTrashed()->where('gateway_reference', $ref)->exists());
+                        return $ref;
+                    })(),
                     'meta' => [
                         'is_free_grant' => true,
                         'guardian_id' => $guardian->id,

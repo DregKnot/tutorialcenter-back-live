@@ -246,6 +246,7 @@ class CourseController extends Controller
             'course_id' => 'required|exists:courses,id',
             'billing_cycle' => 'required|in:monthly,quarterly,semi_annual,annual',
             'exam_track' => 'nullable|string|max:20',
+            'is_renewal' => 'nullable|boolean',
             'subjects' => 'nullable|array',
             'subjects.*' => 'nullable',
         ]);
@@ -298,6 +299,19 @@ class CourseController extends Controller
                     && \Carbon\Carbon::parse($existingEnrollment->end_date)->isFuture();
 
                 if ($isActivelyEnrolled) {
+                    if ($request->boolean('is_renewal')) {
+                        // Actively enrolled student is initiating a renewal / subscription extension.
+                        // Return the existing enrollment record ready for checkout,
+                        // without prematurely altering active dates or setting status to pending.
+                        DB::commit();
+                        return response()->json([
+                            'success' => true,
+                            'message' => 'Active enrollment ready for renewal.',
+                            'enrollment' => $existingEnrollment,
+                            'is_renewal' => true,
+                        ], 200);
+                    }
+
                     return response()->json([
                         'success' => false,
                         'message' => 'You are already actively enrolled in this course.',

@@ -11,6 +11,7 @@ class BankTransferNotificationService
 {
     public function send(Payment $payment, string $event): void
     {
+        try {
         $payment->loadMissing('student', 'enrollment.course');
         $bank = $payment->meta['bank_transfer'] ?? [];
         // Snapshot receipt details; later edits must not change the message.
@@ -42,6 +43,9 @@ class BankTransferNotificationService
             if ($guardian) {
                 $this->deliver($guardian, new BankTransferNotification($event, $details));
             }
+        }
+        } catch (\Throwable $e) {
+            report($e);
         }
     }
 
