@@ -28,7 +28,7 @@ class ClassSession extends Model
      * Cast attributes properly
      */
     protected $casts = [
-        'session_date' => 'date',
+        'session_date' => 'date:Y-m-d',
         'starts_at'    => 'string',  // because DB column is TIME
         'ends_at'      => 'string',  // because DB column is TIME
         'started_at'   => 'datetime',
