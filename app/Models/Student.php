@@ -211,4 +211,20 @@ class Student extends Model
             'sender'
         );
     }
+
+    /**
+     * Accessor for phone (maps to database column 'tel')
+     */
+    public function getPhoneAttribute(): ?string
+    {
+        return $this->tel;
+    }
+
+    /**
+     * Accessor for phone_number (maps to database column 'tel')
+     */
+    public function getPhoneNumberAttribute(): ?string
+    {
+        return $this->tel;
+    }
 }
