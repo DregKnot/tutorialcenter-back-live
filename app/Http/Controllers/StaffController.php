@@ -50,11 +50,10 @@ class StaffController extends Controller
             // Validate credentials
             if (!$staff || !Hash::check($request->password, $staff->password)) {
                 RateLimiter::hit($throttleKey, 60);
-                $reason = !$staff ? 'Staff account not found' : 'Incorrect password';
-                \Illuminate\Support\Facades\Log::warning("Staff login failed for '{$inputLogin}': {$reason} from IP {$request->ip()}");
+                \Illuminate\Support\Facades\Log::warning("Staff login failed for '{$inputLogin}' from IP {$request->ip()}");
 
                 throw ValidationException::withMessages([
-                    'login' => ["Invalid login credentials. ({$reason})"],
+                    'login' => ['Invalid login credentials.'],
                 ]);
             }
 
@@ -107,10 +106,7 @@ class StaffController extends Controller
             ]);
 
             return response()->json([
-                'message' => 'Login failed: ' . $e->getMessage(),
-                'error' => $e->getMessage(),
-                'error_type' => get_class($e),
-                'error_location' => basename($e->getFile()) . ':' . $e->getLine(),
+                'message' => 'Login failed. Please try again later.',
             ], 500);
         }
     }

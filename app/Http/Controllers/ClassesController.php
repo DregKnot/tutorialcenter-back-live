@@ -831,6 +831,183 @@ class ClassesController extends Controller
         }
     }
 
+    /**
+     * Get recorded classes for Staff members (Admin, COO, Academic Advisor)
+     * Includes full viewer analytics roster and skips student enrollment checks.
+     */
+    public function getStaffRecordedClasses(Request $request): JsonResponse
+    {
+        try {
+            $user = $request->user();
+            if (! $user instanceof Staff) {
+                return response()->json(['success' => false, 'message' => 'Unauthorized. Staff access only.'], 403);
+            }
+
+            if (strtolower(trim($user->role ?? '')) === 'tutor') {
+                return response()->json(['success' => false, 'message' => 'Unauthorized. Tutors do not have access to the Video Vault.'], 403);
+            }
+
+            // Base query for class sessions that are past and have a recording link
+            $query = ClassSession::with([
+                'class.staffs', 
+                'class.subject.courses',
+                'views.student' => function ($sq) {
+                    $sq->select('id', 'firstname', 'surname', 'profile_picture');
+                }
+            ])
+            ->whereNotNull('recording_link')
+            ->where('recording_link', '!=', '')
+            ->where(function ($q) {
+                $q->whereDate('session_date', '<', today())
+                    ->orWhere(function ($q2) {
+                        $q2->whereDate('session_date', today())
+                            ->where('ends_at', '<', now()->format('H:i:s'));
+                    });
+            });
+
+            $sessions = $query->orderBy('updated_at', 'desc')->get();
+
+            // Optional course filtering for staff
+            if ($request->filled('course_id')) {
+                $filterCourseId = (int) $request->query('course_id');
+                $filterCourse = Course::find($filterCourseId);
+                $filterTitle = $filterCourse ? strtoupper(trim($filterCourse->title)) : null;
+
+                $sessions = $sessions->filter(function ($session) use ($filterCourseId, $filterTitle) {
+                    $classTitle = strtoupper($session->class?->title ?? '');
+                    $sessionTitle = strtoupper($session->title ?? '');
+
+                    if ($filterTitle && (str_contains($classTitle, $filterTitle) || str_contains($sessionTitle, $filterTitle))) {
+                        return true;
+                    }
+                    $subjectCourseIds = $session->class?->subject?->courses->pluck('id')->toArray() ?? [];
+                    return in_array($filterCourseId, $subjectCourseIds);
+                });
+            }
+
+            $recordedClasses = $sessions->map(function ($session) {
+                $class = $session->class;
+                
+                // Get tutor name
+                $tutorName = "Instructor";
+                if ($class && $class->staffs->isNotEmpty()) {
+                    $tutor = $class->staffs->first();
+                    $tutorName = $tutor->firstname . ' ' . $tutor->surname;
+                }
+
+                // Get subject
+                $subject = $class ? ($class->subject ? $class->subject->name : "General") : "General";
+
+                // Format clean title
+                $topic = $session->title ?: ($class ? $class->title : "$subject Class");
+                $formattedTitle = $topic;
+
+                // Determine course info for badge display
+                $courseInfo = null;
+                $linkedCourse = $class?->subject?->courses?->first();
+                if ($linkedCourse) {
+                    $courseInfo = [
+                        'id' => $linkedCourse->id,
+                        'title' => $linkedCourse->title,
+                        'name' => $linkedCourse->title,
+                    ];
+                } else {
+                    $rawTitle = $class?->title ?? $session->title ?? '';
+                    if (preg_match('/^(JAMB|WAEC|NECO|GCE) /i', trim($rawTitle), $m)) {
+                        $courseInfo = [
+                            'id' => null,
+                            'title' => strtoupper($m[1]),
+                            'name' => strtoupper($m[1]),
+                        ];
+                    }
+                }
+
+                // Calculate duration
+                $duration = "1h";
+                if ($session->starts_at && $session->ends_at) {
+                    $start = \Carbon\Carbon::parse($session->starts_at);
+                    $end = \Carbon\Carbon::parse($session->ends_at);
+                    $diffInMinutes = $start->diffInMinutes($end);
+                    if ($diffInMinutes >= 60) {
+                        $hours = floor($diffInMinutes / 60);
+                        $mins = $diffInMinutes % 60;
+                        $duration = $mins > 0 ? "{$hours}h {$mins}m" : "{$hours}h";
+                    } else {
+                        $duration = "{$diffInMinutes}m";
+                    }
+                }
+
+                // Extract youtube video ID if it's a youtube link
+                $videoId = null;
+                $url = $session->recording_link;
+                if (preg_match('%(?:youtube(?:-nocookie)?\.com/(?:[^/]+/.+/|(?:v|e(?:mbed)?)/|.*[?&]v=)|youtu\.be/)([^"&?/\s]{11})%i', $url, $match)) {
+                    $videoId = $match[1];
+                }
+
+                // Cumulative view metrics across all students
+                $totalViews = (int) $session->views->sum('view_count');
+                $uniqueViewers = (int) $session->views->count();
+
+                // Detailed viewers breakdown roster for Staff
+                $viewersList = $session->views->map(function ($v) {
+                    $st = $v->student;
+                    return [
+                        'student_id' => $v->student_id,
+                        'name' => $st ? trim("{$st->firstname} {$st->surname}") : 'Student',
+                        'firstname' => $st?->firstname ?? '',
+                        'surname' => $st?->surname ?? '',
+                        'avatar' => $st?->profile_picture,
+                        'view_count' => (int) $v->view_count,
+                        'is_repeat_viewer' => $v->view_count > 1,
+                        'first_viewed_at' => $v->first_viewed_at ? $v->first_viewed_at->toISOString() : null,
+                        'last_viewed_at' => $v->last_viewed_at ? $v->last_viewed_at->toISOString() : null,
+                    ];
+                })->sortByDesc('view_count')->values()->all();
+
+                $savedDate = $session->updated_at ?: ($session->session_date ?: $session->created_at);
+                $formattedDate = $savedDate 
+                    ? \Carbon\Carbon::parse($savedDate)->format('M j, Y') 
+                    : ($session->session_date ? \Carbon\Carbon::parse($session->session_date)->format('M j, Y') : now()->format('M j, Y'));
+
+                return [
+                    'id' => $session->id,
+                    'title' => $formattedTitle,
+                    'topic' => $topic,
+                    'subject' => $subject,
+                    'course' => $courseInfo,
+                    'course_name' => $courseInfo ? $courseInfo['title'] : null,
+                    'tutor' => $tutorName,
+                    'date' => $formattedDate,
+                    'saved_at' => $session->updated_at ? $session->updated_at->toISOString() : null,
+                    'session_date' => $session->session_date ? \Carbon\Carbon::parse($session->session_date)->toDateString() : null,
+                    'duration' => $duration,
+                    'videoUrl' => $url,
+                    'videoId' => $videoId,
+                    'thumbnail' => $videoId ? "https://img.youtube.com/vi/{$videoId}/hqdefault.jpg" : null,
+                    'views' => $totalViews,
+                    'total_views' => $totalViews,
+                    'unique_viewers' => $uniqueViewers,
+                    'my_views' => 0,
+                    'view_count' => 0,
+                    'viewers' => $viewersList,
+                    'color' => 'from-blue-600 to-indigo-600'
+                ];
+            })->values();
+
+            return response()->json([
+                'success' => true,
+                'data' => $recordedClasses
+            ]);
+
+        } catch (\Exception $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to fetch staff recorded classes',
+                'error' => config('app.debug') ? $e->getMessage() : null
+            ], 500);
+        }
+    }
+
     public function getRecordedClasses(Request $request): JsonResponse
     {
         try {

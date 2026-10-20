@@ -172,8 +172,7 @@ Route::prefix('students')->middleware(['auth:sanctum', 'auth:student'])->group(f
         Route::get('/results/history', [StudentExamResultController::class, 'history']); // Student attempt history
         Route::get('/{attempt}/review', [StudentExamResultController::class, 'review']); // Review attempt with answers and explanations
     });
-
-    // Recorded Classes
+    // Recorded Classes (Student Only)
     Route::get('/recorded-classes', [ClassesController::class, 'getRecordedClasses']);
     Route::post('/recorded-classes/{classSession}/view', [ClassesController::class, 'recordRecordingView']); // Record a student's view of a class recording
 
@@ -296,8 +295,8 @@ Route::prefix('staffs')->group(function () {
         Route::get('/courses/hierarchy', [\App\Http\Controllers\EnrollmentAnalyticsController::class, 'courseSubjectHierarchy']);
         Route::get('/classes/sessions/{classSession}/viewers', [\App\Http\Controllers\ClassesController::class, 'getSessionViewers']);
         Route::get('/analytics/traffic', [\App\Http\Controllers\AdminDashboardAnalyticsController::class, 'siteTraffic']);
-
-        // Classes
+        // Classes & Video Vault
+        Route::get('/recorded-classes', [ClassesController::class, 'getStaffRecordedClasses']); // Video Vault for Staff (Admins, COOs, Advisors)
         Route::post('/classes/session/recording', [ClassesController::class, 'updateSessionRecording']); // Update recording link for a session
         Route::post('/classes/sessions/{classSession}/status', [ClassesController::class, 'updateSessionStatus']); // Update session status
 

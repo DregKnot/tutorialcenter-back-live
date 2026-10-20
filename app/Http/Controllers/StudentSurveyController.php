@@ -295,7 +295,7 @@ class StudentSurveyController extends Controller
             });
 
         // Recent 50 responses
-        $recent = StudentSurvey::with('student:id,firstname,surname,email,phone')
+        $recent = StudentSurvey::with('student:id,firstname,surname,email,tel')
             ->recent()
             ->limit(50)
             ->get()
@@ -306,7 +306,7 @@ class StudentSurveyController extends Controller
                     'student_id' => $s->student_id,
                     'full_name' => $s->full_name ?: ($s->student ? "{$s->student->firstname} {$s->student->surname}" : 'Anonymous Student'),
                     'email' => $s->student ? $s->student->email : null,
-                    'phone' => $s->student ? $s->student->phone : null,
+                    'phone' => $s->student ? ($s->student->tel ?? $s->student->phone ?? null) : null,
                     'exam_target' => $s->exam_target,
                     'overall_rating' => $s->overall_rating,
                     'preferred_video_format' => $s->preferred_video_format,
@@ -419,7 +419,7 @@ class StudentSurveyController extends Controller
                         $s->id,
                         $s->full_name ?: ($s->student ? "{$s->student->firstname} {$s->student->surname}" : 'Anonymous'),
                         $s->student ? $s->student->email : '',
-                        $s->student ? $s->student->phone : '',
+                        $s->student ? ($s->student->tel ?? $s->student->phone ?? '') : '',
                         $s->exam_target ?? '',
                         $s->usage_duration ?? '',
                         $s->overall_rating ?? '',
