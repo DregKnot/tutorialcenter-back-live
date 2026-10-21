@@ -69,4 +69,12 @@ class Subject extends Model
     {
         return $this->hasMany(StudentSubjectTrial::class);
     }
+
+    /**
+     * Interactive Course Curriculum Modules for this subject.
+     */
+    public function modules()
+    {
+        return $this->hasMany(Module::class)->orderBy('order');
+    }
 }
