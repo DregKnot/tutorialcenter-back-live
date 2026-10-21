@@ -34,6 +34,11 @@ use App\Http\Controllers\BlogController;
 use App\Http\Controllers\ZoomController;
 use App\Http\Controllers\AssessmentController;
 use App\Http\Controllers\StudentSurveyController;
+use App\Http\Controllers\ModuleController;
+use App\Http\Controllers\LessonController;
+use App\Http\Controllers\LessonMaterialController;
+use App\Http\Controllers\QuizController;
+use App\Http\Controllers\LessonProgressController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -61,6 +66,9 @@ Route::post('payments/bank-transfer/{reference}/claim', [PaymentController::clas
 Route::get('payments/bank-transfer/{reference}', [PaymentController::class, 'bankTransferStatus'])
     ->where('reference', '[A-Za-z0-9_-]+');
 Route::post('paystack/webhook', [PaystackWebhookController::class, 'handle']);
+
+// Interactive Courses Public Material Download
+Route::get('/lesson-materials/{id}/download', [LessonMaterialController::class, 'download']);
 
 // Blog Public Routes
 Route::get('/blogs', [BlogController::class, 'index']);
@@ -196,6 +204,25 @@ Route::prefix('students')->middleware(['auth:sanctum', 'auth:student'])->group(f
         Route::patch('/{supportTicket}/close', [SupportController::class, 'close']); // Close a specific support ticket
         Route::patch('/{supportTicket}/reopen', [SupportController::class, 'reopen']); // Reopen a specific support ticket
         // Route::delete('/{supportTicket}',[SupportController::class, 'destroy']); // Delete a specific support ticket (if needed)
+    });
+
+    // Interactive Courses & Video Lessons (Self-Paced Curriculum)
+    Route::prefix('courses')->group(function () {
+        Route::get('/subjects/{subjectId}/progress', [LessonProgressController::class, 'subjectProgress']);
+        Route::get('/modules/subject/{subjectId}', [ModuleController::class, 'studentIndex']);
+        Route::get('/modules/{id}', [ModuleController::class, 'studentShow']);
+        Route::get('/lessons/{id}', [LessonController::class, 'studentShow']);
+        Route::post('/lessons/{lessonId}/progress', [LessonProgressController::class, 'update']);
+        Route::post('/lessons/{lessonId}/complete', [LessonProgressController::class, 'complete']);
+
+        // Lesson Quizzes
+        Route::prefix('quizzes')->group(function () {
+            Route::get('/lesson/{lessonId}', [QuizController::class, 'studentIndex']);
+            Route::get('/{id}', [QuizController::class, 'studentShow']);
+            Route::post('/{id}/start', [QuizController::class, 'start']);
+            Route::post('/{id}/submissions/{submissionId}', [QuizController::class, 'submit']);
+            Route::get('/{id}/submissions', [QuizController::class, 'mySubmissions']);
+        });
     });
 });
 
@@ -614,6 +641,60 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::patch('/{supportTicket}/priority', [AdminSupportController::class, 'priority']); // Update the priority of a specific support ticket
         Route::delete('/{supportTicket}', [AdminSupportController::class, 'destroy']); // Delete a specific support ticket
     });
+
+    // Interactive Courses - Modules Management
+    Route::prefix('modules')->group(function () {
+        Route::get('/subject/{subjectId}', [ModuleController::class, 'index']);
+        Route::post('/subject/{subjectId}', [ModuleController::class, 'store']);
+        Route::get('/{id}', [ModuleController::class, 'show']);
+        Route::put('/{id}', [ModuleController::class, 'update']);
+        Route::post('/{id}/publish', [ModuleController::class, 'publish']);
+        Route::post('/{id}/archive', [ModuleController::class, 'archive']);
+        Route::delete('/{id}', [ModuleController::class, 'destroy']);
+        Route::post('/{id}/restore', [ModuleController::class, 'restore']);
+        Route::post('/subject/{subjectId}/reorder', [ModuleController::class, 'reorder']);
+    });
+
+    // Interactive Courses - Lessons Management
+    Route::prefix('lessons')->group(function () {
+        Route::get('/module/{moduleId}', [LessonController::class, 'index']);
+        Route::post('/module/{moduleId}', [LessonController::class, 'store']);
+        Route::get('/{id}', [LessonController::class, 'show']);
+        Route::put('/{id}', [LessonController::class, 'update']);
+        Route::post('/{id}/publish', [LessonController::class, 'publish']);
+        Route::post('/{id}/archive', [LessonController::class, 'archive']);
+        Route::delete('/{id}', [LessonController::class, 'destroy']);
+        Route::post('/module/{moduleId}/reorder', [LessonController::class, 'reorder']);
+    });
+
+    // Interactive Courses - Lesson Materials Management
+    Route::prefix('lesson-materials')->group(function () {
+        Route::get('/lesson/{lessonId}', [LessonMaterialController::class, 'index']);
+        Route::post('/lesson/{lessonId}', [LessonMaterialController::class, 'store']);
+        Route::get('/{id}', [LessonMaterialController::class, 'show']);
+        Route::put('/{id}', [LessonMaterialController::class, 'update']);
+        Route::delete('/{id}', [LessonMaterialController::class, 'destroy']);
+        Route::post('/lesson/{lessonId}/reorder', [LessonMaterialController::class, 'reorder']);
+    });
+
+    // Interactive Courses - Quizzes Management
+    Route::prefix('quizzes')->group(function () {
+        Route::get('/lesson/{lessonId}', [QuizController::class, 'index']);
+        Route::post('/lesson/{lessonId}', [QuizController::class, 'store']);
+        Route::get('/{id}', [QuizController::class, 'show']);
+        Route::put('/{id}', [QuizController::class, 'update']);
+        Route::post('/{id}/publish', [QuizController::class, 'publish']);
+        Route::post('/{id}/archive', [QuizController::class, 'archive']);
+        Route::delete('/{id}', [QuizController::class, 'destroy']);
+        Route::get('/{id}/submissions', [QuizController::class, 'submissions']);
+        Route::get('/{id}/submissions/{submissionId}', [QuizController::class, 'submissionDetail']);
+    });
+
+    // Interactive Courses - Progress Analytics
+    Route::prefix('course-progress')->group(function () {
+        Route::get('/subject/{subjectId}/overview', [LessonProgressController::class, 'subjectOverview']);
+        Route::get('/student/{studentId}/subject/{subjectId}', [LessonProgressController::class, 'studentProgress']);
+    });
 });
 
 /*
@@ -639,6 +720,50 @@ Route::prefix('tutor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:tu
         Route::get('/{assessment}/submissions/{submission}', [AssessmentController::class, 'submission']);
         Route::post('/{assessment}/submissions/{submission}/grade', [AssessmentController::class, 'grade']);
         Route::post('/{assessment}/submissions/{submission}/reopen', [AssessmentController::class, 'reopen']);
+    });
+
+    // Tutor Course Authoring Routes
+    Route::prefix('modules')->group(function () {
+        Route::get('/subject/{subjectId}', [ModuleController::class, 'index']);
+        Route::post('/subject/{subjectId}', [ModuleController::class, 'store']);
+        Route::get('/{id}', [ModuleController::class, 'show']);
+        Route::put('/{id}', [ModuleController::class, 'update']);
+        Route::post('/{id}/publish', [ModuleController::class, 'publish']);
+        Route::post('/{id}/archive', [ModuleController::class, 'archive']);
+        Route::delete('/{id}', [ModuleController::class, 'destroy']);
+        Route::post('/subject/{subjectId}/reorder', [ModuleController::class, 'reorder']);
+    });
+
+    Route::prefix('lessons')->group(function () {
+        Route::get('/module/{moduleId}', [LessonController::class, 'index']);
+        Route::post('/module/{moduleId}', [LessonController::class, 'store']);
+        Route::get('/{id}', [LessonController::class, 'show']);
+        Route::put('/{id}', [LessonController::class, 'update']);
+        Route::post('/{id}/publish', [LessonController::class, 'publish']);
+        Route::post('/{id}/archive', [LessonController::class, 'archive']);
+        Route::delete('/{id}', [LessonController::class, 'destroy']);
+        Route::post('/module/{moduleId}/reorder', [LessonController::class, 'reorder']);
+    });
+
+    Route::prefix('lesson-materials')->group(function () {
+        Route::get('/lesson/{lessonId}', [LessonMaterialController::class, 'index']);
+        Route::post('/lesson/{lessonId}', [LessonMaterialController::class, 'store']);
+        Route::get('/{id}', [LessonMaterialController::class, 'show']);
+        Route::put('/{id}', [LessonMaterialController::class, 'update']);
+        Route::delete('/{id}', [LessonMaterialController::class, 'destroy']);
+        Route::post('/lesson/{lessonId}/reorder', [LessonMaterialController::class, 'reorder']);
+    });
+
+    Route::prefix('quizzes')->group(function () {
+        Route::get('/lesson/{lessonId}', [QuizController::class, 'index']);
+        Route::post('/lesson/{lessonId}', [QuizController::class, 'store']);
+        Route::get('/{id}', [QuizController::class, 'show']);
+        Route::put('/{id}', [QuizController::class, 'update']);
+        Route::post('/{id}/publish', [QuizController::class, 'publish']);
+        Route::post('/{id}/archive', [QuizController::class, 'archive']);
+        Route::delete('/{id}', [QuizController::class, 'destroy']);
+        Route::get('/{id}/submissions', [QuizController::class, 'submissions']);
+        Route::get('/{id}/submissions/{submissionId}', [QuizController::class, 'submissionDetail']);
     });
 });
 
