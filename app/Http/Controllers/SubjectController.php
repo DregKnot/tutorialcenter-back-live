@@ -17,7 +17,7 @@ class SubjectController extends Controller
      */
     public function allSubjects()
     {
-        $subjects = Subject::with('courses')->latest()->get();
+        $subjects = Subject::with('courses')->withCount('modules')->latest()->get();
 
         return response()->json([
             'subjects' => $subjects,

@@ -406,7 +406,9 @@ class CourseController extends Controller
 
             $enrollments = CoursesEnrollment::with([
                 'course',
-                'subjects.subject'
+                'subjects.subject' => function ($q) {
+                    $q->withCount('modules');
+                }
             ])
                 ->where('student_id', $studentId)
                 ->where('status', 'active')
@@ -443,6 +445,8 @@ class CourseController extends Controller
                             'name' => optional($sub->subject)->name,
                             'description' => optional($sub->subject)->description,
                             'banner' => optional($sub->subject)->banner,
+                            'modules_count' => optional($sub->subject)->modules_count ?? (optional($sub->subject)->id ? \App\Models\Module::where('subject_id', $sub->subject->id)->count() : 0),
+                            'total_modules' => optional($sub->subject)->modules_count ?? (optional($sub->subject)->id ? \App\Models\Module::where('subject_id', $sub->subject->id)->count() : 0),
                             'progress' => $sub->progress ?? 0,
                         ];
                     })->values()

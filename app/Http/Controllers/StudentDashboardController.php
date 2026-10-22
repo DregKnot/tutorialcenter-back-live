@@ -41,7 +41,9 @@ class StudentDashboardController extends Controller
             // 1. Active Courses with pruned columns (strictly unexpired)
             $enrollments = CoursesEnrollment::with([
                 'course:id,title,description,banner',
-                'subjects.subject:id,name,description,banner',
+                'subjects.subject' => function ($q) {
+                    $q->select(['id', 'name', 'description', 'banner'])->withCount('modules');
+                },
                 'payments' => function ($q) {
                     $q->select(['id', 'course_enrollment_id', 'student_id', 'status', 'paid_at', 'billing_cycle', 'created_at'])
                       ->whereIn('status', ['successful', 'paid']);
@@ -94,6 +96,8 @@ class StudentDashboardController extends Controller
                             'name' => optional($sub->subject)->name,
                             'description' => optional($sub->subject)->description,
                             'banner' => optional($sub->subject)->banner,
+                            'modules_count' => optional($sub->subject)->modules_count ?? (optional($sub->subject)->id ? \App\Models\Module::where('subject_id', $sub->subject->id)->count() : 0),
+                            'total_modules' => optional($sub->subject)->modules_count ?? (optional($sub->subject)->id ? \App\Models\Module::where('subject_id', $sub->subject->id)->count() : 0),
                             'progress' => $sub->progress ?? 0,
                         ];
                     })->values()
