@@ -29,7 +29,7 @@ class LessonService
             'description'      => $data['description'] ?? null,
             'order'            => $data['order'] ?? 0,
             'duration_minutes' => $data['duration_minutes'] ?? null,
-            'status'           => Lesson::DRAFT,
+            'status'           => $data['status'] ?? Lesson::PUBLISHED,
         ]);
     }
 
@@ -43,6 +43,7 @@ class LessonService
             'description'      => $data['description'] ?? $lesson->description,
             'order'            => $data['order'] ?? $lesson->order,
             'duration_minutes' => $data['duration_minutes'] ?? $lesson->duration_minutes,
+            'status'           => $data['status'] ?? $lesson->status,
         ]);
 
         return $lesson->fresh();

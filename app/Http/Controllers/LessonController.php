@@ -48,6 +48,7 @@ class LessonController extends Controller
             'description'      => 'nullable|string',
             'order'            => 'nullable|integer|min:0',
             'duration_minutes' => 'nullable|integer|min:1',
+            'status'           => 'nullable|string|in:draft,published,archived',
         ]);
 
         if ($validator->fails()) {
@@ -92,6 +93,7 @@ class LessonController extends Controller
             'description'      => 'nullable|string',
             'order'            => 'nullable|integer|min:0',
             'duration_minutes' => 'nullable|integer|min:1',
+            'status'           => 'nullable|string|in:draft,published,archived',
         ]);
 
         if ($validator->fails()) {

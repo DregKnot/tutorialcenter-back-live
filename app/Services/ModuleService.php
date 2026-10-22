@@ -29,7 +29,7 @@ class ModuleService
             'title'       => $data['title'],
             'description' => $data['description'] ?? null,
             'order'       => $data['order'] ?? 0,
-            'status'      => Module::DRAFT,
+            'status'      => $data['status'] ?? Module::PUBLISHED,
         ]);
     }
 
@@ -42,6 +42,7 @@ class ModuleService
             'title'       => $data['title'] ?? $module->title,
             'description' => $data['description'] ?? $module->description,
             'order'       => $data['order'] ?? $module->order,
+            'status'      => $data['status'] ?? $module->status,
         ]);
 
         return $module->fresh();

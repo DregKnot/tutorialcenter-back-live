@@ -46,6 +46,7 @@ class ModuleController extends Controller
             'title'       => 'required|string|max:255',
             'description' => 'nullable|string',
             'order'       => 'nullable|integer|min:0',
+            'status'      => 'nullable|string|in:draft,published,archived',
         ]);
 
         if ($validator->fails()) {
@@ -90,6 +91,7 @@ class ModuleController extends Controller
             'title'       => 'sometimes|required|string|max:255',
             'description' => 'nullable|string',
             'order'       => 'nullable|integer|min:0',
+            'status'      => 'nullable|string|in:draft,published,archived',
         ]);
 
         if ($validator->fails()) {
