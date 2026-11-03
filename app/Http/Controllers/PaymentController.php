@@ -619,11 +619,19 @@ class PaymentController extends Controller
                     config('services.paystack.mock_fallback', false)
                 );
 
-                if ($isMockAllowed && !empty($validated['fallback_metadata']) && (!empty($validated['fallback_metadata']['courses']) || !empty($validated['fallback_metadata']['student_id']) || !empty($validated['fallback_metadata']['course_id']))) {
+                $isGuardianEnrollment = ($validated['fallback_metadata']['type'] ?? null) === 'guardian_enrollment' || !empty($validated['fallback_metadata']['students']);
+                $hasValidFallbackData = !empty($validated['fallback_metadata']['courses']) 
+                    || !empty($validated['fallback_metadata']['student_id']) 
+                    || !empty($validated['fallback_metadata']['course_id'])
+                    || $isGuardianEnrollment;
+
+                if ($isMockAllowed && !empty($validated['fallback_metadata']) && $hasValidFallbackData) {
                     \Illuminate\Support\Facades\Log::info('Local mock verification used for reference', ['reference' => $reference]);
                     $price = (float) (
                         $validated['fallback_metadata']['price'] 
-                        ?? ($validated['fallback_metadata']['courses'][0]['price'] ?? 10000)
+                        ?? ($validated['fallback_metadata']['amount'] ?? null)
+                        ?? ($validated['fallback_metadata']['courses'][0]['price'] ?? null)
+                        ?? ($validated['fallback_metadata']['students'][0]['courses'][0]['price'] ?? 8000)
                     );
                     $mockData = [
                         'reference' => $reference,

@@ -128,6 +128,9 @@ class PaystackService
             $paidAt = isset($data['paid_at']) ? new \DateTime($data['paid_at']) : now();
             $channel = $data['channel'] ?? ($fallbackContext['payment_method'] ?? 'card');
             $metadata = $data['metadata'] ?? ($fallbackContext['metadata'] ?? []);
+            if (empty($metadata) && !empty($fallbackContext)) {
+                $metadata = $fallbackContext;
+            }
             if (is_string($metadata)) {
                 $metadata = json_decode($metadata, true) ?: [];
             }
