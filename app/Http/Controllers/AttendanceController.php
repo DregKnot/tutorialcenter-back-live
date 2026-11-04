@@ -80,6 +80,16 @@ class AttendanceController extends Controller
         $now = now();
         $isOpen = $now->between($openWindowStart, $closeWindowEnd);
 
+        // Reject premature attendance recording before classroom doors open
+        if ($now->lt($openWindowStart)) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Classroom is not open yet. Entry begins 15 minutes before scheduled start time.',
+                'starts_at' => $scheduledStart->toIso8601String(),
+                'opens_at' => $openWindowStart->toIso8601String(),
+            ], 422);
+        }
+
         $isLate = $now->gt($scheduledStart->copy()->addMinutes(15));
         $status = $isLate ? 'late' : 'present';
 

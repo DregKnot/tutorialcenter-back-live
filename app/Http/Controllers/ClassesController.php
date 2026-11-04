@@ -549,13 +549,14 @@ class ClassesController extends Controller
                 ], 401);
             }
 
-            // Check if staff is admin or assigned to the class
-            $isAdmin = $staff->role === 'admin';
+            // Check if staff is authorized: admin, coo, moderator, course advisor, or assigned tutor
+            $staffRole = strtolower(trim($staff->role ?? ''));
+            $isAuthorizedRole = in_array($staffRole, ['admin', 'moderator', 'coo', 'advisor', 'course_advisor', 'course advisor']);
             $isAssigned = ClassStaff::where('class_id', $class->id)
                 ->where('staff_id', $staff->id)
                 ->exists();
 
-            if (!$isAdmin && !$isAssigned) {
+            if (!$isAuthorizedRole && !$isAssigned) {
                 return response()->json([
                     'success' => false,
                     'message' => 'You are not authorized to update this session',
@@ -704,12 +705,28 @@ class ClassesController extends Controller
                 }
             }
 
-            // Update the target session
-            $session->session_date = $request->new_date;
-            $session->starts_at = $request->new_start_time;
-            $session->ends_at = $request->new_end_time;
-            $session->status = 'rescheduled';
-            $session->save();
+            // Update the target session cleanly:
+            // If the session already had attendance recorded, keep its historical attendance intact
+            // and spawn a fresh session record for the new date to avoid ghost attendance.
+            if ($session->attendances()->exists()) {
+                $session->update(['status' => 'rescheduled']);
+                $newSession = ClassSession::create([
+                    'class_id' => $session->class_id,
+                    'class_schedule_id' => $session->class_schedule_id,
+                    'session_date' => $request->new_date,
+                    'starts_at' => $request->new_start_time,
+                    'ends_at' => $request->new_end_time,
+                    'class_link' => $session->class_link,
+                    'status' => 'scheduled',
+                ]);
+                $session = $newSession;
+            } else {
+                $session->session_date = $request->new_date;
+                $session->starts_at = $request->new_start_time;
+                $session->ends_at = $request->new_end_time;
+                $session->status = 'rescheduled';
+                $session->save();
+            }
 
             DB::commit();
 
@@ -2165,6 +2182,25 @@ class ClassesController extends Controller
                 $session->is_rescheduled = (strtolower($session->status) === 'rescheduled' || $classStatus === 'rescheduled');
                 $session->class_status = $classStatus ?: 'active';
             }
+
+            // Ensure upcoming/scheduled sessions never leak stale or ghost attendance
+            $sessionDate = $session->session_date ? \Carbon\Carbon::parse($session->session_date)->toDateString() : null;
+            $todayDate = today()->toDateString();
+            $isUpcoming = false;
+            if ($sessionDate && $sessionDate > $todayDate) {
+                $isUpcoming = true;
+            } elseif ($sessionDate && $sessionDate === $todayDate && !empty($session->starts_at)) {
+                $startTimeStr = substr($session->starts_at, 0, 5);
+                $currentTimeStr = now('Africa/Lagos')->format('H:i');
+                if ($startTimeStr > $currentTimeStr && $session->status !== 'completed' && $session->status !== 'recorded') {
+                    $isUpcoming = true;
+                }
+            }
+
+            if ($isUpcoming && $session->relationLoaded('attendances')) {
+                $session->setRelation('attendances', collect([]));
+            }
+
             return $session;
         };
 

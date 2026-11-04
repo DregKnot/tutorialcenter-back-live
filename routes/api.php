@@ -325,6 +325,7 @@ Route::prefix('staffs')->group(function () {
         // Classes & Video Vault
         Route::get('/recorded-classes', [ClassesController::class, 'getStaffRecordedClasses']); // Video Vault for Staff (Admins, COOs, Advisors)
         Route::post('/classes/session/recording', [ClassesController::class, 'updateSessionRecording']); // Update recording link for a session
+        Route::post('/classes/sessions/recording', [ClassesController::class, 'updateSessionRecording']);
         Route::post('/classes/sessions/{classSession}/status', [ClassesController::class, 'updateSessionStatus']); // Update session status
 
         // Notification Routes
@@ -487,6 +488,8 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::post('/update/{id}', [ClassesController::class, 'update']);
         Route::delete('/destroy/{id}', [ClassesController::class, 'destroy']); // Deactivate class and cleanup future sessions
         Route::get('/all', [ClassesController::class, 'allClassesSchedule']); // List all classes
+        Route::post('/session/recording', [ClassesController::class, 'updateSessionRecording']);
+        Route::post('/sessions/recording', [ClassesController::class, 'updateSessionRecording']);
         Route::post('/sessions/{classSession}/status', [ClassesController::class, 'updateSessionStatus']);
         Route::match(['patch', 'post'], '/sessions/{id}/reschedule', [ClassesController::class, 'rescheduleSession']);
         Route::match(['patch', 'post'], '/sessions/{id}/cancel', [ClassesController::class, 'cancelSession']);
@@ -783,6 +786,8 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
     Route::prefix('classes')->group(function () {
         Route::get('/schedule', [ClassesController::class, 'advisorClassesSchedule']);
         Route::post('/classes/report', [\App\Http\Controllers\FeedbackController::class, 'storeAdvisorReport']); // Get advisor schedule with attendance status
+        Route::post('/session/recording', [ClassesController::class, 'updateSessionRecording']);
+        Route::post('/sessions/recording', [ClassesController::class, 'updateSessionRecording']);
     });
 
     // Advisor Dashboard
@@ -811,4 +816,10 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
         Route::get('/all', [StudentController::class, 'index']); // List all students
         Route::get('/{id}', [StudentController::class, 'show']); // Show student details
     });
+});
+
+// Alias for singular 'staff' prefix to support both api/staff and api/staffs
+Route::prefix('staff')->middleware('auth:staff')->group(function () {
+    Route::post('/classes/session/recording', [\App\Http\Controllers\ClassesController::class, 'updateSessionRecording']);
+    Route::post('/classes/sessions/recording', [\App\Http\Controllers\ClassesController::class, 'updateSessionRecording']);
 });
