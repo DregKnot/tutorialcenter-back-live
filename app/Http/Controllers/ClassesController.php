@@ -28,9 +28,10 @@ use App\Services\StaffNotificationService;
 class ClassesController extends Controller
 {
 
-        private function getEnrolledStudentsForSubject($subjectId, $classTitle = null)
+    private function getEnrolledStudentsForSubject($subjectId, $classTitle = null)
     {
-        if (!$subjectId) return collect([]);
+        if (!$subjectId)
+            return collect([]);
         $isOLevel = $classTitle && (str_starts_with($classTitle, 'O-Level') || str_starts_with($classTitle, 'O-LEVEL'));
 
         if ($isOLevel) {
@@ -43,13 +44,13 @@ class ClassesController extends Controller
                 })
                 ->whereHas('subjectEnrollments', function ($query) use ($subjectId, $subjectName) {
                     $query->whereNull('deleted_at')
-                          ->whereHas('enrollment', function ($q) {
-                              $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
+                        ->whereHas('enrollment', function ($q) {
+                            $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                                 ->where(function ($subQ) {
                                     $subQ->whereNull('end_date')
-                                         ->orWhere('end_date', '>=', now());
+                                        ->orWhere('end_date', '>=', now());
                                 });
-                          });
+                        });
                     if ($subjectName) {
                         $query->whereHas('subject', function ($sq) use ($subjectName) {
                             $sq->where('name', 'LIKE', '%' . $subjectName . '%');
@@ -62,19 +63,19 @@ class ClassesController extends Controller
         return \App\Models\Student::query()
             ->whereHas('subjectEnrollments', function ($query) use ($subjectId) {
                 $query->where('subject_id', $subjectId)
-                      ->whereNull('deleted_at')
-                      ->whereHas('enrollment', function ($q) {
-                          $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
+                    ->whereNull('deleted_at')
+                    ->whereHas('enrollment', function ($q) {
+                        $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                             ->where(function ($subQ) {
                                 $subQ->whereNull('end_date')
-                                     ->orWhere('end_date', '>=', now());
+                                    ->orWhere('end_date', '>=', now());
                             });
-                      });
+                    });
             })
             ->get(['id', 'firstname', 'surname', 'email', 'tel', 'profile_picture']);
     }
 
-        /**
+    /**
      * (admin) create a new class, class schedule, assign staff to class and class sessions
      **/
     public function store(Request $request, ZoomService $zoomService)
@@ -135,8 +136,8 @@ class ClassesController extends Controller
             $newStaffIds = [];
 
             // If O-Levels class, sync subject(s) to WAEC (2), NECO (3), and GCE (4)
-            $isOLevelsClass = $request->boolean('is_o_levels') || 
-                              str_starts_with(strtolower((string) $request->input('title', '')), 'o-level');
+            $isOLevelsClass = $request->boolean('is_o_levels') ||
+                str_starts_with(strtolower((string) $request->input('title', '')), 'o-level');
             if ($isOLevelsClass && !empty($request->subject_id)) {
                 $targetSubjectIds = $request->input('all_subject_ids', [$request->subject_id]);
                 if (!is_array($targetSubjectIds) || empty($targetSubjectIds)) {
@@ -216,7 +217,7 @@ class ClassesController extends Controller
             | 3. Prevent Duplicate Class or Create
             |--------------------------------------------------------------------------
             */
-            $privateStudentId = $isPrivate ? (int)$request->input('private_student_id') : null;
+            $privateStudentId = $isPrivate ? (int) $request->input('private_student_id') : null;
 
             $classQuery = Classes::where('subject_id', $request->subject_id)
                 ->where('title', $title)
@@ -449,18 +450,19 @@ class ClassesController extends Controller
 
     /**
      * (admin) Get classes schdule for all subjects 
-    **/
-        public function allClassesSchedule(Request $request){
+     **/
+    public function allClassesSchedule(Request $request)
+    {
         try {
             $staff = $request->user() ?: auth('staff')->user();
 
             $classes = Classes::with([
-                    'subject.courses',
-                    'staffs',
-                    'privateStudent',
-                    'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
-                    'schedules.sessions.attendances.student',
-                ])
+                'subject.courses',
+                'staffs',
+                'privateStudent',
+                'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
+                'schedules.sessions.attendances.student',
+            ])
                 ->whereHas('subject', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']))
                 ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                 ->get();
@@ -496,8 +498,8 @@ class ClassesController extends Controller
                 'class.staffs',
                 'attendances.student'
             ])
-            ->withCount(['views as views'])
-            ->whereHas('class', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']));
+                ->withCount(['views as views'])
+                ->whereHas('class', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']));
 
             $nextClass = (clone $sessionQuery)
                 ->whereDate('session_date', '>=', now())
@@ -577,7 +579,7 @@ class ClassesController extends Controller
     /**
      * (Public) View a specific class schedule with sessions
      * - Used for students to view class details and join links 
-    **/
+     **/
     public function viewClassSchedule(int $classId): JsonResponse
     {
         try {
@@ -601,7 +603,8 @@ class ClassesController extends Controller
     /**
      * Update recording link for a class session (Admin, Advisor, or Staff)
      */
-    public function updateSessionRecording(Request $request): JsonResponse{
+    public function updateSessionRecording(Request $request): JsonResponse
+    {
         try {
             $validator = Validator::make($request->all(), [
                 'session_id' => 'required|exists:class_sessions,id',
@@ -650,7 +653,7 @@ class ClassesController extends Controller
 
             $isCompletedOrRecorded = in_array(strtolower($session->status ?? ''), ['completed', 'recorded']);
             $endsAt = \App\Services\StudentNotificationService::sessionTime($session, 'ends_at');
-            if (!$isCompletedOrRecorded && (! $endsAt || ! $endsAt->isPast())) {
+            if (!$isCompletedOrRecorded && (!$endsAt || !$endsAt->isPast())) {
                 return response()->json(['success' => false, 'message' => 'Recordings can only be added after the session has ended.'], 422);
             }
 
@@ -695,9 +698,9 @@ class ClassesController extends Controller
 
             $validator = Validator::make($request->all(), [
                 'status' => 'required|string|in:scheduled,rescheduled,proposed,cancelled,completed,recorded',
-            'session_date' => 'nullable|date',
-            'starts_at' => 'nullable|string',
-            'ends_at' => 'nullable|string',
+                'session_date' => 'nullable|date',
+                'starts_at' => 'nullable|string',
+                'ends_at' => 'nullable|string',
             ]);
 
             if ($validator->fails()) {
@@ -917,7 +920,7 @@ class ClassesController extends Controller
                 ->whereNotIn('status', ['cancelled'])
                 ->where(function ($q) use ($newStart, $newEnd) {
                     $q->where('starts_at', '<', $newEnd)
-                      ->where('ends_at', '>', $newStart);
+                        ->where('ends_at', '>', $newStart);
                 })
                 ->get()
                 ->map(function ($s) {
@@ -960,7 +963,7 @@ class ClassesController extends Controller
     {
         try {
             $user = $request->user();
-            if (! $user instanceof Staff) {
+            if (!$user instanceof Staff) {
                 return response()->json(['success' => false, 'message' => 'Unauthorized. Staff access only.'], 403);
             }
 
@@ -970,21 +973,21 @@ class ClassesController extends Controller
 
             // Base query for class sessions that are past and have a recording link
             $query = ClassSession::with([
-                'class.staffs', 
+                'class.staffs',
                 'class.subject.courses',
                 'views.student' => function ($sq) {
                     $sq->select('id', 'firstname', 'surname', 'profile_picture');
                 }
             ])
-            ->whereNotNull('recording_link')
-            ->where('recording_link', '!=', '')
-            ->where(function ($q) {
-                $q->whereDate('session_date', '<', today())
-                    ->orWhere(function ($q2) {
-                        $q2->whereDate('session_date', today())
-                            ->where('ends_at', '<', now()->format('H:i:s'));
-                    });
-            });
+                ->whereNotNull('recording_link')
+                ->where('recording_link', '!=', '')
+                ->where(function ($q) {
+                    $q->whereDate('session_date', '<', today())
+                        ->orWhere(function ($q2) {
+                            $q2->whereDate('session_date', today())
+                                ->where('ends_at', '<', now()->format('H:i:s'));
+                        });
+                });
 
             $sessions = $query->orderBy('updated_at', 'desc')->get();
 
@@ -1008,7 +1011,7 @@ class ClassesController extends Controller
 
             $recordedClasses = $sessions->map(function ($session) {
                 $class = $session->class;
-                
+
                 // Get tutor name
                 $tutorName = "Instructor";
                 if ($class && $class->staffs->isNotEmpty()) {
@@ -1086,8 +1089,8 @@ class ClassesController extends Controller
                 })->sortByDesc('view_count')->values()->all();
 
                 $savedDate = $session->updated_at ?: ($session->session_date ?: $session->created_at);
-                $formattedDate = $savedDate 
-                    ? \Carbon\Carbon::parse($savedDate)->format('M j, Y') 
+                $formattedDate = $savedDate
+                    ? \Carbon\Carbon::parse($savedDate)->format('M j, Y')
                     : ($session->session_date ? \Carbon\Carbon::parse($session->session_date)->format('M j, Y') : now()->format('M j, Y'));
 
                 return [
@@ -1141,21 +1144,21 @@ class ClassesController extends Controller
 
             // Base query for class sessions that are past and have a recording link
             $query = ClassSession::with([
-                'class.staffs', 
+                'class.staffs',
                 'class.subject.courses',
                 'views.student' => function ($sq) {
                     $sq->select('id', 'firstname', 'surname', 'profile_picture');
                 }
             ])
-            ->whereNotNull('recording_link')
-            ->where('recording_link', '!=', '')
-            ->where(function ($q) {
-                $q->whereDate('session_date', '<', today())
-                    ->orWhere(function ($q2) {
-                        $q2->whereDate('session_date', today())
-                            ->where('ends_at', '<', now()->format('H:i:s'));
-                    });
-            });
+                ->whereNotNull('recording_link')
+                ->where('recording_link', '!=', '')
+                ->where(function ($q) {
+                    $q->whereDate('session_date', '<', today())
+                        ->orWhere(function ($q2) {
+                            $q2->whereDate('session_date', today())
+                                ->where('ends_at', '<', now()->format('H:i:s'));
+                        });
+                });
 
             $sessions = $query->orderBy('updated_at', 'desc')->get();
 
@@ -1168,7 +1171,7 @@ class ClassesController extends Controller
                     ->where('status', 'active')
                     ->where(function ($q) use ($now) {
                         $q->whereNull('end_date')
-                          ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+                            ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
                     })
                     ->get();
 
@@ -1230,7 +1233,7 @@ class ClassesController extends Controller
 
             $recordedClasses = $sessions->map(function ($session) use ($studentId, $isStaff) {
                 $class = $session->class;
-                
+
                 // Get tutor name
                 $tutorName = "Instructor";
                 if ($class && $class->staffs->isNotEmpty()) {
@@ -1312,8 +1315,8 @@ class ClassesController extends Controller
                 }
 
                 $savedDate = $session->updated_at ?: ($session->session_date ?: $session->created_at);
-                $formattedDate = $savedDate 
-                    ? \Carbon\Carbon::parse($savedDate)->format('M j, Y') 
+                $formattedDate = $savedDate
+                    ? \Carbon\Carbon::parse($savedDate)->format('M j, Y')
                     : ($session->session_date ? \Carbon\Carbon::parse($session->session_date)->format('M j, Y') : now()->format('M j, Y'));
 
                 return [
@@ -1360,7 +1363,7 @@ class ClassesController extends Controller
         try {
             $student = $request->user();
 
-            if (! $student instanceof Student) {
+            if (!$student instanceof Student) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Only students can record video views.',
@@ -1384,12 +1387,12 @@ class ClassesController extends Controller
             $withinDebounce = $view->last_viewed_at
                 && $view->last_viewed_at->gt(now()->subMinutes($debounceMinutes));
 
-            if (! $view->exists) {
+            if (!$view->exists) {
                 $view->view_count = 1;
                 $view->first_viewed_at = now();
                 $view->last_viewed_at = now();
                 $view->save();
-            } elseif (! $withinDebounce) {
+            } elseif (!$withinDebounce) {
                 $view->view_count = (int) $view->view_count + 1;
                 $view->last_viewed_at = now();
                 $view->save();
@@ -1477,7 +1480,8 @@ class ClassesController extends Controller
         }
     }
 
-    public function update(Request $request, $id, ZoomService $zoomService){
+    public function update(Request $request, $id, ZoomService $zoomService)
+    {
         $staffUser = $request->user() ?: auth('staff')->user();
         if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
             return response()->json([
@@ -1498,7 +1502,7 @@ class ClassesController extends Controller
 
             'start_date' => 'nullable|date',
             'end_date' => 'nullable|date',
-            
+
             'class_link' => 'nullable|url',
 
             'is_private' => 'nullable|boolean',
@@ -1537,7 +1541,8 @@ class ClassesController extends Controller
             }
             if ($request->has('status')) {
                 $statusVal = strtolower(trim($request->status));
-                if ($statusVal === 'canceled') $statusVal = 'cancelled';
+                if ($statusVal === 'canceled')
+                    $statusVal = 'cancelled';
                 $updateData['status'] = $statusVal;
 
                 if (in_array($statusVal, ['proposed', 'rescheduled', 'cancelled'])) {
@@ -1599,16 +1604,16 @@ class ClassesController extends Controller
                 }
             }
 
+            $startDate = $request->filled('start_date')
+                ? Carbon::parse($request->start_date)->startOfDay()
+                : Carbon::parse($class->schedules->min('start_date') ?? now())->startOfDay();
+
+            $endDate = $request->filled('end_date')
+                ? Carbon::parse($request->end_date)->endOfDay()
+                : Carbon::parse($class->schedules->max('end_date') ?? now()->addMonths(1))->endOfDay();
+
             // If schedules or dates are provided, alter future sessions while preserving past attendance
             if ($request->has('schedules') && is_array($request->schedules) && count($request->schedules) > 0) {
-                $startDate = $request->filled('start_date') 
-                    ? Carbon::parse($request->start_date)->startOfDay() 
-                    : Carbon::parse($class->schedules->min('start_date') ?? now())->startOfDay();
-
-                $endDate = $request->filled('end_date') 
-                    ? Carbon::parse($request->end_date)->endOfDay() 
-                    : Carbon::parse($class->schedules->max('end_date') ?? now()->addMonths(3))->endOfDay();
-
                 $todayStr = today()->toDateString();
 
                 // Delete future scheduled sessions that do not have attendance recorded
@@ -1623,8 +1628,8 @@ class ClassesController extends Controller
                 foreach ($request->schedules as $scheduleData) {
                     $startTime = $scheduleData['start_time'];
                     $duration = $scheduleData['duration_minutes'] ?? 60;
-                    
-                    $endTime = !empty($scheduleData['end_time']) 
+
+                    $endTime = !empty($scheduleData['end_time'])
                         ? $scheduleData['end_time']
                         : Carbon::createFromFormat('H:i', $startTime)->addMinutes($duration)->format('H:i');
 
@@ -1751,10 +1756,16 @@ class ClassesController extends Controller
                             'payment_reference' => $paymentRef,
                             'payment_method' => $paymentMethod,
                             'session_quota' => $totalSessionsCount ?: 4,
+                            'sessions_completed' => 0,
+                            'starts_at' => $startDate->toDateString(),
+                            'expires_at' => $endDate->toDateString(),
                             'status' => 'active',
+                            'notes' => $request->input('notes'),
                         ]
                     );
                 }
+            } else {
+                PrivateClassEnrollment::where('class_id', $refreshedClass->id)->update(['status' => 'cancelled']);
             }
 
             DB::commit();
@@ -1782,8 +1793,9 @@ class ClassesController extends Controller
 
     /**
      * (admin) deactivate class and delete future unattended sessions
-    **/
-    public function destroy($id){
+     **/
+    public function destroy($id)
+    {
         $staffUser = auth('staff')->user();
         if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
             return response()->json([
@@ -1795,7 +1807,7 @@ class ClassesController extends Controller
         try {
             $class = Classes::findOrFail($id);
             $class->update(['status' => 'inactive']);
-            
+
             ClassSession::where('class_id', $class->id)
                 ->whereDate('session_date', '>=', today())
                 ->whereDoesntHave('attendances')
@@ -1814,14 +1826,15 @@ class ClassesController extends Controller
         }
     }
 
-    
+
     /**
      * (tutor) Get tutor schedule with assigned classes
-    **/
+     **/
     /**
      * (tutor) Get tutor schedule with assigned classes - unified with center master schedule
-    **/
-    public function tutorClassesSchedule(Request $request){
+     **/
+    public function tutorClassesSchedule(Request $request)
+    {
         try {
             $staff = $request->user() ?: auth('staff')->user();
 
@@ -1839,12 +1852,12 @@ class ClassesController extends Controller
 
             // 1. Query only classes where this tutor is assigned in class_staff
             $classes = Classes::with([
-                    'subject.courses',
-                    'staffs',
-                    'privateStudent',
-                    'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
-                    'schedules.sessions.attendances.student',
-                ])
+                'subject.courses',
+                'staffs',
+                'privateStudent',
+                'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
+                'schedules.sessions.attendances.student',
+            ])
                 ->whereHas('subject', fn($q) => $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']))
                 ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
                 ->whereHas('staffs', fn($q) => $q->where('staffs.id', $staff->id))
@@ -1881,11 +1894,11 @@ class ClassesController extends Controller
                 'class.staffs',
                 'attendances.student'
             ])
-            ->withCount(['views as views'])
-            ->whereHas('class', function ($q) use ($staff) {
-                $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
-                  ->whereHas('staffs', fn($qs) => $qs->where('staffs.id', $staff->id));
-            });
+                ->withCount(['views as views'])
+                ->whereHas('class', function ($q) use ($staff) {
+                    $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
+                        ->whereHas('staffs', fn($qs) => $qs->where('staffs.id', $staff->id));
+                });
 
             // Smart Next Up session ordering: future dates or today where class is still upcoming
             $nowTime = now()->format('H:i:s');
@@ -1894,16 +1907,16 @@ class ClassesController extends Controller
             $nextClass = (clone $sessionQuery)
                 ->where(function ($q) use ($todayDate, $nowTime) {
                     $q->whereDate('session_date', '>', $todayDate)
-                      ->orWhere(function ($q2) use ($todayDate, $nowTime) {
-                          $q2->whereDate('session_date', $todayDate)
-                             ->where(function ($q3) use ($nowTime) {
-                                 $q3->where('ends_at', '>=', $nowTime)
-                                    ->orWhere(function ($q4) use ($nowTime) {
-                                        $q4->whereNull('ends_at')
-                                           ->where('starts_at', '>=', $nowTime);
-                                    });
-                             });
-                      });
+                        ->orWhere(function ($q2) use ($todayDate, $nowTime) {
+                            $q2->whereDate('session_date', $todayDate)
+                                ->where(function ($q3) use ($nowTime) {
+                                    $q3->where('ends_at', '>=', $nowTime)
+                                        ->orWhere(function ($q4) use ($nowTime) {
+                                            $q4->whereNull('ends_at')
+                                                ->where('starts_at', '>=', $nowTime);
+                                        });
+                                });
+                        });
                 })
                 ->whereNotIn('status', ['completed', 'cancelled', 'proposed'])
                 ->orderBy('session_date', 'asc')
@@ -1991,15 +2004,17 @@ class ClassesController extends Controller
 
     /**
      * (advisor) Get advisor schedule - unified with center master schedule
-    **/
-    public function advisorClassesSchedule(Request $request){
+     **/
+    public function advisorClassesSchedule(Request $request)
+    {
         return $this->allClassesSchedule($request);
     }
 
     /**
      * (student) Get student schedule with attendance status
-    **/
-    public function studentClassSchedule(Request $request){
+     **/
+    public function studentClassSchedule(Request $request)
+    {
         try {
             $student = $request->user() ?: auth('student')->user();
 
@@ -2017,7 +2032,7 @@ class ClassesController extends Controller
                 ->where('status', 'active')
                 ->where(function ($q) use ($now) {
                     $q->whereNull('end_date')
-                      ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+                        ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
                 })
                 ->get();
 
@@ -2039,7 +2054,7 @@ class ClassesController extends Controller
                     'next_class' => null,
                     'next_classes' => [],
                     'today_classes' => [],
-                    'week_schedule' => (object)[],
+                    'week_schedule' => (object) [],
                     'upcoming_sessions' => [],
                     'older_sessions' => [],
                     'sessions' => [],
@@ -2047,7 +2062,7 @@ class ClassesController extends Controller
                         'next_class' => null,
                         'next_classes' => [],
                         'today_classes' => [],
-                        'week_schedule' => (object)[],
+                        'week_schedule' => (object) [],
                         'upcoming_sessions' => [],
                         'older_sessions' => [],
                         'sessions' => [],
@@ -2065,7 +2080,7 @@ class ClassesController extends Controller
 
             // If subject enrollments are empty, pull subject IDs linked to the active enrolled courses
             if ($subjectIds->isEmpty() && $activeCourseIds->isNotEmpty()) {
-                $subjectIds = \App\Models\Subject::whereHas('courses', function($q) use ($activeCourseIds) {
+                $subjectIds = \App\Models\Subject::whereHas('courses', function ($q) use ($activeCourseIds) {
                     $q->whereIn('courses.id', $activeCourseIds);
                 })->pluck('id');
             }
@@ -2079,59 +2094,60 @@ class ClassesController extends Controller
                 $sessionQuery = ClassSession::with([
                     'class.subject',
                     'class.staffs',
-                    'attendances' => function($q) use ($student) {
+                    'attendances' => function ($q) use ($student) {
                         $q->where('student_id', $student->id);
                     }
                 ])
-                ->whereHas('class', function ($q) use ($student) {
-                    $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
-                      ->where('is_private', true)
-                      ->where('private_student_id', $student->id);
-                });
+                    ->whereHas('class', function ($q) use ($student) {
+                        $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
+                            ->where('is_private', true)
+                            ->where('private_student_id', $student->id);
+                    });
             } else {
                 // Active course subscription: student sees public masterclasses + their private classes
                 $sessionQuery = ClassSession::with([
                     'class.subject',
                     'class.staffs',
-                    'attendances' => function($q) use ($student) {
+                    'attendances' => function ($q) use ($student) {
                         $q->where('student_id', $student->id);
                     }
                 ])
-                ->whereHas('class', function ($q) use ($subjectIds, $isOLevelStudent, $activeCourseIds, $student) {
-                    $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']);
-                    $q->where(function ($subQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds, $student) {
-                        // 1. Designated private classes for this student
-                        $subQ->where(function($privQ) use ($student) {
-                            $privQ->where('is_private', true)
-                                  ->where('private_student_id', $student->id);
-                        })
-                        // 2. Public group masterclasses in enrolled subjects/courses
-                        ->orWhere(function($pubQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
-                            $pubQ->where('is_private', false)
-                                 ->where(function($classQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
-                                     if ($subjectIds->isNotEmpty()) {
-                                         $classQ->whereIn('subject_id', $subjectIds);
-                                     }
-                                     if ($isOLevelStudent) {
-                                         $classQ->orWhere('title', 'LIKE', 'O-Level%')
+                    ->whereHas('class', function ($q) use ($subjectIds, $isOLevelStudent, $activeCourseIds, $student) {
+                        $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']);
+                        $q->where(function ($subQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds, $student) {
+                            // 1. Designated private classes for this student
+                            $subQ->where(function ($privQ) use ($student) {
+                                $privQ->where('is_private', true)
+                                    ->where('private_student_id', $student->id);
+                            })
+                                // 2. Public group masterclasses in enrolled subjects/courses
+                                ->orWhere(function ($pubQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
+                                $pubQ->where('is_private', false)
+                                    ->where(function ($classQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
+                                        if ($subjectIds->isNotEmpty()) {
+                                            $classQ->whereIn('subject_id', $subjectIds);
+                                        }
+                                        if ($isOLevelStudent) {
+                                            $classQ->orWhere('title', 'LIKE', 'O-Level%')
                                                 ->orWhere('title', 'LIKE', 'O-LEVEL%');
-                                     }
-                                     if ($activeCourseIds->isNotEmpty()) {
-                                         $classQ->orWhereHas('subject.courses', fn($cQ) => $cQ->whereIn('courses.id', $activeCourseIds));
-                                     }
-                                 });
+                                        }
+                                        if ($activeCourseIds->isNotEmpty()) {
+                                            $classQ->orWhereHas('subject.courses', fn($cQ) => $cQ->whereIn('courses.id', $activeCourseIds));
+                                        }
+                                    });
+                            });
                         });
                     });
-                });
             }
 
-            $transformStudentSession = function($session) use ($student) {
-                if (!$session) return null;
+            $transformStudentSession = function ($session) use ($student) {
+                if (!$session)
+                    return null;
                 $class = $session->class;
 
                 $tutor = null;
                 if ($class && $class->staffs && $class->staffs->isNotEmpty()) {
-                    $leadStaff = $class->staffs->first(function($s) {
+                    $leadStaff = $class->staffs->first(function ($s) {
                         $role = strtolower($s->pivot->role ?? $s->role ?? '');
                         return $role === 'lead' || $role === 'tutor';
                     }) ?: $class->staffs->first();
@@ -2162,7 +2178,7 @@ class ClassesController extends Controller
 
                 $tutorName = $tutor ? trim(($tutor->firstname ?? '') . ' ' . ($tutor->surname ?? '')) : 'Tutorial Center Tutor';
 
-                $classStaffs = ($class && $class->staffs) ? $class->staffs->map(function($st) {
+                $classStaffs = ($class && $class->staffs) ? $class->staffs->map(function ($st) {
                     return [
                         'id' => $st->id,
                         'firstname' => $st->firstname ?? '',
@@ -2204,7 +2220,7 @@ class ClassesController extends Controller
                     'recording_link' => $session->recording_link,
                     'tutor' => $tutorData,
                     'tutor_name' => $tutorName,
-                    'status' => (function() use ($class, $session) {
+                    'status' => (function () use ($class, $session) {
                         $classStatus = strtolower(trim($class->status ?? 'active'));
                         $sessStatus = strtolower(trim($session->status ?? 'scheduled'));
                         if (in_array($classStatus, ['proposed', 'rescheduled', 'cancelled', 'canceled']) && $sessStatus !== 'recorded') {
@@ -2233,16 +2249,16 @@ class ClassesController extends Controller
             $nextClassesRaw = (clone $sessionQuery)
                 ->where(function ($q) use ($todayDate, $nowTime) {
                     $q->whereDate('session_date', '>', $todayDate)
-                      ->orWhere(function ($q2) use ($todayDate, $nowTime) {
-                          $q2->whereDate('session_date', $todayDate)
-                             ->where(function ($q3) use ($nowTime) {
-                                 $q3->where('ends_at', '>=', $nowTime)
-                                    ->orWhere(function ($q4) use ($nowTime) {
-                                        $q4->whereNull('ends_at')
-                                           ->where('starts_at', '>=', $nowTime);
-                                    });
-                             });
-                      });
+                        ->orWhere(function ($q2) use ($todayDate, $nowTime) {
+                            $q2->whereDate('session_date', $todayDate)
+                                ->where(function ($q3) use ($nowTime) {
+                                    $q3->where('ends_at', '>=', $nowTime)
+                                        ->orWhere(function ($q4) use ($nowTime) {
+                                            $q4->whereNull('ends_at')
+                                                ->where('starts_at', '>=', $nowTime);
+                                        });
+                                });
+                        });
                 })
                 ->whereNotIn('status', ['completed', 'cancelled', 'proposed'])
                 ->orderBy('session_date', 'asc')
@@ -2352,18 +2368,20 @@ class ClassesController extends Controller
 
     /**
      * (student) Get student calendar schedule
-    **/
-    public function studentCalenderSchedule(Request $request){
+     **/
+    public function studentCalenderSchedule(Request $request)
+    {
         return $this->studentClassSchedule($request);
     }
 
-        private function formatStaffScheduleResponse($staff, $nextClass, $todayClasses, $weekSchedule, $upcomingSessions, $allSessions = null)
+    private function formatStaffScheduleResponse($staff, $nextClass, $todayClasses, $weekSchedule, $upcomingSessions, $allSessions = null)
     {
         $isAdminOrStaff = $staff && in_array($staff->role, ['admin', 'advisor', 'tutor']);
-        
+
         $transformSession = function ($session) use ($staff, $isAdminOrStaff) {
-            if (!$session) return null;
-            
+            if (!$session)
+                return null;
+
             $class = $session->class;
             if ($class) {
                 if ($class->subject_id) {
@@ -2422,7 +2440,7 @@ class ClassesController extends Controller
         if ($todayClasses) {
             $todayClasses = $todayClasses->map($transformSession);
         }
-        
+
         if ($upcomingSessions) {
             $upcomingSessions = $upcomingSessions->map($transformSession);
         }
