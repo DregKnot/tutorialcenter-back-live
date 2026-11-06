@@ -102,7 +102,7 @@ class ClassesController extends Controller
             'is_private' => 'nullable|boolean',
             'private_student_id' => 'required_if:is_private,true|nullable|exists:students,id',
             'amount_paid' => 'required_if:is_private,true|nullable|numeric|min:0',
-            'payment_method' => 'nullable|string|in:bank_transfer,card,manual,pos',
+            'payment_method' => 'nullable|string|in:bank_transfer,card,manual,pos,free_grant',
 
             'staffs' => 'nullable|array',
             'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
@@ -379,9 +379,10 @@ class ClassesController extends Controller
                 $courseEnrollment = $student->courseEnrollments()->where('status', 'active')->latest()->first()
                     ?: $student->courseEnrollments()->latest()->first();
 
-                $amountPaid = (float) $request->input('amount_paid', 0);
                 $paymentMethod = $request->input('payment_method', 'bank_transfer');
-                $paymentRef = 'TC-PRIV-' . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
+                $isFreeGrant = $paymentMethod === 'free_grant';
+                $amountPaid = $isFreeGrant ? 0 : (float) $request->input('amount_paid', 0);
+                $paymentRef = ($isFreeGrant ? 'FREE-GRANT-' : 'TC-PRIV-') . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
 
                 // 2. Insert record into payments table
                 Payment::create([
@@ -389,11 +390,12 @@ class ClassesController extends Controller
                     'course_enrollment_id' => $courseEnrollment?->id,
                     'amount' => $amountPaid,
                     'currency' => 'NGN',
-                    'payment_method' => in_array($paymentMethod, ['card', 'bank_transfer', 'ussd', 'wallet', 'manual']) ? $paymentMethod : 'bank_transfer',
-                    'gateway' => 'admin_private',
+                    'payment_method' => in_array($paymentMethod, ['card', 'bank_transfer', 'ussd', 'wallet', 'manual', 'pos', 'free_grant']) ? $paymentMethod : 'bank_transfer',
+                    'gateway' => $isFreeGrant ? 'free_grant' : 'admin_private',
                     'gateway_reference' => $paymentRef,
                     'status' => 'successful',
                     'billing_cycle' => 'monthly',
+                    'description' => ($isFreeGrant ? 'Free Grant: ' : 'Private Masterclass: ') . $title,
                 ]);
 
                 // 3. Insert or update private_class_enrollments
@@ -496,6 +498,7 @@ class ClassesController extends Controller
             $sessionQuery = ClassSession::with([
                 'class.subject',
                 'class.staffs',
+                'class.privateStudent',
                 'attendances.student'
             ])
                 ->withCount(['views as views'])
@@ -1508,7 +1511,7 @@ class ClassesController extends Controller
             'is_private' => 'nullable|boolean',
             'private_student_id' => 'nullable|exists:students,id',
             'amount_paid' => 'nullable|numeric|min:0',
-            'payment_method' => 'nullable|string|in:bank_transfer,card,manual,pos',
+            'payment_method' => 'nullable|string|in:bank_transfer,card,manual,pos,free_grant',
 
             'schedules' => 'nullable|array',
             'schedules.*.day_of_week' => 'required_with:schedules|string|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
@@ -1724,21 +1727,23 @@ class ClassesController extends Controller
                     $courseEnrollment = $student->courseEnrollments()->where('status', 'active')->latest()->first()
                         ?: $student->courseEnrollments()->latest()->first();
 
-                    $amountPaid = (float) $request->input('amount_paid', 0);
                     $paymentMethod = $request->input('payment_method', 'bank_transfer');
-                    $paymentRef = 'TC-PRIV-' . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
+                    $isFreeGrant = $paymentMethod === 'free_grant';
+                    $amountPaid = $isFreeGrant ? 0 : (float) $request->input('amount_paid', 0);
+                    $paymentRef = ($isFreeGrant ? 'FREE-GRANT-' : 'TC-PRIV-') . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
 
-                    if ($request->filled('amount_paid')) {
+                    if ($request->filled('amount_paid') || $isFreeGrant) {
                         Payment::create([
                             'student_id' => $student->id,
                             'course_enrollment_id' => $courseEnrollment?->id,
                             'amount' => $amountPaid,
                             'currency' => 'NGN',
-                            'payment_method' => in_array($paymentMethod, ['card', 'bank_transfer', 'ussd', 'wallet', 'manual']) ? $paymentMethod : 'bank_transfer',
-                            'gateway' => 'admin_private',
+                            'payment_method' => in_array($paymentMethod, ['card', 'bank_transfer', 'ussd', 'wallet', 'manual', 'pos', 'free_grant']) ? $paymentMethod : 'bank_transfer',
+                            'gateway' => $isFreeGrant ? 'free_grant' : 'admin_private',
                             'gateway_reference' => $paymentRef,
                             'status' => 'successful',
                             'billing_cycle' => 'monthly',
+                            'description' => ($isFreeGrant ? 'Free Grant: ' : 'Private Masterclass: ') . $refreshedClass->title,
                         ]);
                     }
 
@@ -2384,7 +2389,13 @@ class ClassesController extends Controller
 
             $class = $session->class;
             if ($class) {
-                if ($class->subject_id) {
+                if ($class->is_private && $class->privateStudent) {
+                    $enrolled = collect([$class->privateStudent]);
+                    $session->enrolled_students = $enrolled;
+                    $session->enrolled_count = 1;
+                    $class->enrolled_students = $enrolled;
+                    $class->enrolled_count = 1;
+                } elseif ($class->subject_id) {
                     $enrolled = $this->getEnrolledStudentsForSubject($class->subject_id, $class->title);
                     $session->enrolled_students = $enrolled;
                     $session->enrolled_count = $enrolled->count();

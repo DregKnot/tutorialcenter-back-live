@@ -1893,7 +1893,7 @@ class StudentController extends Controller
                 'max:191',
                 Rule::unique('payments', 'gateway_reference'),
             ],
-            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd',
+            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd,free_grant',
             'firstname' => 'required|string|max:50',
             'surname' => 'required|string|max:50',
             'email' => [
@@ -2416,7 +2416,7 @@ class StudentController extends Controller
                 'max:191',
                 Rule::unique('payments', 'gateway_reference'),
             ],
-            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd',
+            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd,free_grant',
             'payer_type' => 'nullable|in:student,guardian,scholarship,free,free_grant',
         ]);
 
@@ -2538,7 +2538,7 @@ class StudentController extends Controller
                 'max:191',
                 Rule::unique('payments', 'gateway_reference'),
             ],
-            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd',
+            'payment_method' => 'nullable|in:bank_transfer,card,pos,cash,manual,ussd,free_grant',
             'payer_type' => 'nullable|in:student,guardian,scholarship,free,free_grant',
             'reason' => 'required|string|min:5|max:1000',
         ]);
