@@ -102,11 +102,6 @@ class ClassesController extends Controller
             'private_student_id' => 'required_if:is_private,true|nullable|exists:students,id',
             'amount_paid' => 'required_if:is_private,true|nullable|numeric|min:0',
             'payment_method' => 'nullable|string|in:bank_transfer,card,manual,pos',
-            'sessions' => 'required_if:is_private,true|array|min:1',
-            'sessions.*.session_date' => 'required_with:sessions|date',
-            'sessions.*.start_time' => 'required_with:sessions',
-            'sessions.*.end_time' => 'nullable',
-            'sessions.*.duration_minutes' => 'nullable|integer|min:1',
 
             'staffs' => 'nullable|array',
             'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
@@ -117,7 +112,7 @@ class ClassesController extends Controller
 
             'class_link' => 'nullable|url',
 
-            'schedules' => 'exclude_if:is_private,true|required|array|min:1',
+            'schedules' => 'required|array|min:1',
             'schedules.*.day_of_week' => 'required_with:schedules|string|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
             'schedules.*.start_time' => 'required_with:schedules',
             'schedules.*.duration_minutes' => 'nullable|integer|min:1',
@@ -289,6 +284,94 @@ class ClassesController extends Controller
             */
             $sessionsCreated = 0;
 
+            $startDate = $request->filled('start_date')
+                ? Carbon::parse($request->start_date)->startOfDay()
+                : now()->startOfDay();
+
+            $endDate = $request->filled('end_date')
+                ? Carbon::parse($request->end_date)->endOfDay()
+                : ($isPrivate ? $startDate->copy()->addDays(30)->endOfDay() : $startDate->copy()->addMonths(3)->endOfDay());
+
+            foreach ($request->schedules as $scheduleData) {
+                $parsedStart = Carbon::parse($scheduleData['start_time']);
+                $startTime = $parsedStart->format('H:i');
+                $duration = (int) ($scheduleData['duration_minutes'] ?? 60);
+                $endTime = !empty($scheduleData['end_time'])
+                    ? Carbon::parse($scheduleData['end_time'])->format('H:i')
+                    : $parsedStart->copy()->addMinutes($duration)->format('H:i');
+
+                $dayOfWeek = strtolower(trim($scheduleData['day_of_week']));
+
+                $schedule = ClassSchedule::withTrashed()
+                    ->where('class_id', $class->id)
+                    ->where('day_of_week', $dayOfWeek)
+                    ->where('start_time', $startTime)
+                    ->first();
+
+                if (!$schedule) {
+                    $schedule = ClassSchedule::create([
+                        'class_id' => $class->id,
+                        'day_of_week' => $dayOfWeek,
+                        'start_time' => $startTime,
+                        'end_time' => $endTime,
+                        'start_date' => $startDate->toDateString(),
+                        'end_date' => $endDate->toDateString()
+                    ]);
+                } else {
+                    if ($schedule->trashed()) {
+                        $schedule->restore();
+                    }
+                    $schedule->update([
+                        'end_time' => $endTime,
+                        'start_date' => $startDate->toDateString(),
+                        'end_date' => $endDate->toDateString()
+                    ]);
+                }
+
+                $current = $startDate->copy();
+                if (strtolower($current->format('l')) !== $dayOfWeek) {
+                    $current->next($dayOfWeek);
+                }
+
+                while ($current->lte($endDate)) {
+                    $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
+
+                    if (!$isHoliday) {
+                        $sessionDateStr = $current->toDateString();
+                        $session = ClassSession::withTrashed()
+                            ->where('class_id', $class->id)
+                            ->where('class_schedule_id', $schedule->id)
+                            ->whereDate('session_date', $sessionDateStr)
+                            ->first();
+
+                        if (!$session) {
+                            $session = ClassSession::create([
+                                'class_id' => $class->id,
+                                'class_schedule_id' => $schedule->id,
+                                'session_date' => $sessionDateStr,
+                                'starts_at' => $startTime,
+                                'ends_at' => $endTime,
+                                'class_link' => $classLink ?: $class->zoom_join_url,
+                                'status' => 'scheduled'
+                            ]);
+                            $sessionsCreated++;
+                        } else {
+                            if ($session->trashed()) {
+                                $session->restore();
+                            }
+                            $session->update([
+                                'starts_at' => $startTime,
+                                'ends_at' => $endTime,
+                                'class_link' => $classLink ?: $class->zoom_join_url,
+                                'status' => 'scheduled'
+                            ]);
+                        }
+                    }
+
+                    $current->addWeek();
+                }
+            }
+
             if ($isPrivate) {
                 // 1. Resolve or verify student's course enrollment
                 $student = Student::findOrFail($privateStudentId);
@@ -312,11 +395,6 @@ class ClassesController extends Controller
                     'billing_cycle' => 'monthly',
                 ]);
 
-                $sessionsPayload = $request->input('sessions', []);
-                $firstDate = !empty($sessionsPayload) ? Carbon::parse($sessionsPayload[0]['session_date']) : now();
-                $startsAt = $firstDate->toDateString();
-                $expiresAt = $firstDate->copy()->addDays(30)->toDateString();
-
                 // 3. Insert or update private_class_enrollments
                 PrivateClassEnrollment::updateOrCreate(
                     [
@@ -329,165 +407,14 @@ class ClassesController extends Controller
                         'currency' => 'NGN',
                         'payment_reference' => $paymentRef,
                         'payment_method' => $paymentMethod,
-                        'session_quota' => count($sessionsPayload) ?: 4,
+                        'session_quota' => $sessionsCreated ?: 4,
                         'sessions_completed' => 0,
-                        'starts_at' => $startsAt,
-                        'expires_at' => $expiresAt,
+                        'starts_at' => $startDate->toDateString(),
+                        'expires_at' => $endDate->toDateString(),
                         'status' => 'active',
                         'notes' => $request->input('notes'),
                     ]
                 );
-
-                // 4. Create the discrete sessions
-                foreach ($sessionsPayload as $sessionData) {
-                    $sessionDate = Carbon::parse($sessionData['session_date']);
-                    $dayOfWeek = strtolower($sessionDate->format('l'));
-                    $parsedStart = Carbon::parse($sessionData['start_time']);
-                    $startTime = $parsedStart->format('H:i');
-                    $duration = (int) ($sessionData['duration_minutes'] ?? 60);
-                    $endTime = !empty($sessionData['end_time'])
-                        ? Carbon::parse($sessionData['end_time'])->format('H:i')
-                        : $parsedStart->copy()->addMinutes($duration)->format('H:i');
-
-                    $schedule = ClassSchedule::withTrashed()
-                        ->where('class_id', $class->id)
-                        ->where('day_of_week', $dayOfWeek)
-                        ->where('start_time', $startTime)
-                        ->first();
-
-                    if (!$schedule) {
-                        $schedule = ClassSchedule::create([
-                            'class_id' => $class->id,
-                            'day_of_week' => $dayOfWeek,
-                            'start_time' => $startTime,
-                            'end_time' => $endTime,
-                            'start_date' => $sessionDate->toDateString(),
-                            'end_date' => $sessionDate->toDateString(),
-                        ]);
-                    } else {
-                        if ($schedule->trashed()) {
-                            $schedule->restore();
-                        }
-                    }
-
-                    $sessionDateStr = $sessionDate->toDateString();
-                    $session = ClassSession::withTrashed()
-                        ->where('class_id', $class->id)
-                        ->where('class_schedule_id', $schedule->id)
-                        ->whereDate('session_date', $sessionDateStr)
-                        ->first();
-
-                    if (!$session) {
-                        $session = ClassSession::create([
-                            'class_id' => $class->id,
-                            'class_schedule_id' => $schedule->id,
-                            'session_date' => $sessionDateStr,
-                            'starts_at' => $startTime,
-                            'ends_at' => $endTime,
-                            'class_link' => $classLink ?: $class->zoom_join_url,
-                            'status' => 'scheduled'
-                        ]);
-                        $sessionsCreated++;
-                    } else {
-                        if ($session->trashed()) {
-                            $session->restore();
-                        }
-                        $session->update([
-                            'starts_at' => $startTime,
-                            'ends_at' => $endTime,
-                            'class_link' => $classLink ?: $class->zoom_join_url,
-                            'status' => 'scheduled'
-                        ]);
-                    }
-                }
-            } else {
-                $startDate = $request->filled('start_date')
-                    ? Carbon::parse($request->start_date)->startOfDay()
-                    : now()->startOfDay();
-
-                $endDate = $request->filled('end_date')
-                    ? Carbon::parse($request->end_date)->endOfDay()
-                    : $startDate->copy()->addMonths(3)->endOfDay();
-
-                foreach ($request->schedules as $scheduleData) {
-                    $parsedStart = Carbon::parse($scheduleData['start_time']);
-                    $startTime = $parsedStart->format('H:i');
-                    $duration = (int) ($scheduleData['duration_minutes'] ?? 60);
-                    $endTime = !empty($scheduleData['end_time'])
-                        ? Carbon::parse($scheduleData['end_time'])->format('H:i')
-                        : $parsedStart->copy()->addMinutes($duration)->format('H:i');
-
-                    $dayOfWeek = strtolower(trim($scheduleData['day_of_week']));
-
-                    $schedule = ClassSchedule::withTrashed()
-                        ->where('class_id', $class->id)
-                        ->where('day_of_week', $dayOfWeek)
-                        ->where('start_time', $startTime)
-                        ->first();
-
-                    if (!$schedule) {
-                        $schedule = ClassSchedule::create([
-                            'class_id' => $class->id,
-                            'day_of_week' => $dayOfWeek,
-                            'start_time' => $startTime,
-                            'end_time' => $endTime,
-                            'start_date' => $startDate->toDateString(),
-                            'end_date' => $endDate->toDateString()
-                        ]);
-                    } else {
-                        if ($schedule->trashed()) {
-                            $schedule->restore();
-                        }
-                        $schedule->update([
-                            'end_time' => $endTime,
-                            'start_date' => $startDate->toDateString(),
-                            'end_date' => $endDate->toDateString()
-                        ]);
-                    }
-
-                    $current = $startDate->copy();
-                    if (strtolower($current->format('l')) !== $dayOfWeek) {
-                        $current->next($dayOfWeek);
-                    }
-
-                    while ($current->lte($endDate)) {
-                        $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
-
-                        if (!$isHoliday) {
-                            $sessionDateStr = $current->toDateString();
-                            $session = ClassSession::withTrashed()
-                                ->where('class_id', $class->id)
-                                ->where('class_schedule_id', $schedule->id)
-                                ->whereDate('session_date', $sessionDateStr)
-                                ->first();
-
-                            if (!$session) {
-                                $session = ClassSession::create([
-                                    'class_id' => $class->id,
-                                    'class_schedule_id' => $schedule->id,
-                                    'session_date' => $sessionDateStr,
-                                    'starts_at' => $startTime,
-                                    'ends_at' => $endTime,
-                                    'class_link' => $classLink,
-                                    'status' => 'scheduled'
-                                ]);
-                                $sessionsCreated++;
-                            } else {
-                                if ($session->trashed()) {
-                                    $session->restore();
-                                }
-                                $session->update([
-                                    'starts_at' => $startTime,
-                                    'ends_at' => $endTime,
-                                    'class_link' => $classLink,
-                                    'status' => 'scheduled'
-                                ]);
-                            }
-                        }
-
-                        $current->addWeek();
-                    }
-                }
             }
 
             $class->load(['subject', 'staffs', 'schedules.sessions']);
