@@ -19,10 +19,16 @@ class Classes extends Model
         'title',
         'description',
         'status', // consider using ENUM in migration for active/inactive etc.
+        'is_private',
+        'private_student_id',
         'zoom_meeting_id',
         'zoom_meeting_password',
         'zoom_join_url',
         'zoom_start_url',
+    ];
+
+    protected $casts = [
+        'is_private' => 'boolean',
     ];
 
     /**
@@ -65,6 +71,39 @@ class Classes extends Model
     public function assessments()
     {
         return $this->hasMany(Assessment::class, 'class_id');
+    }
+
+    // Private student assigned to this 1-on-1 class
+    public function privateStudent()
+    {
+        return $this->belongsTo(Student::class, 'private_student_id');
+    }
+
+    // Private class enrollment & payment metadata
+    public function privateEnrollment()
+    {
+        return $this->hasOne(PrivateClassEnrollment::class, 'class_id');
+    }
+
+    /**
+     * Scopes
+     */
+    public function scopePublicClasses($query)
+    {
+        return $query->where('is_private', false);
+    }
+
+    public function scopePrivateClasses($query)
+    {
+        return $query->where('is_private', true);
+    }
+
+    public function scopeForStudent($query, $student)
+    {
+        return $query->where(function ($q) use ($student) {
+            $q->where('is_private', false)
+              ->orWhere('private_student_id', $student->id);
+        });
     }
 
     // Optional: students enrolled in this class via sessions/enrollments

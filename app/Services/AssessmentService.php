@@ -207,14 +207,29 @@ class AssessmentService
 
         $allSubjectIds = $directSubjectIds->concat($courseSubjectIds)->unique()->filter()->values();
 
-        $classIds = Classes::whereIn('subject_id', $allSubjectIds)->pluck('id');
+        $publicClassIds = Classes::where('is_private', false)
+            ->whereIn('subject_id', $allSubjectIds)
+            ->pluck('id');
+
+        $privateClassIds = Classes::where('is_private', true)
+            ->where('private_student_id', $student->id)
+            ->pluck('id');
+
+        $accessibleClassIds = $publicClassIds->concat($privateClassIds)->unique()->values();
 
         $assessments = Assessment::with(['class.subject', 'creator'])
-            ->where(function ($query) use ($allSubjectIds, $classIds, $student) {
+            ->where(function ($query) use ($allSubjectIds, $accessibleClassIds, $student) {
                 // Enrolled subjects/classes assessments (published or closed)
-                $query->where(function ($q) use ($allSubjectIds, $classIds) {
-                    $q->whereIn('subject_id', $allSubjectIds)
-                      ->orWhereIn('class_id', $classIds);
+                // Air-gap: exclude any private class assessments not belonging to this student
+                $query->where(function ($q) use ($allSubjectIds, $accessibleClassIds) {
+                    $q->where(function($subQ) use ($allSubjectIds) {
+                        $subQ->whereIn('subject_id', $allSubjectIds)
+                             ->where(function($cq) {
+                                 $cq->whereNull('class_id')
+                                    ->orWhereHas('class', fn($c) => $c->where('is_private', false));
+                             });
+                    })
+                    ->orWhereIn('class_id', $accessibleClassIds);
                 })->whereIn('status', [Assessment::PUBLISHED, Assessment::CLOSED]);
 
                 // Always include any assessment for which this student has a submission record
@@ -834,6 +849,16 @@ class AssessmentService
      */
     private function ensureStudentEnrolled(Student $student, Assessment $assessment): void
     {
+        // Air-gap check: If assessment is linked to a private class, strictly verify student ownership
+        if ($assessment->class && $assessment->class->is_private) {
+            if ((int) $assessment->class->private_student_id !== (int) $student->id) {
+                throw ValidationException::withMessages([
+                    'assessment' => 'Unauthorized. This assessment is reserved for a private student.',
+                ]);
+            }
+            return;
+        }
+
         // Allow student to view details if they already submitted this assessment
         $hasSubmission = AssessmentSubmission::where('assessment_id', $assessment->id)
             ->where('student_id', $student->id)

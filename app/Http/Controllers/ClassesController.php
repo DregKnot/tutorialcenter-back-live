@@ -17,6 +17,9 @@ use App\Services\ZoomService;
 use App\Models\ClassAttendance;
 use App\Models\ClassSessionView;
 use App\Models\CoursesEnrollment;
+use App\Models\PrivateClassEnrollment;
+use App\Models\Payment;
+use Illuminate\Support\Str;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -76,6 +79,16 @@ class ClassesController extends Controller
      **/
     public function store(Request $request, ZoomService $zoomService)
     {
+        $staffUser = $request->user() ?: auth('staff')->user();
+        if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. Only administrators and COOs can schedule masterclasses.'
+            ], 403);
+        }
+
+        $isPrivate = $request->boolean('is_private');
+
         $validator = Validator::make($request->all(), [
             'subject_id' => 'required|exists:subjects,id',
             'is_o_levels' => 'nullable|boolean',
@@ -84,6 +97,16 @@ class ClassesController extends Controller
             'title' => 'nullable|string|max:255',
             'description' => 'nullable|string',
             'status' => 'nullable|in:active,inactive,proposed,rescheduled,cancelled,canceled',
+
+            'is_private' => 'nullable|boolean',
+            'private_student_id' => 'required_if:is_private,true|nullable|exists:students,id',
+            'amount_paid' => 'required_if:is_private,true|nullable|numeric|min:0',
+            'payment_method' => 'nullable|string|in:bank_transfer,card,manual,pos',
+            'sessions' => 'required_if:is_private,true|array|min:1',
+            'sessions.*.session_date' => 'required_with:sessions|date',
+            'sessions.*.start_time' => 'required_with:sessions',
+            'sessions.*.end_time' => 'nullable',
+            'sessions.*.duration_minutes' => 'nullable|integer|min:1',
 
             'staffs' => 'nullable|array',
             'staffs.*.staff_id' => 'required_with:staffs|exists:staffs,id',
@@ -94,9 +117,9 @@ class ClassesController extends Controller
 
             'class_link' => 'nullable|url',
 
-            'schedules' => 'required|array|min:1',
-            'schedules.*.day_of_week' => 'required|string|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
-            'schedules.*.start_time' => 'required',
+            'schedules' => 'exclude_if:is_private,true|required|array|min:1',
+            'schedules.*.day_of_week' => 'required_with:schedules|string|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
+            'schedules.*.start_time' => 'required_with:schedules',
             'schedules.*.duration_minutes' => 'nullable|integer|min:1',
             'schedules.*.end_time' => 'nullable',
         ]);
@@ -198,9 +221,17 @@ class ClassesController extends Controller
             | 3. Prevent Duplicate Class or Create
             |--------------------------------------------------------------------------
             */
-            $class = Classes::where('subject_id', $request->subject_id)
+            $privateStudentId = $isPrivate ? (int)$request->input('private_student_id') : null;
+
+            $classQuery = Classes::where('subject_id', $request->subject_id)
                 ->where('title', $title)
-                ->first();
+                ->where('is_private', $isPrivate);
+
+            if ($isPrivate) {
+                $classQuery->where('private_student_id', $privateStudentId);
+            }
+
+            $class = $classQuery->first();
 
             if (!$class) {
                 $class = Classes::create([
@@ -208,6 +239,8 @@ class ClassesController extends Controller
                     'title' => $title,
                     'description' => $request->description,
                     'status' => $status,
+                    'is_private' => $isPrivate,
+                    'private_student_id' => $privateStudentId,
                     'zoom_meeting_id' => $zoomMeetingId,
                     'zoom_meeting_password' => $zoomMeetingPassword,
                     'zoom_join_url' => $zoomJoinUrl,
@@ -217,6 +250,8 @@ class ClassesController extends Controller
                 $class->update([
                     'description' => $request->description ?? $class->description,
                     'status' => $status,
+                    'is_private' => $isPrivate,
+                    'private_student_id' => $privateStudentId,
                     'zoom_meeting_id' => $zoomMeetingId ?? $class->zoom_meeting_id,
                     'zoom_meeting_password' => $zoomMeetingPassword ?? $class->zoom_meeting_password,
                     'zoom_join_url' => $zoomJoinUrl ?? $class->zoom_join_url,
@@ -249,96 +284,209 @@ class ClassesController extends Controller
 
             /*
             |--------------------------------------------------------------------------
-            | 5. Create Schedules + Sessions
+            | 5. Create Schedules + Sessions (Private or Recurring Group)
             |--------------------------------------------------------------------------
             */
-            $startDate = $request->filled('start_date')
-                ? Carbon::parse($request->start_date)->startOfDay()
-                : now()->startOfDay();
-
-            $endDate = $request->filled('end_date')
-                ? Carbon::parse($request->end_date)->endOfDay()
-                : $startDate->copy()->addMonths(3)->endOfDay();
-
             $sessionsCreated = 0;
 
-            foreach ($request->schedules as $scheduleData) {
-                $parsedStart = Carbon::parse($scheduleData['start_time']);
-                $startTime = $parsedStart->format('H:i');
-                $duration = (int) ($scheduleData['duration_minutes'] ?? 60);
-                $endTime = !empty($scheduleData['end_time'])
-                    ? Carbon::parse($scheduleData['end_time'])->format('H:i')
-                    : $parsedStart->copy()->addMinutes($duration)->format('H:i');
+            if ($isPrivate) {
+                // 1. Resolve or verify student's course enrollment
+                $student = Student::findOrFail($privateStudentId);
+                $courseEnrollment = $student->courseEnrollments()->where('status', 'active')->latest()->first()
+                    ?: $student->courseEnrollments()->latest()->first();
 
-                $dayOfWeek = strtolower(trim($scheduleData['day_of_week']));
+                $amountPaid = (float) $request->input('amount_paid', 0);
+                $paymentMethod = $request->input('payment_method', 'bank_transfer');
+                $paymentRef = 'TC-PRIV-' . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
 
-                $schedule = ClassSchedule::withTrashed()
-                    ->where('class_id', $class->id)
-                    ->where('day_of_week', $dayOfWeek)
-                    ->where('start_time', $startTime)
-                    ->first();
+                // 2. Insert record into payments table
+                Payment::create([
+                    'student_id' => $student->id,
+                    'course_enrollment_id' => $courseEnrollment?->id,
+                    'amount' => $amountPaid,
+                    'currency' => 'NGN',
+                    'payment_method' => in_array($paymentMethod, ['card', 'bank_transfer', 'ussd', 'wallet', 'manual']) ? $paymentMethod : 'bank_transfer',
+                    'gateway' => 'admin_private',
+                    'gateway_reference' => $paymentRef,
+                    'status' => 'successful',
+                    'billing_cycle' => 'monthly',
+                ]);
 
-                if (!$schedule) {
-                    $schedule = ClassSchedule::create([
+                $sessionsPayload = $request->input('sessions', []);
+                $firstDate = !empty($sessionsPayload) ? Carbon::parse($sessionsPayload[0]['session_date']) : now();
+                $startsAt = $firstDate->toDateString();
+                $expiresAt = $firstDate->copy()->addDays(30)->toDateString();
+
+                // 3. Insert or update private_class_enrollments
+                PrivateClassEnrollment::updateOrCreate(
+                    [
                         'class_id' => $class->id,
-                        'day_of_week' => $dayOfWeek,
-                        'start_time' => $startTime,
-                        'end_time' => $endTime,
-                        'start_date' => $startDate->toDateString(),
-                        'end_date' => $endDate->toDateString()
-                    ]);
-                } else {
-                    if ($schedule->trashed()) {
-                        $schedule->restore();
-                    }
-                    $schedule->update([
-                        'end_time' => $endTime,
-                        'start_date' => $startDate->toDateString(),
-                        'end_date' => $endDate->toDateString()
-                    ]);
-                }
+                        'student_id' => $student->id,
+                    ],
+                    [
+                        'course_enrollment_id' => $courseEnrollment?->id,
+                        'amount_paid' => $amountPaid,
+                        'currency' => 'NGN',
+                        'payment_reference' => $paymentRef,
+                        'payment_method' => $paymentMethod,
+                        'session_quota' => count($sessionsPayload) ?: 4,
+                        'sessions_completed' => 0,
+                        'starts_at' => $startsAt,
+                        'expires_at' => $expiresAt,
+                        'status' => 'active',
+                        'notes' => $request->input('notes'),
+                    ]
+                );
 
-                $current = $startDate->copy();
-                if (strtolower($current->format('l')) !== $dayOfWeek) {
-                    $current->next($dayOfWeek);
-                }
+                // 4. Create the discrete sessions
+                foreach ($sessionsPayload as $sessionData) {
+                    $sessionDate = Carbon::parse($sessionData['session_date']);
+                    $dayOfWeek = strtolower($sessionDate->format('l'));
+                    $parsedStart = Carbon::parse($sessionData['start_time']);
+                    $startTime = $parsedStart->format('H:i');
+                    $duration = (int) ($sessionData['duration_minutes'] ?? 60);
+                    $endTime = !empty($sessionData['end_time'])
+                        ? Carbon::parse($sessionData['end_time'])->format('H:i')
+                        : $parsedStart->copy()->addMinutes($duration)->format('H:i');
 
-                while ($current->lte($endDate)) {
-                    $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
+                    $schedule = ClassSchedule::withTrashed()
+                        ->where('class_id', $class->id)
+                        ->where('day_of_week', $dayOfWeek)
+                        ->where('start_time', $startTime)
+                        ->first();
 
-                    if (!$isHoliday) {
-                        $sessionDateStr = $current->toDateString();
-                        $session = ClassSession::withTrashed()
-                            ->where('class_id', $class->id)
-                            ->where('class_schedule_id', $schedule->id)
-                            ->whereDate('session_date', $sessionDateStr)
-                            ->first();
-
-                        if (!$session) {
-                            $session = ClassSession::create([
-                                'class_id' => $class->id,
-                                'class_schedule_id' => $schedule->id,
-                                'session_date' => $sessionDateStr,
-                                'starts_at' => $startTime,
-                                'ends_at' => $endTime,
-                                'class_link' => $classLink,
-                                'status' => 'scheduled'
-                            ]);
-                            $sessionsCreated++;
-                        } else {
-                            if ($session->trashed()) {
-                                $session->restore();
-                            }
-                            $session->update([
-                                'starts_at' => $startTime,
-                                'ends_at' => $endTime,
-                                'class_link' => $classLink,
-                                'status' => 'scheduled'
-                            ]);
+                    if (!$schedule) {
+                        $schedule = ClassSchedule::create([
+                            'class_id' => $class->id,
+                            'day_of_week' => $dayOfWeek,
+                            'start_time' => $startTime,
+                            'end_time' => $endTime,
+                            'start_date' => $sessionDate->toDateString(),
+                            'end_date' => $sessionDate->toDateString(),
+                        ]);
+                    } else {
+                        if ($schedule->trashed()) {
+                            $schedule->restore();
                         }
                     }
 
-                    $current->addWeek();
+                    $sessionDateStr = $sessionDate->toDateString();
+                    $session = ClassSession::withTrashed()
+                        ->where('class_id', $class->id)
+                        ->where('class_schedule_id', $schedule->id)
+                        ->whereDate('session_date', $sessionDateStr)
+                        ->first();
+
+                    if (!$session) {
+                        $session = ClassSession::create([
+                            'class_id' => $class->id,
+                            'class_schedule_id' => $schedule->id,
+                            'session_date' => $sessionDateStr,
+                            'starts_at' => $startTime,
+                            'ends_at' => $endTime,
+                            'class_link' => $classLink ?: $class->zoom_join_url,
+                            'status' => 'scheduled'
+                        ]);
+                        $sessionsCreated++;
+                    } else {
+                        if ($session->trashed()) {
+                            $session->restore();
+                        }
+                        $session->update([
+                            'starts_at' => $startTime,
+                            'ends_at' => $endTime,
+                            'class_link' => $classLink ?: $class->zoom_join_url,
+                            'status' => 'scheduled'
+                        ]);
+                    }
+                }
+            } else {
+                $startDate = $request->filled('start_date')
+                    ? Carbon::parse($request->start_date)->startOfDay()
+                    : now()->startOfDay();
+
+                $endDate = $request->filled('end_date')
+                    ? Carbon::parse($request->end_date)->endOfDay()
+                    : $startDate->copy()->addMonths(3)->endOfDay();
+
+                foreach ($request->schedules as $scheduleData) {
+                    $parsedStart = Carbon::parse($scheduleData['start_time']);
+                    $startTime = $parsedStart->format('H:i');
+                    $duration = (int) ($scheduleData['duration_minutes'] ?? 60);
+                    $endTime = !empty($scheduleData['end_time'])
+                        ? Carbon::parse($scheduleData['end_time'])->format('H:i')
+                        : $parsedStart->copy()->addMinutes($duration)->format('H:i');
+
+                    $dayOfWeek = strtolower(trim($scheduleData['day_of_week']));
+
+                    $schedule = ClassSchedule::withTrashed()
+                        ->where('class_id', $class->id)
+                        ->where('day_of_week', $dayOfWeek)
+                        ->where('start_time', $startTime)
+                        ->first();
+
+                    if (!$schedule) {
+                        $schedule = ClassSchedule::create([
+                            'class_id' => $class->id,
+                            'day_of_week' => $dayOfWeek,
+                            'start_time' => $startTime,
+                            'end_time' => $endTime,
+                            'start_date' => $startDate->toDateString(),
+                            'end_date' => $endDate->toDateString()
+                        ]);
+                    } else {
+                        if ($schedule->trashed()) {
+                            $schedule->restore();
+                        }
+                        $schedule->update([
+                            'end_time' => $endTime,
+                            'start_date' => $startDate->toDateString(),
+                            'end_date' => $endDate->toDateString()
+                        ]);
+                    }
+
+                    $current = $startDate->copy();
+                    if (strtolower($current->format('l')) !== $dayOfWeek) {
+                        $current->next($dayOfWeek);
+                    }
+
+                    while ($current->lte($endDate)) {
+                        $isHoliday = Holiday::whereDate('holiday_date', $current)->exists();
+
+                        if (!$isHoliday) {
+                            $sessionDateStr = $current->toDateString();
+                            $session = ClassSession::withTrashed()
+                                ->where('class_id', $class->id)
+                                ->where('class_schedule_id', $schedule->id)
+                                ->whereDate('session_date', $sessionDateStr)
+                                ->first();
+
+                            if (!$session) {
+                                $session = ClassSession::create([
+                                    'class_id' => $class->id,
+                                    'class_schedule_id' => $schedule->id,
+                                    'session_date' => $sessionDateStr,
+                                    'starts_at' => $startTime,
+                                    'ends_at' => $endTime,
+                                    'class_link' => $classLink,
+                                    'status' => 'scheduled'
+                                ]);
+                                $sessionsCreated++;
+                            } else {
+                                if ($session->trashed()) {
+                                    $session->restore();
+                                }
+                                $session->update([
+                                    'starts_at' => $startTime,
+                                    'ends_at' => $endTime,
+                                    'class_link' => $classLink,
+                                    'status' => 'scheduled'
+                                ]);
+                            }
+                        }
+
+                        $current->addWeek();
+                    }
                 }
             }
 
@@ -540,7 +688,7 @@ class ClassesController extends Controller
             $class = $session->class;
 
             // Get authenticated staff
-            $staff = auth('staff')->user();
+            $staff = $request->user() ?: auth('staff')->user();
 
             if (!$staff) {
                 return response()->json([
@@ -551,7 +699,12 @@ class ClassesController extends Controller
 
             // Check if staff is authorized: admin, coo, moderator, course advisor, or assigned tutor
             $staffRole = strtolower(trim($staff->role ?? ''));
-            $isAuthorizedRole = in_array($staffRole, ['admin', 'moderator', 'coo', 'advisor', 'course_advisor', 'course advisor']);
+            $isAuthorizedRole = in_array($staffRole, ['admin', 'superadmin', 'super_admin', 'moderator', 'coo', 'advisor', 'course_advisor', 'course advisor', 'courseadvisor', 'academic_advisor', 'academic advisor', 'staff'])
+                || str_contains($staffRole, 'advisor')
+                || str_contains($staffRole, 'admin')
+                || str_contains($staffRole, 'coo')
+                || str_contains($staffRole, 'moderator');
+
             $isAssigned = ClassStaff::where('class_id', $class->id)
                 ->where('staff_id', $staff->id)
                 ->exists();
@@ -563,15 +716,18 @@ class ClassesController extends Controller
                 ], 403);
             }
 
+            $isCompletedOrRecorded = in_array(strtolower($session->status ?? ''), ['completed', 'recorded']);
             $endsAt = \App\Services\StudentNotificationService::sessionTime($session, 'ends_at');
-            if (! $endsAt || ! $endsAt->isPast()) {
+            if (!$isCompletedOrRecorded && (! $endsAt || ! $endsAt->isPast())) {
                 return response()->json(['success' => false, 'message' => 'Recordings can only be added after the session has ended.'], 422);
             }
 
-            // Update the recording link
-            $session->update([
-                'recording_link' => $request->recording_link,
-            ]);
+            // Update the recording link and set status to recorded
+            $updateData = ['recording_link' => $request->recording_link];
+            if (in_array(strtolower($session->status ?? ''), ['scheduled', 'rescheduled', 'completed', ''])) {
+                $updateData['status'] = 'recorded';
+            }
+            $session->update($updateData);
 
             return response()->json([
                 'success' => true,
@@ -662,6 +818,14 @@ class ClassesController extends Controller
      */
     public function rescheduleSession(Request $request, $id): JsonResponse
     {
+        $staffUser = $request->user() ?: auth('staff')->user();
+        if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. Only administrators and COOs can reschedule masterclass sessions.'
+            ], 403);
+        }
+
         try {
             $session = ClassSession::with(['class.subject', 'class.staffs'])->find($id);
             if (!$session) {
@@ -750,6 +914,14 @@ class ClassesController extends Controller
      */
     public function cancelSession(Request $request, $id): JsonResponse
     {
+        $staffUser = $request->user() ?: auth('staff')->user();
+        if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. Only administrators and COOs can cancel masterclass sessions.'
+            ], 403);
+        }
+
         try {
             $session = ClassSession::with(['class.subject', 'class.staffs'])->find($id);
             if (!$session) {
@@ -1374,6 +1546,14 @@ class ClassesController extends Controller
     }
 
     public function update(Request $request, $id, ZoomService $zoomService){
+        $staffUser = $request->user() ?: auth('staff')->user();
+        if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. Only administrators and COOs can update masterclasses.'
+            ], 403);
+        }
+
         $validator = Validator::make($request->all(), [
             'subject_id' => 'nullable|exists:subjects,id',
             'title' => 'nullable|string|max:255',
@@ -1609,6 +1789,14 @@ class ClassesController extends Controller
      * (admin) deactivate class and delete future unattended sessions
     **/
     public function destroy($id){
+        $staffUser = auth('staff')->user();
+        if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. Only administrators and COOs can delete masterclasses.'
+            ], 403);
+        }
+
         try {
             $class = Classes::findOrFail($id);
             $class->update(['status' => 'inactive']);
@@ -1658,6 +1846,7 @@ class ClassesController extends Controller
             $classes = Classes::with([
                     'subject.courses',
                     'staffs',
+                    'privateStudent',
                     'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
                     'schedules.sessions.attendances.student',
                 ])
@@ -1668,10 +1857,14 @@ class ClassesController extends Controller
 
             $subjectEnrollmentCache = [];
             $classes->each(function ($class) use (&$subjectEnrollmentCache) {
-                if (!isset($subjectEnrollmentCache[$class->subject_id])) {
-                    $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id, $class->title);
+                if ($class->is_private) {
+                    $enrolledStudents = $class->privateStudent ? collect([$class->privateStudent]) : collect([]);
+                } else {
+                    if (!isset($subjectEnrollmentCache[$class->subject_id])) {
+                        $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id, $class->title);
+                    }
+                    $enrolledStudents = $subjectEnrollmentCache[$class->subject_id];
                 }
-                $enrolledStudents = $subjectEnrollmentCache[$class->subject_id];
                 $class->enrolled_students = $enrolledStudents;
                 $class->enrolled_count = $enrolledStudents->count();
 
@@ -1833,7 +2026,14 @@ class ClassesController extends Controller
                 })
                 ->get();
 
-            if ($activeCourseEnrollments->isEmpty()) {
+            // Status-driven private class enrollment check
+            $activePrivateEnrollments = PrivateClassEnrollment::where('student_id', $student->id)
+                ->where('status', 'active')
+                ->whereColumn('sessions_completed', '<', 'session_quota')
+                ->get();
+            $hasActivePrivateClasses = $activePrivateEnrollments->isNotEmpty();
+
+            if ($activeCourseEnrollments->isEmpty() && !$hasActivePrivateClasses) {
                 return response()->json([
                     'success' => true,
                     'subscription_expired' => $hasAnyEnrollment,
@@ -1860,14 +2060,13 @@ class ClassesController extends Controller
                 ], 200);
             }
 
+            $hasActiveCourse = $activeCourseEnrollments->isNotEmpty();
             $activeCourseIds = $activeCourseEnrollments->pluck('course_id')->filter()->unique();
 
             // 1. Get Subject IDs registered by this student under their active enrollments
-            $subjectIds = $student->subjectEnrollments()
-                ->whereNull('deleted_at')
-                ->pluck('subject_id')
-                ->unique()
-                ->values();
+            $subjectIds = $hasActiveCourse
+                ? $student->subjectEnrollments()->whereNull('deleted_at')->pluck('subject_id')->unique()->values()
+                : collect([]);
 
             // If subject enrollments are empty, pull subject IDs linked to the active enrolled courses
             if ($subjectIds->isEmpty() && $activeCourseIds->isNotEmpty()) {
@@ -1880,31 +2079,8 @@ class ClassesController extends Controller
             $isOLevelStudent = $activeCourseIds->intersect([2, 3, 4])->isNotEmpty();
 
             // 2. Base Query for Class Sessions
-            $sessionQuery = ClassSession::with([
-                'class.subject',
-                'class.staffs',
-                'attendances' => function($q) use ($student) {
-                    $q->where('student_id', $student->id);
-                }
-            ])
-            ->whereHas('class', function ($q) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
-                $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']);
-                $q->where(function ($subQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
-                    if ($subjectIds->isNotEmpty()) {
-                        $subQ->whereIn('subject_id', $subjectIds);
-                    }
-                    if ($isOLevelStudent) {
-                        $subQ->orWhere('title', 'LIKE', 'O-Level%')
-                             ->orWhere('title', 'LIKE', 'O-LEVEL%');
-                    }
-                    if ($activeCourseIds->isNotEmpty()) {
-                        $subQ->orWhereHas('subject.courses', fn($cQ) => $cQ->whereIn('courses.id', $activeCourseIds));
-                    }
-                });
-            });
-
-            // If subjectIds still empty, restrict strictly to active course classes
-            if ($subjectIds->isEmpty() && $activeCourseIds->isNotEmpty()) {
+            if (!$hasActiveCourse && $hasActivePrivateClasses) {
+                // Course expired: student can ONLY see their designated 1-on-1 private sessions
                 $sessionQuery = ClassSession::with([
                     'class.subject',
                     'class.staffs',
@@ -1912,9 +2088,45 @@ class ClassesController extends Controller
                         $q->where('student_id', $student->id);
                     }
                 ])
-                ->whereHas('class', function($q) use ($activeCourseIds) {
+                ->whereHas('class', function ($q) use ($student) {
                     $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
-                      ->whereHas('subject.courses', fn($cQ) => $cQ->whereIn('courses.id', $activeCourseIds));
+                      ->where('is_private', true)
+                      ->where('private_student_id', $student->id);
+                });
+            } else {
+                // Active course subscription: student sees public masterclasses + their private classes
+                $sessionQuery = ClassSession::with([
+                    'class.subject',
+                    'class.staffs',
+                    'attendances' => function($q) use ($student) {
+                        $q->where('student_id', $student->id);
+                    }
+                ])
+                ->whereHas('class', function ($q) use ($subjectIds, $isOLevelStudent, $activeCourseIds, $student) {
+                    $q->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled']);
+                    $q->where(function ($subQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds, $student) {
+                        // 1. Designated private classes for this student
+                        $subQ->where(function($privQ) use ($student) {
+                            $privQ->where('is_private', true)
+                                  ->where('private_student_id', $student->id);
+                        })
+                        // 2. Public group masterclasses in enrolled subjects/courses
+                        ->orWhere(function($pubQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
+                            $pubQ->where('is_private', false)
+                                 ->where(function($classQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
+                                     if ($subjectIds->isNotEmpty()) {
+                                         $classQ->whereIn('subject_id', $subjectIds);
+                                     }
+                                     if ($isOLevelStudent) {
+                                         $classQ->orWhere('title', 'LIKE', 'O-Level%')
+                                                ->orWhere('title', 'LIKE', 'O-LEVEL%');
+                                     }
+                                     if ($activeCourseIds->isNotEmpty()) {
+                                         $classQ->orWhereHas('subject.courses', fn($cQ) => $cQ->whereIn('courses.id', $activeCourseIds));
+                                     }
+                                 });
+                        });
+                    });
                 });
             }
 
@@ -1975,11 +2187,15 @@ class ClassesController extends Controller
                     'topic' => $session->title ?: ($class ? $class->title : 'Master Class'),
                     'subject_name' => $class && $class->subject ? $class->subject->name : 'General',
                     'subject' => $class ? $class->subject : null,
+                    'is_private' => (bool) ($class && $class->is_private),
+                    'private_student_id' => $class ? $class->private_student_id : null,
                     'class' => $class ? [
                         'id' => $class->id,
                         'title' => $class->title,
                         'description' => $class->description ?? null,
                         'status' => $class->status ?? 'active',
+                        'is_private' => (bool) $class->is_private,
+                        'private_student_id' => $class->private_student_id,
                         'subject_id' => $class->subject_id ?? null,
                         'staffs' => $classStaffs,
                     ] : null,

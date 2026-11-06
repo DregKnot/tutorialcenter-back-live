@@ -35,32 +35,58 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Unauthorized student.'], 401);
         }
 
-        // Enforce active subscription check for student attendance
-        $now = now();
-        $hasActiveSubscription = \App\Models\CoursesEnrollment::where('student_id', $student->id)
-            ->where('status', 'active')
-            ->where(function ($q) use ($now) {
-                $q->whereNull('end_date')
-                  ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
-            })
-            ->whereHas('payments', function ($q) {
-                $q->whereIn('status', ['successful', 'paid']);
-            })
-            ->exists();
-
-        if (!$hasActiveSubscription) {
-            return response()->json([
-                'success' => false,
-                'subscription_expired' => true,
-                'message' => 'Your course subscription has expired. Please renew your training to attend live classes.',
-            ], 403);
-        }
-
         $sessionId = (int) $validated['class_session_id'];
 
         $session = ClassSession::with(['class.subject', 'class.staffs'])->find($sessionId);
         if (! $session) {
             return response()->json(['message' => 'Class session not found.'], 404);
+        }
+
+        // Air-Gap & Subscription Verification
+        $now = now();
+        $isPrivateClass = (bool) ($session->class && $session->class->is_private);
+
+        if ($isPrivateClass) {
+            // Strictly check student identity for private 1-on-1 session
+            if ((int) $session->class->private_student_id !== (int) $student->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized. This 1-on-1 private class is reserved for another student.',
+                ], 403);
+            }
+
+            // Check active status-driven private enrollment
+            $privEnrollment = \App\Models\PrivateClassEnrollment::where('class_id', $session->class_id)
+                ->where('student_id', $student->id)
+                ->where('status', 'active')
+                ->first();
+
+            if (!$privEnrollment || !$privEnrollment->hasRemainingSessions()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Your private class session quota has been exhausted. Please contact support.',
+                ], 403);
+            }
+        } else {
+            // Enforce active subscription check for standard group masterclasses
+            $hasActiveSubscription = \App\Models\CoursesEnrollment::where('student_id', $student->id)
+                ->where('status', 'active')
+                ->where(function ($q) use ($now) {
+                    $q->whereNull('end_date')
+                      ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+                })
+                ->whereHas('payments', function ($q) {
+                    $q->whereIn('status', ['successful', 'paid']);
+                })
+                ->exists();
+
+            if (!$hasActiveSubscription) {
+                return response()->json([
+                    'success' => false,
+                    'subscription_expired' => true,
+                    'message' => 'Your course subscription has expired. Please renew your training to attend live classes.',
+                ], 403);
+            }
         }
 
         // Class Session Timing Calculation
@@ -168,32 +194,43 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Unauthorized student.'], 401);
         }
 
-        // Enforce active subscription check for student attendance
-        $now = now();
-        $hasActiveSubscription = \App\Models\CoursesEnrollment::where('student_id', $student->id)
-            ->where('status', 'active')
-            ->where(function ($q) use ($now) {
-                $q->whereNull('end_date')
-                  ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
-            })
-            ->whereHas('payments', function ($q) {
-                $q->whereIn('status', ['successful', 'paid']);
-            })
-            ->exists();
-
-        if (!$hasActiveSubscription) {
-            return response()->json([
-                'success' => false,
-                'subscription_expired' => true,
-                'message' => 'Your course subscription has expired. Please renew your training to attend live classes.',
-            ], 403);
-        }
-
         $sessionId = (int) $validated['class_session_id'];
 
-        $session = ClassSession::find($sessionId);
+        $session = ClassSession::with('class')->find($sessionId);
         if (! $session) {
             return response()->json(['message' => 'Class session not found.'], 404);
+        }
+
+        // Air-Gap & Subscription Verification
+        $now = now();
+        $isPrivateClass = (bool) ($session->class && $session->class->is_private);
+
+        if ($isPrivateClass) {
+            if ((int) $session->class->private_student_id !== (int) $student->id) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized. This 1-on-1 private class is reserved for another student.',
+                ], 403);
+            }
+        } else {
+            $hasActiveSubscription = \App\Models\CoursesEnrollment::where('student_id', $student->id)
+                ->where('status', 'active')
+                ->where(function ($q) use ($now) {
+                    $q->whereNull('end_date')
+                      ->orWhere('end_date', '>=', $now->copy()->subMinutes(5));
+                })
+                ->whereHas('payments', function ($q) {
+                    $q->whereIn('status', ['successful', 'paid']);
+                })
+                ->exists();
+
+            if (!$hasActiveSubscription) {
+                return response()->json([
+                    'success' => false,
+                    'subscription_expired' => true,
+                    'message' => 'Your course subscription has expired. Please renew your training to attend live classes.',
+                ], 403);
+            }
         }
 
         $now = now();

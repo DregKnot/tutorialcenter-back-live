@@ -227,4 +227,14 @@ class Student extends Model
     {
         return $this->tel;
     }
+
+    public function privateClassEnrollments()
+    {
+        return $this->hasMany(PrivateClassEnrollment::class, 'student_id');
+    }
+
+    public function privateClasses()
+    {
+        return $this->hasMany(Classes::class, 'private_student_id');
+    }
 }
