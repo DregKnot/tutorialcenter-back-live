@@ -457,6 +457,7 @@ class ClassesController extends Controller
             $classes = Classes::with([
                     'subject.courses',
                     'staffs',
+                    'privateStudent',
                     'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
                     'schedules.sessions.attendances.student',
                 ])
@@ -466,10 +467,14 @@ class ClassesController extends Controller
 
             $subjectEnrollmentCache = [];
             $classes->each(function ($class) use (&$subjectEnrollmentCache) {
-                if (!isset($subjectEnrollmentCache[$class->subject_id])) {
-                    $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id, $class->title);
+                if ($class->is_private) {
+                    $enrolledStudents = $class->privateStudent ? collect([$class->privateStudent]) : collect([]);
+                } else {
+                    if (!isset($subjectEnrollmentCache[$class->subject_id])) {
+                        $subjectEnrollmentCache[$class->subject_id] = $this->getEnrolledStudentsForSubject($class->subject_id, $class->title);
+                    }
+                    $enrolledStudents = $subjectEnrollmentCache[$class->subject_id];
                 }
-                $enrolledStudents = $subjectEnrollmentCache[$class->subject_id];
                 $class->enrolled_students = $enrolledStudents;
                 $class->enrolled_count = $enrolledStudents->count();
 
@@ -1496,6 +1501,11 @@ class ClassesController extends Controller
             
             'class_link' => 'nullable|url',
 
+            'is_private' => 'nullable|boolean',
+            'private_student_id' => 'nullable|exists:students,id',
+            'amount_paid' => 'nullable|numeric|min:0',
+            'payment_method' => 'nullable|string|in:bank_transfer,card,manual,pos',
+
             'schedules' => 'nullable|array',
             'schedules.*.day_of_week' => 'required_with:schedules|string|in:sunday,monday,tuesday,wednesday,thursday,friday,saturday',
             'schedules.*.start_time' => 'required_with:schedules',
@@ -1555,6 +1565,18 @@ class ClassesController extends Controller
                         }
                     }
                     $updateData['zoom_join_url'] = $request->class_link;
+                }
+            }
+
+            if ($request->has('is_private')) {
+                $isPrivate = $request->boolean('is_private');
+                $updateData['is_private'] = $isPrivate;
+                if ($isPrivate) {
+                    if ($request->filled('private_student_id')) {
+                        $updateData['private_student_id'] = (int) $request->private_student_id;
+                    }
+                } else {
+                    $updateData['private_student_id'] = null;
                 }
             }
 
@@ -1690,6 +1712,51 @@ class ClassesController extends Controller
                 }
             }
 
+            $refreshedClass = $class->fresh();
+            if ($refreshedClass->is_private && $refreshedClass->private_student_id) {
+                $student = Student::find($refreshedClass->private_student_id);
+                if ($student) {
+                    $courseEnrollment = $student->courseEnrollments()->where('status', 'active')->latest()->first()
+                        ?: $student->courseEnrollments()->latest()->first();
+
+                    $amountPaid = (float) $request->input('amount_paid', 0);
+                    $paymentMethod = $request->input('payment_method', 'bank_transfer');
+                    $paymentRef = 'TC-PRIV-' . now()->format('Ymd') . '-' . strtoupper(Str::random(6));
+
+                    if ($request->filled('amount_paid')) {
+                        Payment::create([
+                            'student_id' => $student->id,
+                            'course_enrollment_id' => $courseEnrollment?->id,
+                            'amount' => $amountPaid,
+                            'currency' => 'NGN',
+                            'payment_method' => in_array($paymentMethod, ['card', 'bank_transfer', 'ussd', 'wallet', 'manual']) ? $paymentMethod : 'bank_transfer',
+                            'gateway' => 'admin_private',
+                            'gateway_reference' => $paymentRef,
+                            'status' => 'successful',
+                            'billing_cycle' => 'monthly',
+                        ]);
+                    }
+
+                    $totalSessionsCount = ClassSession::where('class_id', $refreshedClass->id)->count();
+
+                    PrivateClassEnrollment::updateOrCreate(
+                        [
+                            'class_id' => $refreshedClass->id,
+                            'student_id' => $student->id,
+                        ],
+                        [
+                            'course_enrollment_id' => $courseEnrollment?->id,
+                            'amount_paid' => $amountPaid ?: 0,
+                            'currency' => 'NGN',
+                            'payment_reference' => $paymentRef,
+                            'payment_method' => $paymentMethod,
+                            'session_quota' => $totalSessionsCount ?: 4,
+                            'status' => 'active',
+                        ]
+                    );
+                }
+            }
+
             DB::commit();
 
             return response()->json([
@@ -1698,6 +1765,7 @@ class ClassesController extends Controller
                 'class' => $class->fresh([
                     'subject',
                     'staffs',
+                    'privateStudent',
                     'schedules.sessions'
                 ])
             ], 200);
