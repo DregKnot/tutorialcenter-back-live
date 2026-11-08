@@ -462,6 +462,7 @@ class ClassesController extends Controller
                 'subject.courses',
                 'staffs',
                 'privateStudent',
+                'privateEnrollment',
                 'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
                 'schedules.sessions.attendances.student',
             ])
@@ -1860,6 +1861,7 @@ class ClassesController extends Controller
                 'subject.courses',
                 'staffs',
                 'privateStudent',
+                'privateEnrollment',
                 'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
                 'schedules.sessions.attendances.student',
             ])
@@ -2063,6 +2065,7 @@ class ClassesController extends Controller
                     'upcoming_sessions' => [],
                     'older_sessions' => [],
                     'sessions' => [],
+                    'classes' => [],
                     'data' => [
                         'next_class' => null,
                         'next_classes' => [],
@@ -2071,6 +2074,7 @@ class ClassesController extends Controller
                         'upcoming_sessions' => [],
                         'older_sessions' => [],
                         'sessions' => [],
+                        'classes' => [],
                     ]
                 ], 200);
             }
@@ -2340,6 +2344,94 @@ class ClassesController extends Controller
                     ->get();
             }
 
+            // Build student's enrolled classes list (including private masterclasses)
+            $privateClasses = Classes::with([
+                'subject.courses',
+                'staffs',
+                'privateStudent',
+                'privateEnrollment',
+                'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
+                'schedules.sessions.attendances' => fn($q) => $q->where('student_id', $student->id),
+            ])
+                ->where('is_private', true)
+                ->where('private_student_id', $student->id)
+                ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
+                ->get();
+
+            $publicClasses = collect([]);
+            if ($hasActiveCourse) {
+                $publicClasses = Classes::with([
+                    'subject.courses',
+                    'staffs',
+                    'schedules.sessions' => fn($q) => $q->withCount(['views as views']),
+                    'schedules.sessions.attendances' => fn($q) => $q->where('student_id', $student->id),
+                ])
+                    ->where('is_private', false)
+                    ->whereIn('status', ['active', 'proposed', 'rescheduled', 'cancelled'])
+                    ->where(function ($classQ) use ($subjectIds, $isOLevelStudent, $activeCourseIds) {
+                        if ($subjectIds->isNotEmpty()) {
+                            $classQ->whereIn('subject_id', $subjectIds);
+                        }
+                        if ($isOLevelStudent) {
+                            $classQ->orWhere('title', 'LIKE', 'O-Level%')
+                                ->orWhere('title', 'LIKE', 'O-LEVEL%');
+                        }
+                        if ($activeCourseIds->isNotEmpty()) {
+                            $classQ->orWhereHas('subject.courses', fn($cQ) => $cQ->whereIn('courses.id', $activeCourseIds));
+                        }
+                    })
+                    ->get();
+            }
+
+            $rawClasses = $privateClasses->concat($publicClasses)->unique('id')->values();
+
+            $studentClasses = $rawClasses->map(function ($cls) use ($student) {
+                $privEnrollment = $cls->privateEnrollment;
+                $isPriv = (bool) ($cls->is_private || $cls->private_student_id);
+
+                $startDate = $cls->schedules->min('start_date');
+                $endDate = $cls->schedules->max('end_date');
+
+                $allSessions = collect([]);
+                if ($cls->schedules) {
+                    foreach ($cls->schedules as $sched) {
+                        if ($sched->sessions) {
+                            $allSessions = $allSessions->concat($sched->sessions);
+                        }
+                    }
+                }
+                $allSessions = $allSessions->sortBy([
+                    ['session_date', 'asc'],
+                    ['starts_at', 'asc']
+                ])->values();
+
+                $joinUrl = ($cls->zoom_join_url) ?: ($cls->class_link);
+
+                return [
+                    'id' => $cls->id,
+                    'title' => $cls->title,
+                    'description' => $cls->description,
+                    'status' => $cls->status ?? 'active',
+                    'is_private' => $isPriv,
+                    'private_student_id' => $cls->private_student_id,
+                    'private_student' => $cls->privateStudent,
+                    'private_enrollment' => $privEnrollment,
+                    'start_date' => $startDate,
+                    'end_date' => $endDate,
+                    'class_link' => $joinUrl,
+                    'zoom_meeting_id' => $cls->zoom_meeting_id,
+                    'zoom_meeting_password' => $cls->zoom_meeting_password,
+                    'zoom_join_url' => $cls->zoom_join_url,
+                    'subject' => $cls->subject,
+                    'staffs' => $cls->staffs,
+                    'schedules' => $cls->schedules,
+                    'sessions' => $allSessions,
+                    'total_sessions' => $allSessions->count(),
+                    'sessions_completed' => $privEnrollment ? $privEnrollment->sessions_completed : 0,
+                    'session_quota' => $privEnrollment ? $privEnrollment->session_quota : $allSessions->count(),
+                ];
+            });
+
             return response()->json([
                 'success' => true,
                 'next_class' => $nextClassRaw ? $transformStudentSession($nextClassRaw) : null,
@@ -2349,6 +2441,7 @@ class ClassesController extends Controller
                 'upcoming_sessions' => $upcomingSessionsRaw->map($transformStudentSession),
                 'older_sessions' => $olderSessionsRaw->map($transformStudentSession),
                 'sessions' => $allSessionsRaw->map($transformStudentSession),
+                'classes' => $studentClasses,
                 'pagination' => [
                     'current_page' => $page,
                     'per_page' => $perPage,
