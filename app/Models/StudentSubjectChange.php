@@ -12,6 +12,7 @@ class StudentSubjectChange extends Model
     protected $fillable = [
         'student_id',
         'course_enrollment_id',
+        'action_type',
         'old_subject_id',
         'new_subject_id',
         'reason',

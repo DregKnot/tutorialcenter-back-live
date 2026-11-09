@@ -2648,7 +2648,11 @@ class StudentController extends Controller
     }
 
     /**
-     * Admin: Change/Swap a student's subject combination upon request.
+     * Admin: Change, Add, or Remove a student's subject combination upon request.
+     * Actions:
+     * - 'swap': Substitute old_subject_id with new_subject_id
+     * - 'add': Add an additional subject (new_subject_id) to course_enrollment_id
+     * - 'remove': Remove/delete a subject (old_subject_id) from course_enrollment_id
      * Only administrators (role: admin) are permitted.
      */
     public function changeSubject(Request $request, $id)
@@ -2656,125 +2660,252 @@ class StudentController extends Controller
         $staff = $request->user();
         if (!$staff || strtolower($staff->role ?? '') !== 'admin') {
             return response()->json([
-                'message' => 'Unauthorized. Only administrators are authorized to change subject combinations.',
+                'message' => 'Unauthorized. Only administrators are authorized to manage subject combinations.',
             ], 403);
         }
 
-        $validated = $request->validate([
-            'course_enrollment_id' => 'nullable|integer|exists:courses_enrollments,id',
-            'old_subject_id' => 'required|integer|exists:subjects,id',
-            'new_subject_id' => 'required|integer|exists:subjects,id|different:old_subject_id',
-            'reason' => 'required|string|min:5|max:1000',
-        ]);
+        $action = strtolower($request->input('action', 'swap'));
+        if (!in_array($action, ['swap', 'add', 'remove'])) {
+            $action = 'swap';
+        }
 
+        $rules = [
+            'action' => 'nullable|string|in:swap,add,remove',
+            'course_enrollment_id' => $action === 'add' ? 'required|integer|exists:courses_enrollments,id' : 'nullable|integer|exists:courses_enrollments,id',
+            'reason' => 'required|string|min:5|max:1000',
+        ];
+
+        if ($action === 'swap') {
+            $rules['old_subject_id'] = 'required|integer|exists:subjects,id';
+            $rules['new_subject_id'] = 'required|integer|exists:subjects,id|different:old_subject_id';
+        } elseif ($action === 'add') {
+            $rules['new_subject_id'] = 'required|integer|exists:subjects,id';
+        } elseif ($action === 'remove') {
+            $rules['old_subject_id'] = 'required|integer|exists:subjects,id';
+        }
+
+        $validated = $request->validate($rules);
         $student = Student::findOrFail($id);
 
-        $oldEnrollmentQuery = SubjectsEnrollment::where('student_id', $student->id)
-            ->where('subject_id', $validated['old_subject_id'])
-            ->whereNull('deleted_at');
+        if ($action === 'swap') {
+            $oldEnrollmentQuery = SubjectsEnrollment::where('student_id', $student->id)
+                ->where('subject_id', $validated['old_subject_id'])
+                ->whereNull('deleted_at');
 
-        if (!empty($validated['course_enrollment_id'])) {
-            $oldEnrollmentQuery->where('course_enrollment_id', $validated['course_enrollment_id']);
-        }
-
-        $activeOldEnrollment = $oldEnrollmentQuery->first();
-
-        if (!$activeOldEnrollment) {
-            return response()->json([
-                'message' => 'The student is not actively enrolled in the subject being replaced for this course.',
-            ], 422);
-        }
-
-        $alreadyEnrolledNew = SubjectsEnrollment::where('student_id', $student->id)
-            ->where('course_enrollment_id', $activeOldEnrollment->course_enrollment_id)
-            ->where('subject_id', $validated['new_subject_id'])
-            ->whereNull('deleted_at')
-            ->exists();
-
-        if ($alreadyEnrolledNew) {
-            return response()->json([
-                'message' => 'The student is already actively enrolled in the selected replacement subject for this course.',
-            ], 422);
-        }
-
-        try {
-            $changeRecord = DB::transaction(function () use ($student, $activeOldEnrollment, $validated, $staff) {
-                // Soft-delete the previous subject enrollment
-                $activeOldEnrollment->delete();
-
-                // Check if a previously deleted enrollment exists for the new subject
-                $existingNewEnrollment = SubjectsEnrollment::withTrashed()
-                    ->where('student_id', $student->id)
-                    ->where('course_enrollment_id', $activeOldEnrollment->course_enrollment_id)
-                    ->where('subject_id', $validated['new_subject_id'])
-                    ->first();
-
-                if ($existingNewEnrollment) {
-                    $existingNewEnrollment->restore();
-                    $existingNewEnrollment->update(['progress' => 0.0]);
-                } else {
-                    SubjectsEnrollment::create([
-                        'course_enrollment_id' => $activeOldEnrollment->course_enrollment_id,
-                        'student_id' => $student->id,
-                        'subject_id' => $validated['new_subject_id'],
-                        'progress' => 0.0,
-                    ]);
-                }
-
-                // Log change audit record with reason
-                $change = StudentSubjectChange::create([
-                    'student_id' => $student->id,
-                    'course_enrollment_id' => $activeOldEnrollment->course_enrollment_id,
-                    'old_subject_id' => $validated['old_subject_id'],
-                    'new_subject_id' => $validated['new_subject_id'],
-                    'reason' => trim($validated['reason']),
-                    'changed_by_staff_id' => $staff->id,
-                    'acknowledged_at' => null,
-                ]);
-
-                return $change;
-            });
-
-            $changeRecord->load([
-                'oldSubject:id,name',
-                'newSubject:id,name',
-                'changedByStaff:id,firstname,surname',
-                'courseEnrollment.course:id,title,slug'
-            ]);
-
-            $courseTitle = $changeRecord->courseEnrollment?->course?->title;
-            $oldSubjectLabel = $courseTitle ? "{$courseTitle} - {$changeRecord->oldSubject?->name}" : $changeRecord->oldSubject?->name;
-            $newSubjectLabel = $courseTitle ? "{$courseTitle} - {$changeRecord->newSubject?->name}" : $changeRecord->newSubject?->name;
-
-            if (class_exists(StudentNotificationService::class)) {
-                try {
-                    StudentNotificationService::notify(
-                        $student,
-                        'subject_combination_changed',
-                        [
-                            'course' => $courseTitle,
-                            'old_subject' => $oldSubjectLabel,
-                            'new_subject' => $newSubjectLabel,
-                            'reason' => $changeRecord->reason,
-                        ]
-                    );
-                } catch (\Throwable $e) {
-                    \Log::warning('Failed to dispatch notification for subject change: ' . $e->getMessage());
-                }
+            if (!empty($validated['course_enrollment_id'])) {
+                $oldEnrollmentQuery->where('course_enrollment_id', $validated['course_enrollment_id']);
             }
 
-            return response()->json([
-                'success' => true,
-                'message' => 'Subject combination changed successfully.',
-                'change' => $changeRecord,
-            ], 200);
-        } catch (\Throwable $e) {
-            report($e);
-            return response()->json([
-                'message' => 'Failed to change student subject combination.',
-                'error' => config('app.debug') ? $e->getMessage() : null,
-            ], 500);
+            $activeOldEnrollment = $oldEnrollmentQuery->first();
+
+            if (!$activeOldEnrollment) {
+                return response()->json([
+                    'message' => 'The student is not actively enrolled in the subject being replaced for this course.',
+                ], 422);
+            }
+
+            $targetCourseEnrollmentId = $activeOldEnrollment->course_enrollment_id;
+
+            $alreadyEnrolledNew = SubjectsEnrollment::where('student_id', $student->id)
+                ->where('course_enrollment_id', $targetCourseEnrollmentId)
+                ->where('subject_id', $validated['new_subject_id'])
+                ->whereNull('deleted_at')
+                ->exists();
+
+            if ($alreadyEnrolledNew) {
+                return response()->json([
+                    'message' => 'The student is already actively enrolled in the selected replacement subject for this course.',
+                ], 422);
+            }
+
+            try {
+                $changeRecord = DB::transaction(function () use ($student, $activeOldEnrollment, $targetCourseEnrollmentId, $validated, $staff) {
+                    $activeOldEnrollment->delete();
+
+                    $existingNewEnrollment = SubjectsEnrollment::withTrashed()
+                        ->where('student_id', $student->id)
+                        ->where('course_enrollment_id', $targetCourseEnrollmentId)
+                        ->where('subject_id', $validated['new_subject_id'])
+                        ->first();
+
+                    if ($existingNewEnrollment) {
+                        $existingNewEnrollment->restore();
+                        $existingNewEnrollment->update(['progress' => 0.0]);
+                    } else {
+                        SubjectsEnrollment::create([
+                            'course_enrollment_id' => $targetCourseEnrollmentId,
+                            'student_id' => $student->id,
+                            'subject_id' => $validated['new_subject_id'],
+                            'progress' => 0.0,
+                        ]);
+                    }
+
+                    return StudentSubjectChange::create([
+                        'student_id' => $student->id,
+                        'course_enrollment_id' => $targetCourseEnrollmentId,
+                        'action_type' => 'swap',
+                        'old_subject_id' => $validated['old_subject_id'],
+                        'new_subject_id' => $validated['new_subject_id'],
+                        'reason' => trim($validated['reason']),
+                        'changed_by_staff_id' => $staff->id,
+                        'acknowledged_at' => null,
+                    ]);
+                });
+            } catch (\Throwable $e) {
+                report($e);
+                return response()->json([
+                    'message' => 'Failed to substitute student subject.',
+                    'error' => config('app.debug') ? $e->getMessage() : null,
+                ], 500);
+            }
+        } elseif ($action === 'add') {
+            $targetCourseEnrollmentId = $validated['course_enrollment_id'];
+
+            // Verify course enrollment belongs to this student
+            $courseEnrollment = CoursesEnrollment::where('id', $targetCourseEnrollmentId)
+                ->where('student_id', $student->id)
+                ->first();
+
+            if (!$courseEnrollment) {
+                return response()->json([
+                    'message' => 'Specified course enrollment not found for this student.',
+                ], 404);
+            }
+
+            // Check if already actively enrolled in this subject for this course
+            $alreadyEnrolled = SubjectsEnrollment::where('student_id', $student->id)
+                ->where('course_enrollment_id', $targetCourseEnrollmentId)
+                ->where('subject_id', $validated['new_subject_id'])
+                ->whereNull('deleted_at')
+                ->exists();
+
+            if ($alreadyEnrolled) {
+                return response()->json([
+                    'message' => 'The student is already actively enrolled in this subject for this course.',
+                ], 422);
+            }
+
+            try {
+                $changeRecord = DB::transaction(function () use ($student, $targetCourseEnrollmentId, $validated, $staff) {
+                    $existingEnrollment = SubjectsEnrollment::withTrashed()
+                        ->where('student_id', $student->id)
+                        ->where('course_enrollment_id', $targetCourseEnrollmentId)
+                        ->where('subject_id', $validated['new_subject_id'])
+                        ->first();
+
+                    if ($existingEnrollment) {
+                        $existingEnrollment->restore();
+                        $existingEnrollment->update(['progress' => 0.0]);
+                    } else {
+                        SubjectsEnrollment::create([
+                            'course_enrollment_id' => $targetCourseEnrollmentId,
+                            'student_id' => $student->id,
+                            'subject_id' => $validated['new_subject_id'],
+                            'progress' => 0.0,
+                        ]);
+                    }
+
+                    return StudentSubjectChange::create([
+                        'student_id' => $student->id,
+                        'course_enrollment_id' => $targetCourseEnrollmentId,
+                        'action_type' => 'add',
+                        'old_subject_id' => null,
+                        'new_subject_id' => $validated['new_subject_id'],
+                        'reason' => trim($validated['reason']),
+                        'changed_by_staff_id' => $staff->id,
+                        'acknowledged_at' => null,
+                    ]);
+                });
+            } catch (\Throwable $e) {
+                report($e);
+                return response()->json([
+                    'message' => 'Failed to add subject to student enrollment.',
+                    'error' => config('app.debug') ? $e->getMessage() : null,
+                ], 500);
+            }
+        } elseif ($action === 'remove') {
+            $enrollmentQuery = SubjectsEnrollment::where('student_id', $student->id)
+                ->where('subject_id', $validated['old_subject_id'])
+                ->whereNull('deleted_at');
+
+            if (!empty($validated['course_enrollment_id'])) {
+                $enrollmentQuery->where('course_enrollment_id', $validated['course_enrollment_id']);
+            }
+
+            $activeEnrollment = $enrollmentQuery->first();
+
+            if (!$activeEnrollment) {
+                return response()->json([
+                    'message' => 'The student is not actively enrolled in the subject to be removed.',
+                ], 422);
+            }
+
+            $targetCourseEnrollmentId = $activeEnrollment->course_enrollment_id;
+
+            try {
+                $changeRecord = DB::transaction(function () use ($student, $activeEnrollment, $targetCourseEnrollmentId, $validated, $staff) {
+                    $activeEnrollment->delete();
+
+                    return StudentSubjectChange::create([
+                        'student_id' => $student->id,
+                        'course_enrollment_id' => $targetCourseEnrollmentId,
+                        'action_type' => 'remove',
+                        'old_subject_id' => $validated['old_subject_id'],
+                        'new_subject_id' => null,
+                        'reason' => trim($validated['reason']),
+                        'changed_by_staff_id' => $staff->id,
+                        'acknowledged_at' => null,
+                    ]);
+                });
+            } catch (\Throwable $e) {
+                report($e);
+                return response()->json([
+                    'message' => 'Failed to remove subject from student enrollment.',
+                    'error' => config('app.debug') ? $e->getMessage() : null,
+                ], 500);
+            }
         }
+
+        $changeRecord->load([
+            'oldSubject:id,name',
+            'newSubject:id,name',
+            'changedByStaff:id,firstname,surname',
+            'courseEnrollment.course:id,title,slug'
+        ]);
+
+        $courseTitle = $changeRecord->courseEnrollment?->course?->title;
+        $oldSubjectLabel = ($courseTitle && $changeRecord->oldSubject) ? "{$courseTitle} - {$changeRecord->oldSubject->name}" : ($changeRecord->oldSubject?->name ?? null);
+        $newSubjectLabel = ($courseTitle && $changeRecord->newSubject) ? "{$courseTitle} - {$changeRecord->newSubject->name}" : ($changeRecord->newSubject?->name ?? null);
+
+        if (class_exists(StudentNotificationService::class)) {
+            try {
+                StudentNotificationService::notify(
+                    $student,
+                    'subject_combination_changed',
+                    [
+                        'action' => $action,
+                        'course' => $courseTitle,
+                        'old_subject' => $oldSubjectLabel,
+                        'new_subject' => $newSubjectLabel,
+                        'reason' => $changeRecord->reason,
+                    ]
+                );
+            } catch (\Throwable $e) {
+                \Log::warning('Failed to dispatch notification for subject change: ' . $e->getMessage());
+            }
+        }
+
+        $successMsg = match($action) {
+            'add' => 'Subject added successfully to student enrollment.',
+            'remove' => 'Subject removed successfully from student enrollment.',
+            default => 'Subject combination changed successfully.',
+        };
+
+        return response()->json([
+            'success' => true,
+            'message' => $successMsg,
+            'change' => $changeRecord,
+        ], 200);
     }
 
     /**
