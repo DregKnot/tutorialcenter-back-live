@@ -2762,7 +2762,8 @@ class StudentController extends Controller
             $targetCourseEnrollmentId = $validated['course_enrollment_id'];
 
             // Verify course enrollment belongs to this student
-            $courseEnrollment = CoursesEnrollment::where('id', $targetCourseEnrollmentId)
+            $courseEnrollment = CoursesEnrollment::with('course')
+                ->where('id', $targetCourseEnrollmentId)
                 ->where('student_id', $student->id)
                 ->first();
 
@@ -2770,6 +2771,25 @@ class StudentController extends Controller
                 return response()->json([
                     'message' => 'Specified course enrollment not found for this student.',
                 ], 404);
+            }
+
+            // Enforce maximum subject limits: JAMB is 4 subjects, O-Levels (WAEC, NECO, GCE) is 9 subjects
+            $courseTitle = strtolower($courseEnrollment->course?->title ?? '');
+            $courseSlug = strtolower($courseEnrollment->course?->slug ?? '');
+            $courseId = (int) ($courseEnrollment->course_id ?? 0);
+            $isJamb = ($courseId === 1 || str_contains($courseTitle, 'jamb') || str_contains($courseSlug, 'jamb'));
+            $maxAllowedSubjects = $isJamb ? 4 : 9;
+
+            $currentActiveCount = SubjectsEnrollment::where('student_id', $student->id)
+                ->where('course_enrollment_id', $targetCourseEnrollmentId)
+                ->whereNull('deleted_at')
+                ->count();
+
+            if ($currentActiveCount >= $maxAllowedSubjects) {
+                $programName = $isJamb ? 'JAMB' : 'O-Levels (' . ($courseEnrollment->course?->title ?? 'O-Levels') . ')';
+                return response()->json([
+                    'message' => "The student has already enrolled in the maximum allowable limit of {$maxAllowedSubjects} subjects for {$programName}.",
+                ], 422);
             }
 
             // Check if already actively enrolled in this subject for this course
