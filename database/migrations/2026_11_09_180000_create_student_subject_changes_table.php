@@ -15,8 +15,9 @@ return new class extends Migration
             $table->id();
             $table->foreignId('student_id')->constrained('students')->onDelete('cascade');
             $table->foreignId('course_enrollment_id')->nullable()->constrained('courses_enrollments')->nullOnDelete();
-            $table->foreignId('old_subject_id')->constrained('subjects')->onDelete('cascade');
-            $table->foreignId('new_subject_id')->constrained('subjects')->onDelete('cascade');
+            $table->string('action_type', 20)->default('swap');
+            $table->foreignId('old_subject_id')->nullable()->constrained('subjects')->onDelete('cascade');
+            $table->foreignId('new_subject_id')->nullable()->constrained('subjects')->onDelete('cascade');
             $table->text('reason');
             $table->foreignId('changed_by_staff_id')->nullable()->constrained('staffs')->nullOnDelete();
             $table->timestamp('acknowledged_at')->nullable();
@@ -34,4 +35,3 @@ return new class extends Migration
         Schema::dropIfExists('student_subject_changes');
     }
 };
-
