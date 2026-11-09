@@ -9,6 +9,7 @@ use App\Models\Payment;
 use App\Models\Student;
 use App\Models\Staff;
 use App\Models\SubjectsEnrollment;
+use App\Models\StudentSubjectChange;
 use App\Models\EmailVerification;
 use App\Models\Guardian;
 use App\Notifications\ContactChangeOtpNotification;
@@ -2643,6 +2644,174 @@ class StudentController extends Controller
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
+    }
+
+    /**
+     * Admin: Change/Swap a student's subject combination upon request.
+     * Only administrators (role: admin) are permitted.
+     */
+    public function changeSubject(Request $request, $id)
+    {
+        $staff = $request->user();
+        if (!$staff || strtolower($staff->role ?? '') !== 'admin') {
+            return response()->json([
+                'message' => 'Unauthorized. Only administrators are authorized to change subject combinations.',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'old_subject_id' => 'required|integer|exists:subjects,id',
+            'new_subject_id' => 'required|integer|exists:subjects,id|different:old_subject_id',
+            'reason' => 'required|string|min:5|max:1000',
+        ]);
+
+        $student = Student::findOrFail($id);
+
+        $activeOldEnrollment = SubjectsEnrollment::where('student_id', $student->id)
+            ->where('subject_id', $validated['old_subject_id'])
+            ->whereNull('deleted_at')
+            ->first();
+
+        if (!$activeOldEnrollment) {
+            return response()->json([
+                'message' => 'The student is not actively enrolled in the subject being replaced.',
+            ], 422);
+        }
+
+        $alreadyEnrolledNew = SubjectsEnrollment::where('student_id', $student->id)
+            ->where('subject_id', $validated['new_subject_id'])
+            ->whereNull('deleted_at')
+            ->exists();
+
+        if ($alreadyEnrolledNew) {
+            return response()->json([
+                'message' => 'The student is already actively enrolled in the selected replacement subject.',
+            ], 422);
+        }
+
+        try {
+            $changeRecord = DB::transaction(function () use ($student, $activeOldEnrollment, $validated, $staff) {
+                // Soft-delete the previous subject enrollment
+                $activeOldEnrollment->delete();
+
+                // Check if a previously deleted enrollment exists for the new subject
+                $existingNewEnrollment = SubjectsEnrollment::withTrashed()
+                    ->where('student_id', $student->id)
+                    ->where('course_enrollment_id', $activeOldEnrollment->course_enrollment_id)
+                    ->where('subject_id', $validated['new_subject_id'])
+                    ->first();
+
+                if ($existingNewEnrollment) {
+                    $existingNewEnrollment->restore();
+                    $existingNewEnrollment->update(['progress' => 0.0]);
+                } else {
+                    SubjectsEnrollment::create([
+                        'course_enrollment_id' => $activeOldEnrollment->course_enrollment_id,
+                        'student_id' => $student->id,
+                        'subject_id' => $validated['new_subject_id'],
+                        'progress' => 0.0,
+                    ]);
+                }
+
+                // Log change audit record with reason
+                $change = StudentSubjectChange::create([
+                    'student_id' => $student->id,
+                    'course_enrollment_id' => $activeOldEnrollment->course_enrollment_id,
+                    'old_subject_id' => $validated['old_subject_id'],
+                    'new_subject_id' => $validated['new_subject_id'],
+                    'reason' => trim($validated['reason']),
+                    'changed_by_staff_id' => $staff->id,
+                    'acknowledged_at' => null,
+                ]);
+
+                return $change;
+            });
+
+            $changeRecord->load(['oldSubject:id,name', 'newSubject:id,name', 'changedByStaff:id,firstname,surname']);
+
+            if (class_exists(StudentNotificationService::class)) {
+                try {
+                    StudentNotificationService::notify(
+                        $student,
+                        'subject_combination_changed',
+                        [
+                            'old_subject' => $changeRecord->oldSubject?->name,
+                            'new_subject' => $changeRecord->newSubject?->name,
+                            'reason' => $changeRecord->reason,
+                        ]
+                    );
+                } catch (\Throwable $e) {
+                    \Log::warning('Failed to dispatch notification for subject change: ' . $e->getMessage());
+                }
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Subject combination changed successfully.',
+                'change' => $changeRecord,
+            ], 200);
+        } catch (\Throwable $e) {
+            report($e);
+            return response()->json([
+                'message' => 'Failed to change student subject combination.',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Student: Get pending (unacknowledged) subject combination changes.
+     */
+    public function getPendingSubjectChanges(Request $request)
+    {
+        $student = $request->user();
+        if (!$student) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $pendingChanges = StudentSubjectChange::with([
+                'oldSubject:id,name',
+                'newSubject:id,name',
+                'changedByStaff:id,firstname,surname'
+            ])
+            ->where('student_id', $student->id)
+            ->whereNull('acknowledged_at')
+            ->orderBy('created_at', 'desc')
+            ->get();
+
+        return response()->json([
+            'success' => true,
+            'pending_changes' => $pendingChanges,
+        ], 200);
+    }
+
+    /**
+     * Student: Acknowledge a subject combination change popup.
+     */
+    public function acknowledgeSubjectChange(Request $request, $id)
+    {
+        $student = $request->user();
+        if (!$student) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $change = StudentSubjectChange::where('student_id', $student->id)
+            ->where('id', $id)
+            ->first();
+
+        if (!$change) {
+            return response()->json(['message' => 'Subject change record not found.'], 404);
+        }
+
+        $change->update([
+            'acknowledged_at' => now(),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Subject change acknowledged successfully.',
+            'change' => $change,
+        ], 200);
     }
 
 }

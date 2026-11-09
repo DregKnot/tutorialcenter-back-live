@@ -195,17 +195,21 @@ class AssessmentService
             ->whereNull('deleted_at')
             ->pluck('subject_id');
 
-        // 2. Subject enrollments via course enrollments
-        $enrolledCourseIds = DB::table('courses_enrollments')
-            ->where('student_id', $student->id)
-            ->whereNull('deleted_at')
-            ->pluck('course_id');
+        // 2. Subject enrollments via course enrollments (fallback only if no explicit direct enrollments)
+        if ($directSubjectIds->isNotEmpty()) {
+            $allSubjectIds = $directSubjectIds->unique()->filter()->values();
+        } else {
+            $enrolledCourseIds = DB::table('courses_enrollments')
+                ->where('student_id', $student->id)
+                ->whereNull('deleted_at')
+                ->pluck('course_id');
 
-        $courseSubjectIds = DB::table('course_subject')
-            ->whereIn('course_id', $enrolledCourseIds)
-            ->pluck('subject_id');
+            $courseSubjectIds = DB::table('course_subject')
+                ->whereIn('course_id', $enrolledCourseIds)
+                ->pluck('subject_id');
 
-        $allSubjectIds = $directSubjectIds->concat($courseSubjectIds)->unique()->filter()->values();
+            $allSubjectIds = $courseSubjectIds->unique()->filter()->values();
+        }
 
         $publicClassIds = Classes::where('is_private', false)
             ->whereIn('subject_id', $allSubjectIds)
@@ -876,28 +880,32 @@ class AssessmentService
             return;
         }
 
-        $enrolledCourseIds = DB::table('courses_enrollments')
-            ->where('student_id', $student->id)
-            ->whereNull('deleted_at')
-            ->where('status', 'active')
-            ->pluck('course_id');
+        // Only fall back to course_subject if the student has no explicit subjects_enrollments defined
+        $hasExplicitSubjectEnrollments = SubjectsEnrollment::where('student_id', $student->id)->exists();
+        if (! $hasExplicitSubjectEnrollments) {
+            $enrolledCourseIds = DB::table('courses_enrollments')
+                ->where('student_id', $student->id)
+                ->whereNull('deleted_at')
+                ->where('status', 'active')
+                ->pluck('course_id');
 
-        $inCourse = DB::table('course_subject')
-            ->whereIn('course_id', $enrolledCourseIds)
-            ->where('subject_id', $assessment->subject_id)
-            ->exists();
-
-        if ($inCourse) {
-            return;
-        }
-
-        if ($assessment->class && $assessment->class->subject_id) {
-            $inClassSubject = DB::table('course_subject')
+            $inCourse = DB::table('course_subject')
                 ->whereIn('course_id', $enrolledCourseIds)
-                ->where('subject_id', $assessment->class->subject_id)
+                ->where('subject_id', $assessment->subject_id)
                 ->exists();
-            if ($inClassSubject) {
+
+            if ($inCourse) {
                 return;
+            }
+
+            if ($assessment->class && $assessment->class->subject_id) {
+                $inClassSubject = DB::table('course_subject')
+                    ->whereIn('course_id', $enrolledCourseIds)
+                    ->where('subject_id', $assessment->class->subject_id)
+                    ->exists();
+                if ($inClassSubject) {
+                    return;
+                }
             }
         }
 
