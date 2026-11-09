@@ -48,3 +48,4 @@ class StudentSubjectChange extends Model
         return $this->belongsTo(Staff::class, 'changed_by_staff_id');
     }
 }
+

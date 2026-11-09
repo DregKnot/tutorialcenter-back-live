@@ -1798,7 +1798,7 @@ class StudentController extends Controller
             // ])
             ->with([
                 'guardians',
-                'courseEnrollments.course',
+                'courseEnrollments.course.subjects',
                 'courseEnrollments.subjects.subject',
                 'courseEnrollments.payments' => function ($q) {
                     $q->orderBy('created_at', 'desc')->orderBy('id', 'desc');
@@ -1856,6 +1856,7 @@ class StudentController extends Controller
                             })
                             ->values(),
                         'course_information' => $enrollment->course,
+                        'available_subjects' => $enrollment->course?->subjects ?? [],
                     ];
                 }),
                 // 'enrolled_subjects' => $student->courseEnrollments->flatMap(function ($enrollment) {
@@ -2660,6 +2661,7 @@ class StudentController extends Controller
         }
 
         $validated = $request->validate([
+            'course_enrollment_id' => 'nullable|integer|exists:courses_enrollments,id',
             'old_subject_id' => 'required|integer|exists:subjects,id',
             'new_subject_id' => 'required|integer|exists:subjects,id|different:old_subject_id',
             'reason' => 'required|string|min:5|max:1000',
@@ -2667,25 +2669,31 @@ class StudentController extends Controller
 
         $student = Student::findOrFail($id);
 
-        $activeOldEnrollment = SubjectsEnrollment::where('student_id', $student->id)
+        $oldEnrollmentQuery = SubjectsEnrollment::where('student_id', $student->id)
             ->where('subject_id', $validated['old_subject_id'])
-            ->whereNull('deleted_at')
-            ->first();
+            ->whereNull('deleted_at');
+
+        if (!empty($validated['course_enrollment_id'])) {
+            $oldEnrollmentQuery->where('course_enrollment_id', $validated['course_enrollment_id']);
+        }
+
+        $activeOldEnrollment = $oldEnrollmentQuery->first();
 
         if (!$activeOldEnrollment) {
             return response()->json([
-                'message' => 'The student is not actively enrolled in the subject being replaced.',
+                'message' => 'The student is not actively enrolled in the subject being replaced for this course.',
             ], 422);
         }
 
         $alreadyEnrolledNew = SubjectsEnrollment::where('student_id', $student->id)
+            ->where('course_enrollment_id', $activeOldEnrollment->course_enrollment_id)
             ->where('subject_id', $validated['new_subject_id'])
             ->whereNull('deleted_at')
             ->exists();
 
         if ($alreadyEnrolledNew) {
             return response()->json([
-                'message' => 'The student is already actively enrolled in the selected replacement subject.',
+                'message' => 'The student is already actively enrolled in the selected replacement subject for this course.',
             ], 422);
         }
 
@@ -2727,7 +2735,16 @@ class StudentController extends Controller
                 return $change;
             });
 
-            $changeRecord->load(['oldSubject:id,name', 'newSubject:id,name', 'changedByStaff:id,firstname,surname']);
+            $changeRecord->load([
+                'oldSubject:id,name',
+                'newSubject:id,name',
+                'changedByStaff:id,firstname,surname',
+                'courseEnrollment.course:id,title,slug'
+            ]);
+
+            $courseTitle = $changeRecord->courseEnrollment?->course?->title;
+            $oldSubjectLabel = $courseTitle ? "{$courseTitle} - {$changeRecord->oldSubject?->name}" : $changeRecord->oldSubject?->name;
+            $newSubjectLabel = $courseTitle ? "{$courseTitle} - {$changeRecord->newSubject?->name}" : $changeRecord->newSubject?->name;
 
             if (class_exists(StudentNotificationService::class)) {
                 try {
@@ -2735,8 +2752,9 @@ class StudentController extends Controller
                         $student,
                         'subject_combination_changed',
                         [
-                            'old_subject' => $changeRecord->oldSubject?->name,
-                            'new_subject' => $changeRecord->newSubject?->name,
+                            'course' => $courseTitle,
+                            'old_subject' => $oldSubjectLabel,
+                            'new_subject' => $newSubjectLabel,
                             'reason' => $changeRecord->reason,
                         ]
                     );
@@ -2772,7 +2790,8 @@ class StudentController extends Controller
         $pendingChanges = StudentSubjectChange::with([
                 'oldSubject:id,name',
                 'newSubject:id,name',
-                'changedByStaff:id,firstname,surname'
+                'changedByStaff:id,firstname,surname',
+                'courseEnrollment.course:id,title,slug',
             ])
             ->where('student_id', $student->id)
             ->whereNull('acknowledged_at')
