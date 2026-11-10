@@ -497,6 +497,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::post('/sessions/{classSession}/status', [ClassesController::class, 'updateSessionStatus']);
         Route::match(['patch', 'post'], '/sessions/{id}/reschedule', [ClassesController::class, 'rescheduleSession']);
         Route::match(['patch', 'post'], '/sessions/{id}/cancel', [ClassesController::class, 'cancelSession']);
+        Route::delete('/sessions/{id}', [ClassesController::class, 'destroySession']);
         Route::post('/sessions/{id}/check-clash', [ClassesController::class, 'checkSessionClash']);
         Route::match(['patch', 'post'], '/{id}/reschedule', [ClassesController::class, 'rescheduleSession']);
         Route::match(['patch', 'post'], '/{id}/cancel', [ClassesController::class, 'cancelSession']);
@@ -506,6 +507,7 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     Route::prefix('sessions')->group(function () {
         Route::match(['patch', 'post'], '/{id}/reschedule', [ClassesController::class, 'rescheduleSession']);
         Route::match(['patch', 'post'], '/{id}/cancel', [ClassesController::class, 'cancelSession']);
+        Route::delete('/{id}', [ClassesController::class, 'destroySession']);
         Route::post('/{id}/check-clash', [ClassesController::class, 'checkSessionClash']);
     });
 
