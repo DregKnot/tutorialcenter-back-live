@@ -1041,8 +1041,8 @@ class ClassesController extends Controller
                         'subject_name' => $subject,
                         'topic' => $s->class?->title ?? "{$subject} Master Class",
                         'session_date' => $s->session_date ? $s->session_date->toDateString() : '',
-                        'starts_at' => $s->starts_at ? substr($s->starts_at, 0, 5) : '10:00',
-                        'ends_at' => $s->ends_at ? substr($s->ends_at, 0, 5) : '11:30',
+                        'starts_at' => $s->starts_at ? substr($s->starts_at, 0, 5) : '17:00',
+                        'ends_at' => $s->ends_at ? substr($s->ends_at, 0, 5) : '19:00',
                         'tutor_name' => $tutor ? "{$tutor->firstname} {$tutor->surname}" : 'Assigned Tutor',
                         'tutor' => [
                             'id' => $tutor?->id,
