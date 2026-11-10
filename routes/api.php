@@ -143,6 +143,10 @@ Route::prefix('students')->middleware(['auth:sanctum', 'auth:student'])->group(f
     Route::post('/contact/change/confirm', [StudentController::class, 'confirmContactChange']); // Verify contact change with OTP
     // Route::post('/phone/change/resend-otp', [StudentController::class, 'resendPhoneChangeOtp']); // Resend OTP for phone number change
 
+    // Subject Changes Notifications (Student)
+    Route::get('/subject-changes/pending', [StudentController::class, 'getPendingSubjectChanges']);
+    Route::post('/subject-changes/{id}/acknowledge', [StudentController::class, 'acknowledgeSubjectChange']);
+
     // Notification Routes
     Route::get('/notifications', [NotificationController::class, 'index']);
     Route::post('/notifications/{id}/read', [NotificationController::class, 'markAsRead']);
@@ -508,6 +512,8 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
     // Student Management
     Route::prefix('students')->group(function () {
         Route::post('/complimentary-registration', [StudentController::class, 'createComplimentaryRegistration'])
+            ->middleware('staff.role:admin');
+        Route::post('/{id}/change-subject', [StudentController::class, 'changeSubject'])
             ->middleware('staff.role:admin');
         Route::post('/restore/{id}', [StudentController::class, 'restore']); // Restore a soft-deleted student
         Route::delete('/destroy/{id}', [StudentController::class, 'destroy']); // Soft delete a student

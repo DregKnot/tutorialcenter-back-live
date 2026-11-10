@@ -222,7 +222,7 @@ class CourseController extends Controller
     public function index(): JsonResponse
     {
         try {
-            $courses = Course::where('status', 'active')->get();
+            $courses = Course::where('status', 'active')->with('subjects')->get();
             return response()->json([
                 'success' => true,
                 'courses' => $courses,
