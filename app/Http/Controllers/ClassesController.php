@@ -785,24 +785,29 @@ class ClassesController extends Controller
                 ], 404);
             }
 
-            // RULE: When a class has started, is live, or has already elapsed, it CANNOT be rescheduled!
-            $isLiveOrStarted = !empty($session->started_at)
-                || !empty($session->started_by_staff_id)
-                || in_array(strtolower((string) $session->status), ['started', 'live', 'in_progress', 'completed']);
+            // RULE: Only a class session that is CURRENTLY LIVE / ACTIVE RIGHT NOW cannot be rescheduled.
+            // Past classes (missed, unheld, or completed) CAN be rescheduled!
+            $isLiveNow = in_array(strtolower((string) $session->status), ['started', 'live', 'in_progress'])
+                || (!empty($session->started_at) && empty($session->ended_at) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed']));
 
-            if (!$isLiveOrStarted && !empty($session->session_date) && !empty($session->starts_at)) {
+            if (!$isLiveNow && !empty($session->session_date) && !empty($session->starts_at) && !empty($session->ends_at)) {
                 try {
-                    $sessionStartDateTime = Carbon::parse("{$session->session_date} {$session->starts_at}");
-                    if ($sessionStartDateTime->isPast() && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled'])) {
-                        $isLiveOrStarted = true;
+                    $sessionDate = Carbon::parse($session->session_date);
+                    if ($sessionDate->isToday()) {
+                        $start = Carbon::parse($sessionDate->toDateString() . ' ' . $session->starts_at);
+                        $end = Carbon::parse($sessionDate->toDateString() . ' ' . $session->ends_at);
+                        $now = now();
+                        if ($now->between($start, $end) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed'])) {
+                            $isLiveNow = true;
+                        }
                     }
                 } catch (\Throwable $e) {}
             }
 
-            if ($isLiveOrStarted) {
+            if ($isLiveNow) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'This class session has already started or elapsed and cannot be rescheduled.'
+                    'message' => 'This class session is currently live and ongoing. It cannot be rescheduled while in progress.'
                 ], 422);
             }
 
@@ -833,9 +838,9 @@ class ClassesController extends Controller
             }
 
             // Update the target session cleanly:
-            // If the session already had attendance recorded, keep its historical attendance intact
+            // If the session already had attendance recorded or was completed, keep its historical attendance intact
             // and spawn a fresh session record for the new date to avoid ghost attendance.
-            if ($session->attendances()->exists()) {
+            if ($session->attendances()->exists() || strtolower((string) $session->status) === 'completed') {
                 $session->update(['status' => 'rescheduled']);
                 $newSession = ClassSession::create([
                     'class_id' => $session->class_id,
@@ -851,7 +856,7 @@ class ClassesController extends Controller
                 $session->session_date = $request->new_date;
                 $session->starts_at = $request->new_start_time;
                 $session->ends_at = $request->new_end_time;
-                $session->status = 'rescheduled';
+                $session->status = 'scheduled';
                 $session->save();
             }
 
@@ -905,10 +910,27 @@ class ClassesController extends Controller
                 ], 404);
             }
 
-            if (in_array(strtolower((string) $session->status), ['started', 'live', 'in_progress'])) {
+            $isLiveNow = in_array(strtolower((string) $session->status), ['started', 'live', 'in_progress'])
+                || (!empty($session->started_at) && empty($session->ended_at) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed']));
+
+            if (!$isLiveNow && !empty($session->session_date) && !empty($session->starts_at) && !empty($session->ends_at)) {
+                try {
+                    $sessionDate = Carbon::parse($session->session_date);
+                    if ($sessionDate->isToday()) {
+                        $start = Carbon::parse($sessionDate->toDateString() . ' ' . $session->starts_at);
+                        $end = Carbon::parse($sessionDate->toDateString() . ' ' . $session->ends_at);
+                        $now = now();
+                        if ($now->between($start, $end) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed'])) {
+                            $isLiveNow = true;
+                        }
+                    }
+                } catch (\Throwable $e) {}
+            }
+
+            if ($isLiveNow) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Active live classes cannot be cancelled by Admin. The Course Advisor must conclude the active session.'
+                    'message' => 'Active live classes cannot be cancelled while in progress. The Course Advisor must conclude the active session.'
                 ], 422);
             }
 
