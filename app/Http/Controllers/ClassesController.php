@@ -838,27 +838,21 @@ class ClassesController extends Controller
             }
 
             // Update the target session cleanly:
-            // If the session already had attendance recorded or was completed, keep its historical attendance intact
-            // and spawn a fresh session record for the new date to avoid ghost attendance.
-            if ($session->attendances()->exists() || strtolower((string) $session->status) === 'completed') {
-                $session->update(['status' => 'rescheduled']);
-                $newSession = ClassSession::create([
-                    'class_id' => $session->class_id,
-                    'class_schedule_id' => $session->class_schedule_id,
-                    'session_date' => $request->new_date,
-                    'starts_at' => $request->new_start_time,
-                    'ends_at' => $request->new_end_time,
-                    'class_link' => $session->class_link,
-                    'status' => 'scheduled',
-                ]);
-                $session = $newSession;
-            } else {
-                $session->session_date = $request->new_date;
-                $session->starts_at = $request->new_start_time;
-                $session->ends_at = $request->new_end_time;
-                $session->status = 'scheduled';
-                $session->save();
-            }
+            // Always preserve the original session on its original date marked with status 'rescheduled',
+            // so students and tutors clearly see in their schedule that the original date's session was rescheduled,
+            // and spawn a fresh active session on the new target date.
+            $session->update(['status' => 'rescheduled']);
+
+            $newSession = ClassSession::create([
+                'class_id' => $session->class_id,
+                'class_schedule_id' => $session->class_schedule_id,
+                'session_date' => $request->new_date,
+                'starts_at' => $request->new_start_time,
+                'ends_at' => $request->new_end_time,
+                'class_link' => $session->class_link,
+                'status' => 'scheduled',
+            ]);
+            $session = $newSession;
 
             DB::commit();
 
