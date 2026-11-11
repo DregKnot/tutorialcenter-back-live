@@ -39,6 +39,17 @@ class StaffRoleMiddleware
                 return $next($request);
             }
 
+            // Allow COO to reschedule, cancel, delete, and manage class sessions
+            if ($userRole === 'coo' && (
+                $request->is('*sessions/*') ||
+                $request->is('*sessions*') ||
+                $request->is('*classes/*/reschedule*') ||
+                $request->is('*classes/*/cancel*') ||
+                $request->is('*classes/sessions*')
+            )) {
+                return $next($request);
+            }
+
             // Disallow read-only roles from mutating admin resources (students, staff, exams, courses, etc.)
             return response()->json([
                 'message' => 'The ' . strtoupper($userRole) . ' role has read-only access to administrative records and cannot modify data.',

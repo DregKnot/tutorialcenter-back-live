@@ -766,12 +766,15 @@ class ClassesController extends Controller
         }
 
         try {
-            $session = ClassSession::with(['class.subject', 'class.staffs'])->find($id);
-            if (!$session) {
-                // If class_id was passed instead of session_id
+            $sessionId = $request->input('session_id') ?: $id;
+            $session = ClassSession::with(['class.subject', 'class.staffs'])->find($sessionId);
+
+            // Only attempt class_id fallback if explicitly passed in the request body
+            if (!$session && $request->filled('class_id')) {
                 $session = ClassSession::with(['class.subject', 'class.staffs'])
-                    ->where('class_id', $id)
+                    ->where('class_id', $request->input('class_id'))
                     ->whereDate('session_date', '>=', today()->toDateString())
+                    ->whereNotIn('status', ['cancelled'])
                     ->first();
             }
 
@@ -780,6 +783,32 @@ class ClassesController extends Controller
                     'success' => false,
                     'message' => 'Class session not found.'
                 ], 404);
+            }
+
+            // RULE: Only a class session that is CURRENTLY LIVE / ACTIVE RIGHT NOW cannot be rescheduled.
+            // Past classes (missed, unheld, or completed) CAN be rescheduled!
+            $isLiveNow = in_array(strtolower((string) $session->status), ['started', 'live', 'in_progress'])
+                || (!empty($session->started_at) && empty($session->ended_at) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed']));
+
+            if (!$isLiveNow && !empty($session->session_date) && !empty($session->starts_at) && !empty($session->ends_at)) {
+                try {
+                    $sessionDate = Carbon::parse($session->session_date);
+                    if ($sessionDate->isToday()) {
+                        $start = Carbon::parse($sessionDate->toDateString() . ' ' . $session->starts_at);
+                        $end = Carbon::parse($sessionDate->toDateString() . ' ' . $session->ends_at);
+                        $now = now();
+                        if ($now->between($start, $end) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed'])) {
+                            $isLiveNow = true;
+                        }
+                    }
+                } catch (\Throwable $e) {}
+            }
+
+            if ($isLiveNow) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'This class session is currently live and ongoing. It cannot be rescheduled while in progress.'
+                ], 422);
             }
 
             $validator = Validator::make($request->all(), [
@@ -809,27 +838,21 @@ class ClassesController extends Controller
             }
 
             // Update the target session cleanly:
-            // If the session already had attendance recorded, keep its historical attendance intact
-            // and spawn a fresh session record for the new date to avoid ghost attendance.
-            if ($session->attendances()->exists()) {
-                $session->update(['status' => 'rescheduled']);
-                $newSession = ClassSession::create([
-                    'class_id' => $session->class_id,
-                    'class_schedule_id' => $session->class_schedule_id,
-                    'session_date' => $request->new_date,
-                    'starts_at' => $request->new_start_time,
-                    'ends_at' => $request->new_end_time,
-                    'class_link' => $session->class_link,
-                    'status' => 'scheduled',
-                ]);
-                $session = $newSession;
-            } else {
-                $session->session_date = $request->new_date;
-                $session->starts_at = $request->new_start_time;
-                $session->ends_at = $request->new_end_time;
-                $session->status = 'rescheduled';
-                $session->save();
-            }
+            // Always preserve the original session on its original date marked with status 'rescheduled',
+            // so students and tutors clearly see in their schedule that the original date's session was rescheduled,
+            // and spawn a fresh active session on the new target date.
+            $session->update(['status' => 'rescheduled']);
+
+            $newSession = ClassSession::create([
+                'class_id' => $session->class_id,
+                'class_schedule_id' => $session->class_schedule_id,
+                'session_date' => $request->new_date,
+                'starts_at' => $request->new_start_time,
+                'ends_at' => $request->new_end_time,
+                'class_link' => $session->class_link,
+                'status' => 'scheduled',
+            ]);
+            $session = $newSession;
 
             DB::commit();
 
@@ -862,11 +885,15 @@ class ClassesController extends Controller
         }
 
         try {
-            $session = ClassSession::with(['class.subject', 'class.staffs'])->find($id);
-            if (!$session) {
+            $sessionId = $request->input('session_id') ?: $id;
+            $session = ClassSession::with(['class.subject', 'class.staffs'])->find($sessionId);
+
+            // Only attempt class_id fallback if explicitly passed in the request body
+            if (!$session && $request->filled('class_id')) {
                 $session = ClassSession::with(['class.subject', 'class.staffs'])
-                    ->where('class_id', $id)
+                    ->where('class_id', $request->input('class_id'))
                     ->whereDate('session_date', '>=', today()->toDateString())
+                    ->whereNotIn('status', ['cancelled'])
                     ->first();
             }
 
@@ -875,6 +902,30 @@ class ClassesController extends Controller
                     'success' => false,
                     'message' => 'Class session not found.'
                 ], 404);
+            }
+
+            $isLiveNow = in_array(strtolower((string) $session->status), ['started', 'live', 'in_progress'])
+                || (!empty($session->started_at) && empty($session->ended_at) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed']));
+
+            if (!$isLiveNow && !empty($session->session_date) && !empty($session->starts_at) && !empty($session->ends_at)) {
+                try {
+                    $sessionDate = Carbon::parse($session->session_date);
+                    if ($sessionDate->isToday()) {
+                        $start = Carbon::parse($sessionDate->toDateString() . ' ' . $session->starts_at);
+                        $end = Carbon::parse($sessionDate->toDateString() . ' ' . $session->ends_at);
+                        $now = now();
+                        if ($now->between($start, $end) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed'])) {
+                            $isLiveNow = true;
+                        }
+                    }
+                } catch (\Throwable $e) {}
+            }
+
+            if ($isLiveNow) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Active live classes cannot be cancelled while in progress. The Course Advisor must conclude the active session.'
+                ], 422);
             }
 
             $session->update(['status' => 'cancelled']);
@@ -888,6 +939,53 @@ class ClassesController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to cancel class session',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Permanently delete an errant class session (Admin & Staff)
+     * For cleaning up accidentally scheduled or phantom sessions with zero attendance.
+     */
+    public function destroySession(Request $request, $id): JsonResponse
+    {
+        $staffUser = $request->user() ?: auth('staff')->user();
+        if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. Only administrators and COOs can delete class sessions.'
+            ], 403);
+        }
+
+        try {
+            $sessionId = $request->input('session_id') ?: $id;
+            $session = ClassSession::find($sessionId);
+
+            if (!$session) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Class session not found.'
+                ], 404);
+            }
+
+            if ($session->attendances()->exists()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot delete a class session that already has recorded student attendance. You may cancel it instead.'
+                ], 422);
+            }
+
+            $session->delete();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Class session successfully removed.',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to delete class session',
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
@@ -916,10 +1014,11 @@ class ClassesController extends Controller
             $targetDate = $request->new_date;
             $newStart = $request->new_start_time;
             $newEnd = $request->new_end_time;
+            $sessionId = $request->input('session_id') ?: $id;
 
             // Clashes on same date where status is not cancelled and time intervals overlap
             $clashing = ClassSession::with(['class.subject', 'class.staffs'])
-                ->where('id', '!=', $id)
+                ->where('id', '!=', $sessionId)
                 ->where('session_date', $targetDate)
                 ->whereNotIn('status', ['cancelled'])
                 ->where(function ($q) use ($newStart, $newEnd) {
@@ -936,8 +1035,8 @@ class ClassesController extends Controller
                         'subject_name' => $subject,
                         'topic' => $s->class?->title ?? "{$subject} Master Class",
                         'session_date' => $s->session_date ? $s->session_date->toDateString() : '',
-                        'starts_at' => $s->starts_at ? substr($s->starts_at, 0, 5) : '10:00',
-                        'ends_at' => $s->ends_at ? substr($s->ends_at, 0, 5) : '11:30',
+                        'starts_at' => $s->starts_at ? substr($s->starts_at, 0, 5) : '17:00',
+                        'ends_at' => $s->ends_at ? substr($s->ends_at, 0, 5) : '19:00',
                         'tutor_name' => $tutor ? "{$tutor->firstname} {$tutor->surname}" : 'Assigned Tutor',
                         'tutor' => [
                             'id' => $tutor?->id,
