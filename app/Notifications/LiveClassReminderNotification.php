@@ -130,14 +130,21 @@ class LiveClassReminderNotification extends Notification
     {
         $classTitle = $this->session->class?->title ?? 'Live Class';
         $studentName = $this->student ? trim($this->student->firstname . ' ' . $this->student->surname) : 'Student';
+        $isPrivate = (bool) ($this->session->class?->is_private || $this->session->class?->private_student_id);
 
         if ($notifiable instanceof Student) {
-            return "Reminder: Your {$classTitle} class starts in 15 minutes";
+            return $isPrivate
+                ? "Reminder: Your private 1-on-1 {$classTitle} class starts in 15 minutes"
+                : "Reminder: Your {$classTitle} class starts in 15 minutes";
         } elseif ($notifiable instanceof Guardian) {
-            return "Reminder: {$studentName}'s {$classTitle} class starts in 15 minutes";
+            return $isPrivate
+                ? "Reminder: {$studentName}'s private 1-on-1 {$classTitle} class starts in 15 minutes"
+                : "Reminder: {$studentName}'s {$classTitle} class starts in 15 minutes";
         } else {
             // Staff / Advisor
-            return "Class Reminder: {$studentName} has {$classTitle} starting in 15 minutes";
+            return $isPrivate
+                ? "Class Reminder: {$studentName} has private 1-on-1 {$classTitle} starting in 15 minutes"
+                : "Class Reminder: {$studentName} has {$classTitle} starting in 15 minutes";
         }
     }
 
@@ -147,13 +154,20 @@ class LiveClassReminderNotification extends Notification
         $studentName = $this->student ? trim($this->student->firstname . ' ' . $this->student->surname) : 'your ward';
         $startTime = StudentNotificationService::sessionTime($this->session, 'starts_at');
         $timeStr = $startTime ? $startTime->format('g:i A') : ($this->session->starts_at ?? 'in 15 minutes');
+        $isPrivate = (bool) ($this->session->class?->is_private || $this->session->class?->private_student_id);
 
         if ($notifiable instanceof Student) {
-            return "Your live class for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes). Get ready to join!";
+            return $isPrivate
+                ? "Your private 1-on-1 session for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes). Get ready to join!"
+                : "Your live class for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes). Get ready to join!";
         } elseif ($notifiable instanceof Guardian) {
-            return "This is a reminder that {$studentName}'s live class for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes).";
+            return $isPrivate
+                ? "This is a reminder that {$studentName}'s private 1-on-1 session for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes)."
+                : "This is a reminder that {$studentName}'s live class for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes).";
         } else {
-            return "This is a reminder that {$studentName}'s live class for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes).";
+            return $isPrivate
+                ? "This is a reminder that {$studentName}'s private 1-on-1 session for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes)."
+                : "This is a reminder that {$studentName}'s live class for {$classTitle} is scheduled to start at {$timeStr} (in 15 minutes).";
         }
     }
 }

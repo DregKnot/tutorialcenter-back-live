@@ -159,17 +159,29 @@ class ZoomController extends Controller
             $role = 0;
 
             if ($user instanceof \App\Models\Student) {
-                $isEnrolled = $user->enrolledInSubject($class->subject_id)
-                    || CourseEnrollment::where('student_id', $user->id)
-                        ->where('status', 'active')
-                        ->whereHas('course.subjects', fn($q) => $q->where('subjects.id', $class->subject_id))
-                        ->exists();
+                // Strictly guard 1-on-1 private classes: ONLY the assigned private student may join
+                $isPrivateClass = (bool) ($class->is_private || $class->private_student_id);
+                if ($isPrivateClass) {
+                    $privateStudentId = $class->private_student_id ?? $class->privateEnrollment?->student_id;
+                    if ((int) $user->id !== (int) $privateStudentId) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Unauthorized. This 1-on-1 private class is reserved for another student.',
+                        ], 403);
+                    }
+                } else {
+                    $isEnrolled = $user->enrolledInSubject($class->subject_id)
+                        || CourseEnrollment::where('student_id', $user->id)
+                            ->where('status', 'active')
+                            ->whereHas('course.subjects', fn($q) => $q->where('subjects.id', $class->subject_id))
+                            ->exists();
 
-                if (!$isEnrolled) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => 'You are not enrolled in this subject.',
-                    ], 403);
+                    if (!$isEnrolled) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'You are not enrolled in this subject.',
+                        ], 403);
+                    }
                 }
                 $role = 0; // Student joins as participant
             } elseif ($user instanceof \App\Models\Staff) {

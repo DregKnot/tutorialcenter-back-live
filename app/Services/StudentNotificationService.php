@@ -56,6 +56,28 @@ class StudentNotificationService
         });
     }
 
+    /**
+     * Resolve eligible students for a specific class session.
+     * For 1-on-1 private classes, strictly isolates delivery to ONLY the assigned private student.
+     * For public classes, broadcasts to all active students enrolled in the class subject.
+     */
+    public static function studentsForClassSession(ClassSession $session): \Illuminate\Database\Eloquent\Builder
+    {
+        $class = $session->class;
+        $isPrivate = (bool) ($class?->is_private || $class?->private_student_id);
+
+        if ($isPrivate) {
+            $privateStudentId = $class->private_student_id ?? $class->privateEnrollment?->student_id;
+            if ($privateStudentId) {
+                return Student::where('id', $privateStudentId);
+            }
+            // Fail-safe: if private student cannot be resolved, return an empty query to prevent leaking private classes
+            return Student::whereRaw('1 = 0');
+        }
+
+        return self::enrolledStudents($class->subject_id);
+    }
+
     /** The first after-commit callback sees all new sessions in a creation transaction. */
     public static function sessionsCreated(int $sessionId): void
     {
@@ -63,7 +85,7 @@ class StudentNotificationService
         if ($processed->offsetExists($sessionId)) {
             return;
         }
-        $session = \App\Models\ClassSession::with('class.subject')->find($sessionId);
+        $session = \App\Models\ClassSession::with(['class.subject', 'class.privateEnrollment'])->find($sessionId);
         if (! $session || ! $session->class || $session->class->status !== 'active') {
             return;
         }
@@ -75,7 +97,7 @@ class StudentNotificationService
         if ($sessions->isEmpty()) {
             return;
         }
-        self::enrolledStudents($session->class->subject_id)->chunkById(100, function ($students) use ($sessions, $session) {
+        self::studentsForClassSession($session)->chunkById(100, function ($students) use ($sessions, $session) {
             foreach ($students as $student) {
                 try {
                     DB::transaction(function () use ($student, $sessions, $session) {
@@ -102,9 +124,14 @@ class StudentNotificationService
                                     .($end ? '–'.$end->format('g:i A') : '');
                             })->unique()->values()->all(),
                         ];
-                        $message = count($ids) === 1
-                            ? 'A new live class for '.$subject.' has been scheduled.'
-                            : count($ids).' live classes for '.$subject.' have been scheduled on separate dates.';
+                        $isPrivate = (bool) ($session->class->is_private || $session->class->private_student_id);
+                        $message = $isPrivate
+                            ? (count($ids) === 1
+                                ? 'Your private 1-on-1 session for '.$subject.' has been scheduled.'
+                                : count($ids).' private 1-on-1 sessions for '.$subject.' have been scheduled.')
+                            : (count($ids) === 1
+                                ? 'A new live class for '.$subject.' has been scheduled.'
+                                : count($ids).' live classes for '.$subject.' have been scheduled on separate dates.');
                         self::learning($student, 'class_sessions_created', implode(',', $ids),
                             new \App\Notifications\StudentLearningNotification('class_sessions_created', $message, $data));
                     });
@@ -132,17 +159,21 @@ class StudentNotificationService
 
     public static function recordingAvailable(int $sessionId): void
     {
-        $session = \App\Models\ClassSession::with('class.subject')->find($sessionId);
+        $session = \App\Models\ClassSession::with(['class.subject', 'class.privateEnrollment'])->find($sessionId);
         if (! $session || ! $session->class || ! filter_var($session->recording_link, FILTER_VALIDATE_URL)
             || ! self::sessionTime($session, 'ends_at')?->isPast()) {
             return;
         }
-        self::enrolledStudents($session->class->subject_id)->chunkById(100, function ($students) use ($session) {
+        self::studentsForClassSession($session)->chunkById(100, function ($students) use ($session) {
             foreach ($students as $student) {
                 try {
+                    $isPrivate = (bool) ($session->class->is_private || $session->class->private_student_id);
+                    $message = $isPrivate
+                        ? 'The recording for your private 1-on-1 class ('.$session->class->title.') on '.$session->session_date->format('j M Y').' is available.'
+                        : 'The recording for '.$session->class->title.' on '.$session->session_date->format('j M Y').' is available.';
                     self::learning($student, 'class_recording_available', (string) $session->id,
                         new \App\Notifications\StudentLearningNotification('class_recording_available',
-                            'The recording for '.$session->class->title.' on '.$session->session_date->format('j M Y').' is available.',
+                            $message,
                             ['class_session_id' => $session->id, 'class_id' => $session->class_id, 'recording_link' => $session->recording_link]));
                 } catch (\Throwable $exception) {
                     report($exception);
@@ -154,16 +185,16 @@ class StudentNotificationService
     public static function sendLiveClassReminder(ClassSession|int $session): void
     {
         if (is_int($session)) {
-            $session = ClassSession::with(['class.subject'])->find($session);
+            $session = ClassSession::with(['class.subject', 'class.privateEnrollment'])->find($session);
         } else {
-            $session->loadMissing(['class.subject']);
+            $session->loadMissing(['class.subject', 'class.privateEnrollment']);
         }
 
         if (! $session || ! $session->class || ! $session->class->subject_id || $session->status !== 'scheduled') {
             return;
         }
 
-        self::enrolledStudents($session->class->subject_id)
+        self::studentsForClassSession($session)
             ->with(['guardians', 'advisors'])
             ->chunkById(100, function ($students) use ($session) {
                 foreach ($students as $student) {

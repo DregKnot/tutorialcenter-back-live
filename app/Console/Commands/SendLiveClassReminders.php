@@ -36,7 +36,7 @@ class SendLiveClassReminders extends Command
         // If specific session requested (e.g. for testing)
         $targetSessionId = $this->option('session');
         if ($targetSessionId) {
-            $session = ClassSession::with(['class.subject'])->find($targetSessionId);
+            $session = ClassSession::with(['class.subject', 'class.privateEnrollment'])->find($targetSessionId);
             if (! $session) {
                 $this->error("Class session #{$targetSessionId} not found.");
                 return self::FAILURE;
@@ -62,7 +62,7 @@ class SendLiveClassReminders extends Command
         $yesterday = $now->copy()->subDay()->toDateString();
         $tomorrow = $now->copy()->addDay()->toDateString();
 
-        ClassSession::with(['class.subject'])
+        ClassSession::with(['class.subject', 'class.privateEnrollment'])
             ->where('status', 'scheduled')
             ->whereBetween('session_date', [$yesterday, $tomorrow])
             ->whereNotNull('starts_at')
