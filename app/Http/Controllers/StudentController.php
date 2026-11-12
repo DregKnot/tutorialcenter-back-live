@@ -484,25 +484,6 @@ class StudentController extends Controller
             ]);
 
             /**
-             * 3. Trigger verification (MUST succeed)
-             */
-            if ($student->email) {
-                app(EmailVerificationService::class)->send($student);
-            }
-
-            if ($student->tel) {
-                try {
-                    $this->dispatchStudentPhoneOtp($student->tel);
-                } catch (\Throwable $smsError) {
-                    \Illuminate\Support\Facades\Log::warning('Failed to send student phone OTP during registration', [
-                        'student_id' => $student->id,
-                        'tel' => $student->tel,
-                        'error' => $smsError->getMessage(),
-                    ]);
-                }
-            }
-
-            /**
              * ⚠️ IMPORTANT DESIGN DECISION
              * 
              * You CANNOT enforce verification here yet,
@@ -512,7 +493,7 @@ class StudentController extends Controller
              */
 
             /**
-             * 4. Handle profile picture
+             * 3. Handle profile picture
              */
             if ($request->hasFile('profile_picture')) {
                 $file = $request->file('profile_picture');
@@ -521,7 +502,7 @@ class StudentController extends Controller
             }
 
             /**
-             * 5. Save biodata
+             * 4. Save biodata
              */
             $student->update([
                 'firstname' => $data['firstname'],
@@ -560,6 +541,33 @@ class StudentController extends Controller
             $accountAward = $onboardingAchievements->accountCreated($student);
 
             DB::commit();
+
+            /**
+             * 5. Trigger verification notifications (outside the DB transaction to avoid blocking locks)
+             */
+            if ($student->email) {
+                try {
+                    app(EmailVerificationService::class)->send($student);
+                } catch (\Throwable $mailError) {
+                    \Illuminate\Support\Facades\Log::warning('Failed to send student verification email during registration', [
+                        'student_id' => $student->id,
+                        'email' => $student->email,
+                        'error' => $mailError->getMessage(),
+                    ]);
+                }
+            }
+
+            if ($student->tel) {
+                try {
+                    $this->dispatchStudentPhoneOtp($student->tel);
+                } catch (\Throwable $smsError) {
+                    \Illuminate\Support\Facades\Log::warning('Failed to send student phone OTP during registration', [
+                        'student_id' => $student->id,
+                        'tel' => $student->tel,
+                        'error' => $smsError->getMessage(),
+                    ]);
+                }
+            }
 
             return response()->json([
                 'message' => 'Registration successful. Please verify your email or phone.',
