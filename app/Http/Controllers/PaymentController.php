@@ -912,7 +912,167 @@ class PaymentController extends Controller
         });
     }
 
-    // Public (reference + token): the student confirms they have paid.
+    /**
+     * Batch initiate direct bank transfer for a guardian paying for one or more wards.
+     */
+    public function initiateGuardianBankTransfer(Request $request)
+    {
+        $validated = $request->validate([
+            'guardian_id' => 'nullable|integer',
+            'students' => 'required|array|min:1',
+            'students.*.student_id' => 'required|exists:students,id',
+            'students.*.courses' => 'required|array|min:1',
+            'students.*.courses.*.course_id' => 'required|exists:courses,id',
+            'students.*.courses.*.billing_cycle' => 'nullable|string|in:monthly,quarterly,semi_annual,annual',
+            'students.*.courses.*.price' => 'nullable|numeric',
+            'students.*.courses.*.subjects' => 'nullable|array',
+        ]);
+
+        $guardianId = $validated['guardian_id'] ?? null;
+        if (!$guardianId && auth('sanctum')->check() && auth('sanctum')->user() instanceof \App\Models\Guardian) {
+            $guardianId = auth('sanctum')->user()->id;
+        }
+
+        $guardianModel = $guardianId ? \App\Models\Guardian::find($guardianId) : null;
+
+        return DB::transaction(function () use ($validated, $guardianId, $guardianModel) {
+            $reference = $this->generateBankTransferReference(true);
+            $accessToken = Str::random(48);
+            $totalAmount = 0;
+            $breakdown = [];
+
+            foreach ($validated['students'] as $studentData) {
+                $student = Student::findOrFail($studentData['student_id']);
+                $studentName = trim($student->firstname . ' ' . $student->surname);
+                $studentCourses = [];
+
+                foreach ($studentData['courses'] as $courseData) {
+                    $courseId = (int) $courseData['course_id'];
+                    $course = Course::findOrFail($courseId);
+                    $billingCycle = $courseData['billing_cycle'] ?? 'monthly';
+                    $months = match ($billingCycle) {
+                        'quarterly' => 3,
+                        'semi_annual' => 6,
+                        'annual' => 12,
+                        default => 1,
+                    };
+                    $calcPrice = (float) ($course->price * $months);
+                    if ($months > 1) {
+                        $calcPrice *= 0.95;
+                    }
+                    $price = isset($courseData['price']) && (float) $courseData['price'] > 0
+                        ? (float) $courseData['price']
+                        : $calcPrice;
+
+                    $totalAmount += $price;
+
+                    // Find or create pending enrollment
+                    $enrollment = CoursesEnrollment::withTrashed()
+                        ->where('course_id', $courseId)
+                        ->where('student_id', $student->id)
+                        ->first();
+
+                    if ($enrollment) {
+                        if ($enrollment->trashed()) {
+                            $enrollment->restore();
+                        }
+                        if (empty($enrollment->enrollment_code)) {
+                            $enrollment->update([
+                                'enrollment_code' => CoursesEnrollment::generateTemporaryCode(),
+                                'expires_at' => $enrollment->expires_at ?: now()->addHours(48),
+                                'billing_cycle' => $billingCycle,
+                                'cost' => $price,
+                            ]);
+                        }
+                    } else {
+                        $enrollment = CoursesEnrollment::create([
+                            'course_id' => $courseId,
+                            'student_id' => $student->id,
+                            'enrollment_code' => CoursesEnrollment::generateTemporaryCode(),
+                            'status' => 'pending',
+                            'billing_cycle' => $billingCycle,
+                            'cost' => $price,
+                            'expires_at' => now()->addHours(48),
+                        ]);
+                    }
+
+                    // Attach subjects
+                    $subjects = $courseData['subjects'] ?? [];
+                    if (!empty($subjects) && is_array($subjects)) {
+                        foreach ($subjects as $subId) {
+                            if (is_numeric($subId) && Subject::where('id', (int) $subId)->exists()) {
+                                SubjectsEnrollment::firstOrCreate([
+                                    'course_enrollment_id' => $enrollment->id,
+                                    'student_id' => $student->id,
+                                    'subject_id' => (int) $subId,
+                                ]);
+                            }
+                        }
+                    }
+
+                    // Create open bank payment row
+                    Payment::create([
+                        'student_id' => $student->id,
+                        'course_enrollment_id' => $enrollment->id,
+                        'amount' => $price,
+                        'currency' => 'NGN',
+                        'payment_method' => 'bank_transfer',
+                        'gateway' => 'bank',
+                        'status' => 'pending',
+                        'billing_cycle' => $billingCycle,
+                        'gateway_reference' => $reference,
+                        'meta' => [
+                            'bank_transfer' => [
+                                'access_token' => $accessToken,
+                                'initiated_at' => now()->toIso8601String(),
+                                'is_renewal' => false,
+                                'payer_type' => 'guardian',
+                                'is_guardian_sponsored' => true,
+                                'guardian_id' => $guardianId,
+                                'guardian_name' => $guardianModel ? trim($guardianModel->firstname . ' ' . $guardianModel->surname) : null,
+                                'guardian_email' => $guardianModel?->email,
+                                'guardian_tel' => $guardianModel?->tel,
+                                'guardian_relationship' => $guardianModel?->pivot?->relationship ?? $guardianModel?->relationship ?? null,
+                                'subjects' => $subjects,
+                                'course_title' => $course->title,
+                                'student_name' => $studentName,
+                            ],
+                        ],
+                    ]);
+
+                    $studentCourses[] = [
+                        'course_id' => $courseId,
+                        'title' => $course->title,
+                        'billing_cycle' => $billingCycle,
+                        'price' => $price,
+                    ];
+                }
+
+                $breakdown[] = [
+                    'student_id' => $student->id,
+                    'student_name' => $studentName,
+                    'courses' => $studentCourses,
+                ];
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Bank transfer details generated successfully. Use the reference as your transfer narration.',
+                'reference' => $reference,
+                'access_token' => $accessToken,
+                'total_amount' => $totalAmount,
+                'currency' => 'NGN',
+                'bank_details' => [
+                    'bank_name' => 'Zenith Bank',
+                    'account_name' => 'Tutorial Center LTD',
+                    'account_number' => '1312411265',
+                ],
+                'students_breakdown' => $breakdown,
+            ], 201);
+        });
+    }
+
+    // Public (reference + token): the student or guardian confirms they have paid.
     public function claimBankTransferPaid(Request $request, string $reference)
     {
         $validated = $request->validate([
@@ -923,64 +1083,69 @@ class PaymentController extends Controller
         ]);
 
         return DB::transaction(function () use ($reference, $validated) {
-            $payment = Payment::where('gateway_reference', $reference)
+            $payments = Payment::where('gateway_reference', $reference)
                 ->where('payment_method', 'bank_transfer')->where('gateway', 'bank')
-                ->lockForUpdate()->first();
+                ->lockForUpdate()->get();
 
-            if (!$payment) {
+            if ($payments->isEmpty()) {
                 return response()->json(['message' => 'Bank transfer payment not found.'], 404);
             }
 
-            if (!$this->bankTransferTokenMatches($payment, $validated['access_token'])) {
+            $primaryPayment = $payments->first();
+
+            if (!$this->bankTransferTokenMatches($primaryPayment, $validated['access_token'])) {
                 return response()->json(['message' => 'Invalid payment token.'], 403);
             }
 
-            if (in_array($payment->status, ['successful', 'cancelled', 'refunded'], true)) {
+            $allActive = $payments->every(fn($p) => in_array($p->status, ['successful', 'cancelled', 'refunded'], true));
+            if ($allActive) {
                 return response()->json([
-                    'message' => "This payment is {$payment->status} and cannot be claimed.",
+                    'message' => "This payment is already finalized and cannot be claimed.",
                 ], 422);
             }
 
-            if ($this->bankTransferState($payment) === 'awaiting_confirmation') {
-                return response()->json(['message' => 'Your claim is already awaiting confirmation.', 'reference' => $payment->gateway_reference, 'state' => 'awaiting_confirmation']);
+            if ($this->bankTransferState($primaryPayment) === 'awaiting_confirmation') {
+                return response()->json(['message' => 'Your claim is already awaiting confirmation.', 'reference' => $primaryPayment->gateway_reference, 'state' => 'awaiting_confirmation']);
             }
 
-            $meta = $payment->meta ?? [];
-            $bankTransfer = $meta['bank_transfer'] ?? [];
+            foreach ($payments as $payment) {
+                if (in_array($payment->status, ['successful', 'cancelled', 'refunded'], true)) {
+                    continue;
+                }
+                $meta = $payment->meta ?? [];
+                $bankTransfer = $meta['bank_transfer'] ?? [];
 
-            $payment->update([
-                // A rejected transfer that is claimed again goes back into the queue.
-                'status' => 'pending',
-                'meta' => array_merge($meta, [
-                    'bank_transfer' => array_merge($bankTransfer, [
-                        'paid_from_account_name' => $validated['paid_from_account_name'] ?? null,
-                        'amount_paid' => isset($validated['amount_paid']) ? (float) $validated['amount_paid'] : null,
-                        'note' => $validated['note'] ?? null,
-                        'claimed_paid_at' => now()->toIso8601String(),
-                        'review' => null,
+                $payment->update([
+                    'status' => 'pending',
+                    'meta' => array_merge($meta, [
+                        'bank_transfer' => array_merge($bankTransfer, [
+                            'paid_from_account_name' => $validated['paid_from_account_name'] ?? null,
+                            'amount_paid' => isset($validated['amount_paid']) ? (float) $validated['amount_paid'] : null,
+                            'note' => $validated['note'] ?? null,
+                            'claimed_paid_at' => now()->toIso8601String(),
+                            'review' => null,
+                        ]),
                     ]),
-                ]),
-            ]);
+                ]);
+            }
 
-            app(BankTransferNotificationService::class)->send($payment, 'claimed');
+            app(BankTransferNotificationService::class)->send($primaryPayment, 'claimed');
 
-            $examTrack = $bankTransfer['exam_track'] ?? null;
-            $trackLabel = $examTrack ? " for {$examTrack}" : "";
+            $totalAmount = $payments->sum('amount');
             AdminNotificationService::notify(
                 'bank_transfer_payment_claimed',
-                "Student {$payment->student_id} marked {$payment->gateway_reference} (NGN {$payment->amount}) as paid{$trackLabel}.",
+                "Payment reference {$primaryPayment->gateway_reference} (Total NGN {$totalAmount}) marked as paid by sender {$validated['paid_from_account_name']}.",
                 [
-                    'payment_id' => $payment->id,
-                    'reference' => $payment->gateway_reference,
-                    'student_id' => $payment->student_id,
-                    'exam_track' => $examTrack,
+                    'payment_id' => $primaryPayment->id,
+                    'reference' => $primaryPayment->gateway_reference,
+                    'student_id' => $primaryPayment->student_id,
                 ]
             );
 
             return response()->json([
                 'message' => 'Payment noted. An admin will confirm it shortly.',
-                'reference' => $payment->gateway_reference,
-                'state' => $this->bankTransferState($payment->fresh()),
+                'reference' => $primaryPayment->gateway_reference,
+                'state' => $this->bankTransferState($primaryPayment->fresh()),
             ]);
         });
     }
@@ -1280,6 +1445,66 @@ class PaymentController extends Controller
                 }
 
                 app(BankTransferNotificationService::class)->send($locked, 'approved');
+
+                // Also approve any pending sibling payments sharing the same gateway_reference (e.g. guardian batch)
+                $siblings = Payment::where('gateway_reference', $locked->gateway_reference)
+                    ->where('id', '!=', $locked->id)
+                    ->where('status', 'pending')
+                    ->where('payment_method', 'bank_transfer')
+                    ->where('gateway', 'bank')
+                    ->get();
+
+                foreach ($siblings as $sibling) {
+                    $sibEnrollment = CoursesEnrollment::withTrashed()->find($sibling->course_enrollment_id);
+                    if ($sibEnrollment) {
+                        $sibCycle = $sibling->billing_cycle ?: $sibEnrollment->billing_cycle ?: 'monthly';
+                        $sibMonths = match ($sibCycle) {
+                            'quarterly' => 3,
+                            'semi_annual' => 6,
+                            'annual' => 12,
+                            default => 1,
+                        };
+                        $sibBaseDate = ($sibEnrollment->status === 'active' && $sibEnrollment->end_date && \Carbon\Carbon::parse($sibEnrollment->end_date)->isFuture())
+                            ? \Carbon\Carbon::parse($sibEnrollment->end_date)
+                            : now();
+                        if ($sibEnrollment->trashed()) {
+                            $sibEnrollment->restore();
+                        }
+                        $sibEnrollment->update([
+                            'enrollment_code' => \App\Models\CoursesEnrollment::generatePermanentCode($sibEnrollment->id),
+                            'status' => 'active',
+                            'start_date' => now(),
+                            'end_date' => $sibBaseDate->copy()->addMonths($sibMonths),
+                            'billing_cycle' => $sibCycle,
+                            'paid_at' => $paidAt,
+                            'expires_at' => null,
+                            'termination_reason' => null,
+                        ]);
+                    }
+                    $sibMeta = $sibling->meta ?? [];
+                    $sibling->update([
+                        'status' => 'successful',
+                        'paid_at' => $paidAt,
+                        'meta' => array_merge($sibMeta, [
+                            'bank_transfer' => array_merge($sibMeta['bank_transfer'] ?? [], [
+                                'review' => [
+                                    'action' => 'approved',
+                                    'by_staff_id' => auth('sanctum')->id(),
+                                    'at' => now()->toIso8601String(),
+                                    'confirmed_amount' => (float) $sibling->amount,
+                                    'reason' => 'Batch guardian transfer approved',
+                                ],
+                            ]),
+                        ]),
+                    ]);
+                    app(BankTransferNotificationService::class)->send($sibling, 'approved');
+                    if ($sibling->student) {
+                        StudentNotificationService::notify($sibling->student, 'bank transfer approved', [
+                            'reference' => $sibling->gateway_reference,
+                            'amount' => $sibling->amount,
+                        ]);
+                    }
+                }
 
                 return ['already' => false, 'payment' => $locked->fresh(['student', 'enrollment.course'])];
             });

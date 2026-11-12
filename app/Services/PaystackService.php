@@ -39,7 +39,7 @@ class PaystackService
         try {
             $response = Http::withToken($this->secretKey)
                 ->acceptJson()
-                ->timeout(30)
+                ->timeout(15)
                 ->get("{$this->baseUrl}/transaction/verify/" . urlencode($reference));
 
             if (!$response->successful()) {
@@ -563,6 +563,32 @@ class PaystackService
             app(ExamPreparationAchievementService::class)->evaluatePayment($payment);
         } catch (\Throwable $e) {
             Log::warning('Achievement evaluation failed', ['error' => $e->getMessage()]);
+        }
+
+        // Send automated payment receipt and in-app notification
+        try {
+            $student->loadMissing('guardians');
+            if (filter_var(trim((string) $student->email), FILTER_VALIDATE_EMAIL)) {
+                $student->notify(new \App\Notifications\PaymentReceiptNotification($payment));
+            }
+            if ($student->guardians && $student->guardians->isNotEmpty()) {
+                foreach ($student->guardians as $guardian) {
+                    if (filter_var(trim((string) $guardian->email), FILTER_VALIDATE_EMAIL)) {
+                        $guardian->notify(new \App\Notifications\PaymentReceiptNotification($payment));
+                    }
+                }
+            }
+            StudentNotificationService::notify($student, 'payment_successful', [
+                'reference' => $reference,
+                'amount' => $payment->amount,
+                'course' => $course->title,
+            ]);
+        } catch (\Throwable $notifEx) {
+            Log::warning('Paystack payment receipt notification failed', [
+                'reference' => $reference,
+                'student_id' => $student->id,
+                'error' => $notifEx->getMessage(),
+            ]);
         }
 
         return $payment;

@@ -61,6 +61,7 @@ Route::get('/courses/{courseId}/subjects/{department}', [SubjectController::clas
 Route::post('payments', [PaymentController::class, 'store']);
 Route::post('payments/verify-paystack', [PaymentController::class, 'verifyPaystackPayment']);
 Route::post('payments/bank-transfer', [PaymentController::class, 'initiateBankTransfer']);
+Route::post('payments/guardian-bank-transfer', [PaymentController::class, 'initiateGuardianBankTransfer']);
 Route::post('payments/bank-transfer/{reference}/claim', [PaymentController::class, 'claimBankTransferPaid'])
     ->where('reference', '[A-Za-z0-9_-]+');
 Route::get('payments/bank-transfer/{reference}', [PaymentController::class, 'bankTransferStatus'])
