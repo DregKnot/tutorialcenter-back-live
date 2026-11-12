@@ -785,30 +785,9 @@ class ClassesController extends Controller
                 ], 404);
             }
 
-            // RULE: Only a class session that is CURRENTLY LIVE / ACTIVE RIGHT NOW cannot be rescheduled.
-            // Past classes (missed, unheld, or completed) CAN be rescheduled!
-            $isLiveNow = in_array(strtolower((string) $session->status), ['started', 'live', 'in_progress'])
-                || (!empty($session->started_at) && empty($session->ended_at) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed']));
-
-            if (!$isLiveNow && !empty($session->session_date) && !empty($session->starts_at) && !empty($session->ends_at)) {
-                try {
-                    $sessionDate = Carbon::parse($session->session_date);
-                    if ($sessionDate->isToday()) {
-                        $start = Carbon::parse($sessionDate->toDateString() . ' ' . $session->starts_at);
-                        $end = Carbon::parse($sessionDate->toDateString() . ' ' . $session->ends_at);
-                        $now = now();
-                        if ($now->between($start, $end) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed'])) {
-                            $isLiveNow = true;
-                        }
-                    }
-                } catch (\Throwable $e) {}
-            }
-
-            if ($isLiveNow) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'This class session is currently live and ongoing. It cannot be rescheduled while in progress.'
-                ], 422);
+            // If session was actively running or started, cleanly mark ended_at so it is concluded
+            if (!empty($session->started_at) && empty($session->ended_at)) {
+                $session->ended_at = now();
             }
 
             $validator = Validator::make($request->all(), [
@@ -904,31 +883,15 @@ class ClassesController extends Controller
                 ], 404);
             }
 
-            $isLiveNow = in_array(strtolower((string) $session->status), ['started', 'live', 'in_progress'])
-                || (!empty($session->started_at) && empty($session->ended_at) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed']));
-
-            if (!$isLiveNow && !empty($session->session_date) && !empty($session->starts_at) && !empty($session->ends_at)) {
-                try {
-                    $sessionDate = Carbon::parse($session->session_date);
-                    if ($sessionDate->isToday()) {
-                        $start = Carbon::parse($sessionDate->toDateString() . ' ' . $session->starts_at);
-                        $end = Carbon::parse($sessionDate->toDateString() . ' ' . $session->ends_at);
-                        $now = now();
-                        if ($now->between($start, $end) && !in_array(strtolower((string) $session->status), ['cancelled', 'rescheduled', 'completed'])) {
-                            $isLiveNow = true;
-                        }
-                    }
-                } catch (\Throwable $e) {}
+            // If session was actively running or started, cleanly mark ended_at so it is concluded
+            if (!empty($session->started_at) && empty($session->ended_at)) {
+                $session->ended_at = now();
             }
 
-            if ($isLiveNow) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Active live classes cannot be cancelled while in progress. The Course Advisor must conclude the active session.'
-                ], 422);
-            }
-
-            $session->update(['status' => 'cancelled']);
+            $session->update([
+                'status' => 'cancelled',
+                'ended_at' => $session->ended_at ?: now(),
+            ]);
 
             return response()->json([
                 'success' => true,
@@ -939,6 +902,87 @@ class ClassesController extends Controller
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to cancel class session',
+                'error' => config('app.debug') ? $e->getMessage() : null,
+            ], 500);
+        }
+    }
+
+    /**
+     * Reopen a cancelled class session (Admin & Staff)
+     * Can reopen on the same day/time, or relocate to a new date/time.
+     */
+    public function reopenSession(Request $request, $id): JsonResponse
+    {
+        $staffUser = $request->user() ?: auth('staff')->user();
+        if ($staffUser && !in_array(strtolower($staffUser->role), ['admin', 'superadmin', 'coo'])) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Unauthorized. Only administrators and COOs can reopen cancelled sessions.'
+            ], 403);
+        }
+
+        try {
+            $sessionId = $request->input('session_id') ?: $id;
+            $session = ClassSession::with(['class.subject', 'class.staffs'])->find($sessionId);
+
+            if (!$session) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Class session not found.'
+                ], 404);
+            }
+
+            $validator = Validator::make($request->all(), [
+                'new_date' => 'nullable|date',
+                'new_start_time' => 'nullable|string',
+                'new_end_time' => 'nullable|string',
+                'reason' => 'nullable|string',
+            ]);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Validation failed',
+                    'errors' => $validator->errors(),
+                ], 422);
+            }
+
+            DB::beginTransaction();
+
+            $updates = [
+                'status' => 'scheduled',
+                'started_at' => null,
+                'ended_at' => null,
+            ];
+
+            if ($request->filled('new_date')) {
+                $updates['session_date'] = $request->new_date;
+            }
+            if ($request->filled('new_start_time')) {
+                $updates['starts_at'] = $request->new_start_time;
+            }
+            if ($request->filled('new_end_time')) {
+                $updates['ends_at'] = $request->new_end_time;
+            }
+
+            $session->update($updates);
+
+            if ($session->class && in_array(strtolower($session->class->status), ['cancelled', 'canceled'])) {
+                $session->class->update(['status' => 'active']);
+            }
+
+            DB::commit();
+
+            return response()->json([
+                'success' => true,
+                'message' => 'Class session successfully reopened.',
+                'session' => $session->fresh(['class.subject', 'class.staffs']),
+            ]);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to reopen class session',
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
         }
