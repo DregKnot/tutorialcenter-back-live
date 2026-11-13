@@ -133,7 +133,8 @@ Route::prefix('students')->middleware(['auth:sanctum', 'auth:student'])->group(f
     Route::post('/zoom/signature', [ZoomController::class, 'generateSignature']);
     Route::post('/logout', [StudentController::class, 'logout']); // Logout Method
     Route::get('/streak', [StudentController::class, 'learningStreak']); // Get ongoing and maximum learning streak
-    Route::put('/profile/update', [StudentController::class, 'update']); // Update student profile
+    Route::match(['put', 'patch', 'post'], '/profile/update', [StudentController::class, 'update']); // Update student profile
+    Route::match(['put', 'patch', 'post'], '/update', [StudentController::class, 'update']);
     Route::get('/payments', [PaymentController::class, 'myPayments']); // Listing out all payments
     Route::post('/attendance', [AttendanceController::class, 'store']); // Record attendance for a class session
     Route::get('/courses', [CourseController::class, 'getActiveCourses']); // Get Active Courses and Subject
@@ -525,7 +526,9 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::delete('/destroy/{id}', [StudentController::class, 'destroy']); // Soft delete a student
         Route::get('/all', [StudentController::class, 'index']); // List all students
         Route::get('/{id}', [StudentController::class, 'show']); // Show student details
-        Route::put('/update', [StudentController::class, 'update']); // Update student profile
+        Route::match(['put', 'patch', 'post'], '/update/{id}', [StudentController::class, 'update']);
+        Route::match(['put', 'patch', 'post'], '/update', [StudentController::class, 'update']); // Update student profile
+        Route::match(['put', 'patch', 'post'], '/{id}', [StudentController::class, 'update']);
         Route::post('/{id}/guardians', [StudentController::class, 'assignGuardian']);
         Route::delete('/{id}/guardians/{guardianId}', [StudentController::class, 'detachGuardian']);
         Route::post('/{id}/advisors', [StudentController::class, 'assignAdvisor']);

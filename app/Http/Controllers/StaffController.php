@@ -596,10 +596,13 @@ class StaffController extends Controller
     /**
      * Get all staff (Admin only - enforced in controller)
      */
-    public function index()
+    public function index(Request $request)
     {
         try {
-            $staffs = Staff::withTrashed()->get();
+            $query = ($request->boolean('active_only') || $request->boolean('exclude_suspended'))
+                ? Staff::query()
+                : Staff::withTrashed();
+            $staffs = $query->get();
             return response()->json([
                 'message' => 'Staff retrieved successfully.',
                 'staffs' => $staffs,

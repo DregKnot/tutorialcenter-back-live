@@ -337,21 +337,44 @@ class StudentController extends Controller
      * Update student profile information
      * Allows authenticated students to update their profile (excluding email, tel and department)
      **/
-    public function update(Request $request)
+    public function update(Request $request, $id = null)
     {
         DB::beginTransaction();
 
         try {
-            // 1. Validate input
+            // 1. Resolve student to update
+            $targetId = $id ?: $request->input('student_id') ?: $request->input('id');
+            $authUser = $request->user();
+
+            if ($targetId) {
+                $student = Student::find($targetId);
+            } else if ($authUser instanceof Student) {
+                $student = $authUser;
+            } else {
+                $student = null;
+            }
+
+            if (!$student) {
+                DB::rollBack();
+
+                return response()->json([
+                    'message' => 'Student not found.',
+                ], 404);
+            }
+
+            // 2. Validate input
             $validator = Validator::make($request->all(), [
                 'firstname' => 'nullable|string|max:50',
                 'middlename' => 'nullable|string|max:50',
                 'surname' => 'nullable|string|max:50',
                 'gender' => 'nullable|string|in:male,female,others',
-                'profile_picture' => 'nullable|image|mimes:jpeg,png,jpg,gif|max:2048',
+                'profile_picture' => 'nullable',
                 'date_of_birth' => 'nullable|date|before:today',
                 'location' => 'nullable|string',
                 'address' => 'nullable|string',
+                'department' => 'nullable|string|max:100',
+                'email' => 'nullable|email|max:100',
+                'tel' => 'nullable|string|max:20',
             ]);
 
             if ($validator->fails()) {
@@ -363,20 +386,9 @@ class StudentController extends Controller
                 ], 422);
             }
 
-            // 2. Get authenticated student
-            $student = $request->user();
-
-            if (!$student) {
-                DB::rollBack();
-
-                return response()->json([
-                    'message' => 'Student not found.',
-                ], 404);
-            }
-
             $data = $validator->validated();
 
-            $fields = ['firstname', 'middlename', 'surname', 'gender', 'profile_picture', 'date_of_birth', 'location', 'address'];
+            $fields = ['firstname', 'middlename', 'surname', 'gender', 'profile_picture', 'date_of_birth', 'location', 'address', 'department'];
             $oldValues = $student->only($fields);
 
             // 3. Handle profile picture upload if provided
@@ -386,42 +398,74 @@ class StudentController extends Controller
                 $data['profile_picture'] = $path;
             }
 
-            // 4. Update student profile
-            $student->update([
-                'firstname' => $data['firstname'] ?? $student->firstname,
-                'middlename' => $data['middlename'] ?? $student->middlename,
-                'surname' => $data['surname'] ?? $student->surname,
-                'gender' => $data['gender'] ?? $student->gender,
-                'profile_picture' => $data['profile_picture'] ?? $student->profile_picture,
-                'date_of_birth' => $data['date_of_birth'] ?? $student->date_of_birth,
-                'location' => $data['location'] ?? $student->location,
-                'address' => $data['address'] ?? $student->address,
-            ]);
+            // 4. Build update payload
+            $updateData = [
+                'firstname' => array_key_exists('firstname', $data) ? $data['firstname'] : $student->firstname,
+                'middlename' => array_key_exists('middlename', $data) ? $data['middlename'] : $student->middlename,
+                'surname' => array_key_exists('surname', $data) ? $data['surname'] : $student->surname,
+                'gender' => array_key_exists('gender', $data) ? $data['gender'] : $student->gender,
+                'date_of_birth' => array_key_exists('date_of_birth', $data) ? $data['date_of_birth'] : $student->date_of_birth,
+                'location' => array_key_exists('location', $data) ? $data['location'] : $student->location,
+                'address' => array_key_exists('address', $data) ? $data['address'] : $student->address,
+                'department' => array_key_exists('department', $data) ? $data['department'] : $student->department,
+            ];
 
-            app(OnboardingAchievementService::class)
-                ->awardProfileIfComplete($student->fresh());
+            if (isset($data['profile_picture'])) {
+                $updateData['profile_picture'] = $data['profile_picture'];
+            }
+
+            // Allow email/tel update if provided and unique
+            if ($request->filled('email') && $request->input('email') !== $student->email) {
+                $emailExists = Student::where('email', $request->input('email'))->where('id', '!=', $student->id)->exists();
+                if (!$emailExists) {
+                    $updateData['email'] = $request->input('email');
+                }
+            }
+
+            if ($request->filled('tel') && $request->input('tel') !== $student->tel) {
+                $telExists = Student::where('tel', $request->input('tel'))->where('id', '!=', $student->id)->exists();
+                if (!$telExists) {
+                    $updateData['tel'] = $request->input('tel');
+                }
+            }
+
+            $student->update($updateData);
+
+            if (class_exists(OnboardingAchievementService::class)) {
+                try {
+                    app(OnboardingAchievementService::class)
+                        ->awardProfileIfComplete($student->fresh());
+                } catch (\Throwable $ignored) {
+                }
+            }
 
             // Collect changes
             $changes = [];
             foreach ($fields as $field) {
-                $newValue = $data[$field] ?? $oldValues[$field];
-                if ($newValue !== $oldValues[$field]) {
-                    $changes[$field] = ['from' => $oldValues[$field], 'to' => $newValue];
+                $newValue = $data[$field] ?? ($oldValues[$field] ?? null);
+                if ($newValue !== ($oldValues[$field] ?? null)) {
+                    $changes[$field] = ['from' => $oldValues[$field] ?? null, 'to' => $newValue];
                 }
             }
 
             DB::commit();
 
-            StudentNotificationService::notify($student, 'update profile', $changes);
+            try {
+                StudentNotificationService::notify($student, 'update profile', $changes);
+            } catch (\Throwable $ignored) {
+            }
 
             return response()->json([
+                'success' => true,
                 'message' => 'Profile updated successfully.',
                 'student' => $student->fresh(),
-            ]);
+                'data' => $student->fresh(),
+            ], 200);
         } catch (\Throwable $e) {
             DB::rollBack();
 
             return response()->json([
+                'success' => false,
                 'message' => 'Failed to update profile.',
                 'error' => config('app.debug') ? $e->getMessage() : null,
             ], 500);
