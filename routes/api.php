@@ -526,9 +526,9 @@ Route::prefix('admin')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:ad
         Route::delete('/destroy/{id}', [StudentController::class, 'destroy']); // Soft delete a student
         Route::get('/all', [StudentController::class, 'index']); // List all students
         Route::get('/{id}', [StudentController::class, 'show']); // Show student details
-        Route::match(['put', 'patch', 'post'], '/update/{id}', [StudentController::class, 'update']);
-        Route::match(['put', 'patch', 'post'], '/update', [StudentController::class, 'update']); // Update student profile
-        Route::match(['put', 'patch', 'post'], '/{id}', [StudentController::class, 'update']);
+        Route::match(['put', 'patch'], '/update/{id}', [StudentController::class, 'update']);
+        Route::match(['put', 'patch'], '/update', [StudentController::class, 'update']); // Update student profile
+        Route::match(['put', 'patch'], '/{id}', [StudentController::class, 'update']);
         Route::post('/{id}/guardians', [StudentController::class, 'assignGuardian']);
         Route::delete('/{id}/guardians/{guardianId}', [StudentController::class, 'detachGuardian']);
         Route::post('/{id}/advisors', [StudentController::class, 'assignAdvisor']);
@@ -830,6 +830,9 @@ Route::prefix('advisor')->middleware(['auth:sanctum', 'auth:staff', 'staff.role:
         // Route::delete('/destroy/{id}', [StudentController::class, 'destroy']); // Soft delete a student
         Route::get('/all', [StudentController::class, 'index']); // List all students
         Route::get('/{id}', [StudentController::class, 'show']); // Show student details
+        Route::match(['put', 'patch'], '/update/{id}', [StudentController::class, 'update']);
+        Route::match(['put', 'patch'], '/update', [StudentController::class, 'update']);
+        Route::match(['put', 'patch'], '/{id}', [StudentController::class, 'update']);
     });
 });
 
