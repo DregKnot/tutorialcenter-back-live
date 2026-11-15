@@ -171,7 +171,7 @@ class StudentController extends Controller
                     'string',
                     'exists:students,tel',
                     'required_without:email',
-                    'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                    'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
                 ],
             ]);
 
@@ -230,7 +230,7 @@ class StudentController extends Controller
                     'string',
                     'exists:students,tel',
                     'required_without:email',
-                    'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                    'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
                 ],
                 'otp' => 'required|string',
                 'password' => [
@@ -484,7 +484,7 @@ class StudentController extends Controller
                 'string',
                 'unique:students,tel',
                 'required_without:email',
-                'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
             ],
             'password' => [
                 'required',
@@ -675,7 +675,7 @@ class StudentController extends Controller
             if ($type === 'phone') {
                 Validator::make($request->all(), [
                     'value' => [
-                        'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                        'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
                         'unique:students,tel',
                         'different:tel',
                     ],
@@ -1960,7 +1960,7 @@ class StudentController extends Controller
                 'nullable',
                 'string',
                 'required_without:email',
-                'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
                 $studentId ? Rule::unique('students', 'tel')->ignore($studentId) : Rule::unique('students', 'tel'),
             ],
             'password' => $studentId ? 'nullable|string|min:8|same:confirmPassword' : 'required|string|min:8|same:confirmPassword',
