@@ -31,7 +31,7 @@ class GuardianController extends Controller
                 'string',
                 'unique:students,tel',
                 'required_without:email',
-                'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
             ],
             'password' => [
                 'required',
@@ -360,7 +360,7 @@ class GuardianController extends Controller
                 'string',
                 'exists:students,tel',
                 'required_without:email',
-                'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
             ],
 
             'gender' => 'required|string|in:male,female,others',
@@ -673,7 +673,7 @@ class GuardianController extends Controller
                 'string',
                 'unique:guardians,tel',
                 'required_without:email',
-                'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
             ],
 
             'password' => [

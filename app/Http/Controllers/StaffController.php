@@ -138,7 +138,7 @@ class StaffController extends Controller
                     'string',
                     'exists:staffs,tel',
                     'required_without:email',
-                    'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                    'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
                 ],
             ]);
 
@@ -201,7 +201,7 @@ class StaffController extends Controller
                     'string',
                     'exists:staffs,tel',
                     'required_without:email',
-                    'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                    'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
                 ],
                 'otp' => 'required|string',
                 'password' => [
@@ -328,7 +328,7 @@ class StaffController extends Controller
                 'required',
                 'string',
                 'unique:staffs,tel',
-                'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
             ],
 
             'gender' => 'required|in:male,female,others',
@@ -502,7 +502,7 @@ class StaffController extends Controller
                     'required',
                     'string',
                     'unique:staffs,tel,' . $staff->id,
-                    'regex:/^(\+234|234|0)(70|80|81|90|91)\d{8}$/',
+                    'regex:/^(\+?[0-9]{8,15}|0[0-9]{9,11})$/',
                 ],
                 'gender' => 'sometimes|in:male,female,others',
                 'profile_picture' => 'sometimes|image|mimes:jpeg,png,jpg|max:2048',
