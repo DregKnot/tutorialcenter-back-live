@@ -1433,7 +1433,18 @@ class PaymentController extends Controller
                     // If student still has no subjects, enroll in all active subjects for this course (or O-Levels/Course 4)
                     if ($restoredCount === 0 && !SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->exists()) {
                         $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
-                        $defaultSubjects = Subject::where('course_id', $queryCourseId)->where('status', 'active')->get();
+                        $defaultSubjectsQuery = Subject::whereHas('courses', function ($cq) use ($queryCourseId) {
+                            $cq->where('courses.id', $queryCourseId);
+                        })->where('status', 'active');
+
+                        $student = $enrollment->student;
+                        if ($student && !empty($student->department)) {
+                            $deptSubjects = (clone $defaultSubjectsQuery)->whereJsonContains('departments', $student->department)->get();
+                            $defaultSubjects = $deptSubjects->isNotEmpty() ? $deptSubjects : $defaultSubjectsQuery->get();
+                        } else {
+                            $defaultSubjects = $defaultSubjectsQuery->get();
+                        }
+
                         foreach ($defaultSubjects as $defSub) {
                             SubjectsEnrollment::firstOrCreate([
                                 'course_enrollment_id' => $enrollment->id,
@@ -1879,7 +1890,18 @@ class PaymentController extends Controller
 
                     if ($restoredCount === 0 && !\App\Models\SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->exists()) {
                         $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
-                        $defaultSubjects = \App\Models\Subject::where('course_id', $queryCourseId)->where('status', 'active')->get();
+                        $defaultSubjectsQuery = \App\Models\Subject::whereHas('courses', function ($cq) use ($queryCourseId) {
+                            $cq->where('courses.id', $queryCourseId);
+                        })->where('status', 'active');
+
+                        $student = $enrollment->student;
+                        if ($student && !empty($student->department)) {
+                            $deptSubjects = (clone $defaultSubjectsQuery)->whereJsonContains('departments', $student->department)->get();
+                            $defaultSubjects = $deptSubjects->isNotEmpty() ? $deptSubjects : $defaultSubjectsQuery->get();
+                        } else {
+                            $defaultSubjects = $defaultSubjectsQuery->get();
+                        }
+
                         foreach ($defaultSubjects as $defSub) {
                             \App\Models\SubjectsEnrollment::firstOrCreate([
                                 'course_enrollment_id' => $enrollment->id,

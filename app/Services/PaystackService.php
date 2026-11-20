@@ -502,11 +502,8 @@ class PaystackService
             // If no existing subjects were attached, provide default subjects based on course and student department
             if ($restoredCount === 0 && !SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->exists()) {
                 $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
-                $defaultSubjectsQuery = \App\Models\Subject::where(function ($q) use ($queryCourseId) {
-                    $q->where('course_id', $queryCourseId)
-                      ->orWhereHas('courses', function ($cq) use ($queryCourseId) {
-                          $cq->where('courses.id', $queryCourseId);
-                      });
+                $defaultSubjectsQuery = \App\Models\Subject::whereHas('courses', function ($cq) use ($queryCourseId) {
+                    $cq->where('courses.id', $queryCourseId);
                 })->where('status', 'active');
 
                 if ($student->department) {

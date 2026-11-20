@@ -56,6 +56,32 @@ class StudentNotificationService
         });
     }
 
+    public static function isPrivateClass(?\App\Models\Classes $class): bool
+    {
+        if (! $class) {
+            return false;
+        }
+
+        if (! empty($class->is_private) || ! empty($class->private_student_id)) {
+            return true;
+        }
+
+        if ($class->relationLoaded('privateEnrollment') ? $class->privateEnrollment !== null : $class->privateEnrollment()->exists()) {
+            return true;
+        }
+
+        try {
+            if (\Illuminate\Support\Facades\DB::table('private_class_enrollments')->where('class_id', $class->id)->whereNull('deleted_at')->exists()) {
+                return true;
+            }
+        } catch (\Throwable $e) {
+            // Ignore if table doesn't exist
+        }
+
+        $title = strtolower((string) $class->title);
+        return str_contains($title, 'private') || str_contains($title, '1-on-1') || str_contains($title, '1 on 1') || str_contains($title, 'one-on-one');
+    }
+
     /**
      * Resolve eligible students for a specific class session.
      * For 1-on-1 private classes, strictly isolates delivery to ONLY the assigned private student.
@@ -64,14 +90,28 @@ class StudentNotificationService
     public static function studentsForClassSession(ClassSession $session): \Illuminate\Database\Eloquent\Builder
     {
         $class = $session->class;
-        $isPrivate = (bool) ($class?->is_private || $class?->private_student_id);
 
-        if ($isPrivate) {
-            $privateStudentId = $class->private_student_id ?? $class->privateEnrollment?->student_id;
+        if (self::isPrivateClass($class)) {
+            $privateStudentId = $class->private_student_id
+                ?? $class->privateEnrollment?->student_id;
+
+            if (! $privateStudentId) {
+                try {
+                    $privateStudentId = \Illuminate\Support\Facades\DB::table('private_class_enrollments')
+                        ->where('class_id', $class->id)
+                        ->whereNull('deleted_at')
+                        ->value('student_id');
+                } catch (\Throwable $e) {
+                    // Ignore if table does not exist
+                }
+            }
+
             if ($privateStudentId) {
                 return Student::where('id', $privateStudentId);
             }
+
             // Fail-safe: if private student cannot be resolved, return an empty query to prevent leaking private classes
+            \Illuminate\Support\Facades\Log::warning("Private class session #{$session->id} has no resolvable student. Cohort broadcast suppressed.");
             return Student::whereRaw('1 = 0');
         }
 
