@@ -333,6 +333,7 @@ class CourseController extends Controller
                     'termination_reason' => null,
                 ]);
 
+                $enrolledAnySubjects = false;
                 if ($request->has('subjects') && is_array($request->subjects)) {
                     foreach ($request->subjects as $subItem) {
                         $subId = is_array($subItem) ? ($subItem['id'] ?? 0) : (int) $subItem;
@@ -342,7 +343,23 @@ class CourseController extends Controller
                                 'student_id' => $student->id,
                                 'subject_id' => $subId,
                             ]);
+                            $enrolledAnySubjects = true;
                         }
+                    }
+                }
+
+                if (!$enrolledAnySubjects && !\App\Models\SubjectsEnrollment::where('course_enrollment_id', $existingEnrollment->id)->exists()) {
+                    $queryCourseId = in_array((int) $course->id, [2, 3, 4], true) ? 4 : $course->id;
+                    $defaultSubjects = \App\Models\Subject::whereHas('courses', function ($cq) use ($queryCourseId) {
+                        $cq->where('courses.id', $queryCourseId);
+                    })->where('status', 'active')->get();
+
+                    foreach ($defaultSubjects as $defSub) {
+                        \App\Models\SubjectsEnrollment::firstOrCreate([
+                            'course_enrollment_id' => $existingEnrollment->id,
+                            'student_id' => $student->id,
+                            'subject_id' => $defSub->id,
+                        ]);
                     }
                 }
                 DB::commit();
@@ -366,6 +383,7 @@ class CourseController extends Controller
                 'status' => 'pending',
             ]);
 
+            $enrolledAnySubjects = false;
             if ($request->has('subjects') && is_array($request->subjects)) {
                 foreach ($request->subjects as $subItem) {
                     $subId = is_array($subItem) ? ($subItem['id'] ?? 0) : (int) $subItem;
@@ -375,7 +393,23 @@ class CourseController extends Controller
                             'student_id' => $student->id,
                             'subject_id' => $subId,
                         ]);
+                        $enrolledAnySubjects = true;
                     }
+                }
+            }
+
+            if (!$enrolledAnySubjects) {
+                $queryCourseId = in_array((int) $course->id, [2, 3, 4], true) ? 4 : $course->id;
+                $defaultSubjects = \App\Models\Subject::whereHas('courses', function ($cq) use ($queryCourseId) {
+                    $cq->where('courses.id', $queryCourseId);
+                })->where('status', 'active')->get();
+
+                foreach ($defaultSubjects as $defSub) {
+                    \App\Models\SubjectsEnrollment::firstOrCreate([
+                        'course_enrollment_id' => $enrollment->id,
+                        'student_id' => $student->id,
+                        'subject_id' => $defSub->id,
+                    ]);
                 }
             }
             DB::commit();

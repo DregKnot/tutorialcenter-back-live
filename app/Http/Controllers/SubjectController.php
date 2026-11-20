@@ -579,14 +579,32 @@ class SubjectController extends Controller
     public function subjectsByCourseAndDepartment(int $courseId, string $department)
     {
         try {
+            $lowerDept = strtolower(trim($department));
+            $ucDept = ucfirst($lowerDept);
+
             $subjects = Subject::query()
                 ->where('status', 'active')
                 ->whereHas('courses', function ($query) use ($courseId) {
                     $query->where('courses.id', $courseId);
                 })
-                ->whereJsonContains('departments', $department)
+                ->where(function ($q) use ($lowerDept, $ucDept, $department) {
+                    $q->whereJsonContains('departments', $lowerDept)
+                      ->orWhereJsonContains('departments', $ucDept)
+                      ->orWhereJsonContains('departments', $department);
+                })
                 ->with('courses')
                 ->get();
+
+            // If no department-specific subjects exist, fallback to all active subjects for this course
+            if ($subjects->isEmpty()) {
+                $subjects = Subject::query()
+                    ->where('status', 'active')
+                    ->whereHas('courses', function ($query) use ($courseId) {
+                        $query->where('courses.id', $courseId);
+                    })
+                    ->with('courses')
+                    ->get();
+            }
 
             return response()->json([
                 'message' => 'Subjects fetched successfully.',
