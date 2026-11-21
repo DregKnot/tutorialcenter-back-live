@@ -541,7 +541,7 @@ class SubjectController extends Controller
      */
     public function index()
     {
-        $subjects = Subject::where('status', 'active')->get();
+        $subjects = Subject::where('status', 'active')->with('courses')->get();
 
         return response()->json([
             'subjects' => $subjects,
@@ -560,6 +560,10 @@ class SubjectController extends Controller
                 })
                 ->with('courses')
                 ->get();
+
+            if ($subjects->isEmpty()) {
+                $subjects = Subject::where('status', 'active')->with('courses')->get();
+            }
 
             return response()->json([
                 'message' => 'Subjects fetched successfully.',
