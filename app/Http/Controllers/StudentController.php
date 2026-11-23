@@ -1989,13 +1989,17 @@ class StudentController extends Controller
                     abort(422, 'The selected course is not active.');
                 }
 
-                $subjectIds = $course->subjects()
-                    ->whereIn('subjects.id', $validated['subject_ids'])
-                    ->pluck('subjects.id');
+                $validSubjects = Subject::whereIn('id', $validated['subject_ids'])
+                    ->where('status', 'active')
+                    ->pluck('id');
 
-                if ($subjectIds->count() !== count($validated['subject_ids'])) {
-                    abort(422, 'One or more selected subjects do not belong to this course.');
+                if ($validSubjects->count() !== count($validated['subject_ids'])) {
+                    abort(422, 'One or more selected subjects do not exist or are not active.');
                 }
+
+                // Ensure selected subjects are linked to the course in pivot table
+                $course->subjects()->syncWithoutDetaching($validSubjects);
+                $subjectIds = $validSubjects;
 
                 if (!empty($studentId)) {
                     $student = Student::lockForUpdate()->findOrFail($studentId);

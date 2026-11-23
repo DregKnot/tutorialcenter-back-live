@@ -1430,16 +1430,34 @@ class PaymentController extends Controller
                         ->where('student_id', $enrollment->student_id)
                         ->restore();
 
-                    // If student still has no subjects, enroll in all active subjects for this course (or O-Levels/Course 4)
+                    // If student still has no subjects, restore from their previous enrollment for this course, or enroll in all active subjects for this course
                     if ($restoredCount === 0 && !SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->exists()) {
-                        $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
-                        $defaultSubjects = Subject::where('course_id', $queryCourseId)->where('status', 'active')->get();
-                        foreach ($defaultSubjects as $defSub) {
-                            SubjectsEnrollment::firstOrCreate([
-                                'course_enrollment_id' => $enrollment->id,
-                                'student_id' => $enrollment->student_id,
-                                'subject_id' => $defSub->id,
-                            ]);
+                        $previousSubjectIds = SubjectsEnrollment::where('student_id', $enrollment->student_id)
+                            ->whereHas('courseEnrollment', fn($q) => $q->where('course_id', $enrollment->course_id))
+                            ->pluck('subject_id')
+                            ->unique();
+
+                        if ($previousSubjectIds->isNotEmpty()) {
+                            foreach ($previousSubjectIds as $subId) {
+                                SubjectsEnrollment::firstOrCreate([
+                                    'course_enrollment_id' => $enrollment->id,
+                                    'student_id' => $enrollment->student_id,
+                                    'subject_id' => $subId,
+                                ]);
+                            }
+                        } else {
+                            $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
+                            $defaultSubjects = Subject::whereHas('courses', function ($cq) use ($queryCourseId) {
+                                $cq->where('courses.id', $queryCourseId);
+                            })->where('status', 'active')->get();
+
+                            foreach ($defaultSubjects as $defSub) {
+                                SubjectsEnrollment::firstOrCreate([
+                                    'course_enrollment_id' => $enrollment->id,
+                                    'student_id' => $enrollment->student_id,
+                                    'subject_id' => $defSub->id,
+                                ]);
+                            }
                         }
                     }
                 }
@@ -1878,14 +1896,32 @@ class PaymentController extends Controller
                         ->restore();
 
                     if ($restoredCount === 0 && !\App\Models\SubjectsEnrollment::where('course_enrollment_id', $enrollment->id)->exists()) {
-                        $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
-                        $defaultSubjects = \App\Models\Subject::where('course_id', $queryCourseId)->where('status', 'active')->get();
-                        foreach ($defaultSubjects as $defSub) {
-                            \App\Models\SubjectsEnrollment::firstOrCreate([
-                                'course_enrollment_id' => $enrollment->id,
-                                'student_id' => $enrollment->student_id,
-                                'subject_id' => $defSub->id,
-                            ]);
+                        $previousSubjectIds = \App\Models\SubjectsEnrollment::where('student_id', $enrollment->student_id)
+                            ->whereHas('courseEnrollment', fn($q) => $q->where('course_id', $enrollment->course_id))
+                            ->pluck('subject_id')
+                            ->unique();
+
+                        if ($previousSubjectIds->isNotEmpty()) {
+                            foreach ($previousSubjectIds as $subId) {
+                                \App\Models\SubjectsEnrollment::firstOrCreate([
+                                    'course_enrollment_id' => $enrollment->id,
+                                    'student_id' => $enrollment->student_id,
+                                    'subject_id' => $subId,
+                                ]);
+                            }
+                        } else {
+                            $queryCourseId = in_array((int) $enrollment->course_id, [2, 3, 4], true) ? 4 : $enrollment->course_id;
+                            $defaultSubjects = \App\Models\Subject::whereHas('courses', function ($cq) use ($queryCourseId) {
+                                $cq->where('courses.id', $queryCourseId);
+                            })->where('status', 'active')->get();
+
+                            foreach ($defaultSubjects as $defSub) {
+                                \App\Models\SubjectsEnrollment::firstOrCreate([
+                                    'course_enrollment_id' => $enrollment->id,
+                                    'student_id' => $enrollment->student_id,
+                                    'subject_id' => $defSub->id,
+                                ]);
+                            }
                         }
                     }
                 }
