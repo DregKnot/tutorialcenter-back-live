@@ -8,6 +8,7 @@ use App\Models\CoursesEnrollment;
 use App\Models\Payment;
 use App\Models\Student;
 use App\Models\Staff;
+use App\Models\Subject;
 use App\Models\SubjectsEnrollment;
 use App\Models\StudentSubjectChange;
 use App\Models\EmailVerification;
