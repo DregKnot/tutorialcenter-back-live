@@ -64,9 +64,13 @@ class StaffRoleMiddleware
         }
 
         $advisorRoles = ['advisor', 'course advisor', 'course_advisor', 'course-advisor'];
+        $tutorRoles = ['tutor', 'teacher'];
 
-        // Allow advisors read-only access to exam data endpoints
-        if (in_array($userRole, $advisorRoles) && ($request->is('api/admin/exam-data*') || $request->is('api/advisor/exam-data*'))) {
+        // Allow advisors and tutors read-only access to exam data endpoints
+        if (
+            in_array($userRole, array_merge($advisorRoles, $tutorRoles)) &&
+            ($request->is('api/admin/exam-data*') || $request->is('api/advisor/exam-data*') || $request->is('api/tutor/exam-data*'))
+        ) {
             if ($request->isMethod('get') || $request->isMethod('head') || $request->isMethod('options')) {
                 return $next($request);
             }
